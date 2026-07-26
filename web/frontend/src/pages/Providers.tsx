@@ -31,7 +31,7 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
       return <Card key={id} className={`provider-card status-${disabled ? 'disabled' : 'healthy'}`}>
         <CardHeader title={id} description={endpoint} action={<Badge tone={disabled ? 'muted' : 'success'}>{disabled ? '已禁用' : '已加载'}</Badge>}/>
         <div className="provider-identity"><div className="provider-id"><span>Provider ID</span><strong>{id}</strong></div><Badge>{provider.models.length} models</Badge></div>
-        <div className="tags">{provider.models.map(model => <span key={model}>{model.split('/').slice(1).join('/')}</span>)}</div>
+        <div className="tags">{provider.models.map(model => { const prefix = `${id}-`; return <span key={model}>{model.startsWith(prefix) ? model.slice(prefix.length) : model}</span> })}</div>
         <div className="provider-stats provider-stats-single"><div><span>注册模型</span><strong>{provider.models.length}</strong></div></div>
         <div className="card-actions"><button className="btn primary" onClick={onSettings}><KeyRound size={14}/>API 配置</button><button className={`btn ${disabled ? '' : 'danger'}`} disabled={busy === id} onClick={() => void toggle(id)}><Power size={14}/>{disabled ? '启用' : '禁用'}</button></div>
       </Card>

@@ -3,6 +3,11 @@ import { Power, Search } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import { Card, EmptyState, Subtabs } from '../components/UI'
 
+const displayModelName = (model: { id: string; providerId: string }) => {
+  const prefix = `${model.providerId}-`
+  return model.id.startsWith(prefix) ? model.id.slice(prefix.length) : model.id
+}
+
 export default function Models() {
   const { data, saveControl } = useAdmin()
   const [tab, setTab] = useState<'all' | 'enabled' | 'disabled'>('all')
@@ -32,7 +37,7 @@ export default function Models() {
     {!visible.length ? <EmptyState title="没有匹配的模型" description="模型来自已加载 Provider 的 diagnostics()。"/> : <div className="model-grid">{visible.map(model => {
       const { providerDisabled, modelDisabled } = state(model)
       const enabled = !providerDisabled && !modelDisabled
-      return <Card key={model.id} className={!enabled ? 'model-disabled' : ''}><div className="model-head"><div className="model-copy"><strong>{model.id.split('/').slice(1).join('/')}</strong><span>{model.providerId}</span></div><button className={`toggle ${enabled ? 'on' : ''}`} disabled={providerDisabled || busy === model.id} onClick={() => void toggle(model.id)} aria-label={`${enabled ? '禁用' : '启用'} ${model.id}`}><i/></button></div><div className="tags"><span>{model.id}</span></div><div className="provider-stats"><div><span>Provider</span><strong>{providerDisabled ? '已禁用' : '已启用'}</strong></div><div><span>模型策略</span><strong>{modelDisabled ? '已禁用' : '已启用'}</strong></div></div><div className="card-actions"><button className={`btn ${enabled ? 'danger' : 'primary'}`} disabled={providerDisabled || busy === model.id} onClick={() => void toggle(model.id)}><Power size={14}/>{providerDisabled ? '先启用 Provider' : enabled ? '禁用模型' : '启用模型'}</button></div></Card>
+      return <Card key={model.id} className={!enabled ? 'model-disabled' : ''}><div className="model-head"><div className="model-copy"><strong>{displayModelName(model)}</strong><span>{model.providerId}</span></div><button className={`toggle ${enabled ? 'on' : ''}`} disabled={providerDisabled || busy === model.id} onClick={() => void toggle(model.id)} aria-label={`${enabled ? '禁用' : '启用'} ${model.id}`}><i/></button></div><div className="tags"><span>{model.id}</span></div><div className="provider-stats"><div><span>Provider</span><strong>{providerDisabled ? '已禁用' : '已启用'}</strong></div><div><span>模型策略</span><strong>{modelDisabled ? '已禁用' : '已启用'}</strong></div></div><div className="card-actions"><button className={`btn ${enabled ? 'danger' : 'primary'}`} disabled={providerDisabled || busy === model.id} onClick={() => void toggle(model.id)}><Power size={14}/>{providerDisabled ? '先启用 Provider' : enabled ? '禁用模型' : '启用模型'}</button></div></Card>
     })}</div>}
   </>
 }

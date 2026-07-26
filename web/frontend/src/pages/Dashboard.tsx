@@ -5,10 +5,10 @@ import { Badge, Card, CardHeader, SectionTitle } from '../components/UI'
 export default function Dashboard() {
   const { data, restart, isOwner } = useAdmin()
   const providers = data.providers
-  const models = providers.flatMap(provider => provider.models ?? [])
+  const models = providers.flatMap(provider => (provider.models ?? []).map(id => ({ id, providerId: provider.provider_id })))
   const disabledProviders = new Set(data.disabled_providers)
   const disabledModels = new Set(data.disabled_models)
-  const enabledModels = models.filter(model => !disabledProviders.has(model.split('/', 1)[0]) && !disabledModels.has(model))
+  const enabledModels = models.filter(model => !disabledProviders.has(model.providerId) && !disabledModels.has(model.id))
   const runtime = restart?.gateway ?? data.runtime
   const startedAt = new Date(runtime.started_at)
   return <>
@@ -25,6 +25,6 @@ export default function Dashboard() {
       <Card><CardHeader title="进程状态" description="用于平滑重启与 Drain" action={<Badge tone={runtime.phase === 'running' ? 'success' : 'warning'}>{runtime.phase}</Badge>}/><div className="info-list"><div><span><Activity size={15}/> 活动执行</span><strong>{runtime.active_executions}</strong></div><div><span><Clock3 size={15}/> 启动时间</span><strong>{Number.isNaN(startedAt.getTime()) ? '未知' : startedAt.toLocaleString()}</strong></div><div><span><ShieldCheck size={15}/> 管理权限</span><strong>{isOwner ? 'owner' : 'admin:web'}</strong></div></div></Card>
     </div>
     <SectionTitle title="已注册模型" description="模型列表来自每个 Provider 的 diagnostics()" eyebrow={`${enabledModels.length} enabled`}/>
-    <Card>{models.length ? <div className="route-list">{models.map(model => { const providerId = model.split('/', 1)[0]; const disabled = disabledProviders.has(providerId) || disabledModels.has(model); return <div key={model}><Sparkles size={15}/><span>{model}</span><Badge tone={disabled ? 'muted' : 'success'}>{disabled ? '不可接收新请求' : '可用'}</Badge></div> })}</div> : <p>没有注册模型。</p>}</Card>
+    <Card>{models.length ? <div className="route-list">{models.map(model => { const disabled = disabledProviders.has(model.providerId) || disabledModels.has(model.id); return <div key={model.id}><Sparkles size={15}/><span>{model.id}</span><Badge tone={disabled ? 'muted' : 'success'}>{disabled ? '不可接收新请求' : '可用'}</Badge></div> })}</div> : <p>没有注册模型。</p>}</Card>
   </>
 }
