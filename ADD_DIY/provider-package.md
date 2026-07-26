@@ -27,6 +27,10 @@
 6. 增加厂商 Golden Fixture 和公共 Provider 契约测试；
 7. 重启网关加载新代码。新增 Provider、协议、Usage、模型能力、任何 Python 代码的变化都必须重启。
 
+工具调用测试必须覆盖非流式、流式、参数分片、单工具和并行工具。流式适配必须在参数完整后
+发送 `ProviderEventKind.TOOL_COMPLETED`；只把工具调用放进最终响应会导致 kemo-agent 看见
+`requires_action` 却无法执行工具。
+
 ## 无需重启的厂商 API 配置
 
 - `config.json`：Endpoint、超时、代理、非敏感默认 Header 等；
@@ -57,6 +61,9 @@
 - 不得用 0 表示厂商没有返回的 Usage；
 - 不得自行执行 kemo-agent 工具；
 - 不得把厂商原始错误体和密钥写入统一错误。
+- 不得向 `ProviderException` 传字符串；必须传入本厂商完成脱敏的 `ErrorObject`。
+- 不得从请求 `extensions` 读取最高权限系统提示词；只使用核心传入的
+  `RequestContext.gateway_system_prompt`。
 
 Provider Package 的权威接口是 `core/provider_contract.py`，可复制模板但不得复制并修改这份契约。
 
