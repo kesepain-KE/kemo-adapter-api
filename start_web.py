@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import socket
 import sys
 from threading import Timer
 from typing import Any
@@ -17,7 +18,13 @@ import webbrowser
 from dotenv import load_dotenv
 import uvicorn
 
-from core.restart_control import RestartPaths, clear_pid_metadata, write_pid_metadata
+from core.restart_control import (
+    RestartPaths,
+    clear_pid_metadata,
+    process_exists,
+    read_json,
+    write_pid_metadata,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -102,6 +109,38 @@ def _browser_url(host: str, port: int) -> str:
     return f"http://{browser_host}:{port}"
 
 
+def _port_has_listener(host: str, port: int) -> bool:
+    """只读探测目标监听地址，阻止 wildcard/specific address 双实例并存。"""
+    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+    connect_host = connect_host.strip("[]")
+    try:
+        with socket.create_connection((connect_host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _startup_conflict(paths: RestartPaths, *, host: str, port: int) -> str | None:
+    """返回启动冲突类型；陈旧 PID 文件不会阻止新实例。"""
+    metadata = read_json(paths.pid) or {}
+    try:
+        pid = int(metadata.get("pid", -1))
+    except (TypeError, ValueError):
+        pid = -1
+    metadata_root = metadata.get("project_root")
+    if (
+        pid != os.getpid()
+        and process_exists(pid)
+        and isinstance(metadata_root, str)
+        and metadata_root
+        and Path(metadata_root).resolve() == PROJECT_ROOT.resolve()
+    ):
+        return "active_instance"
+    if _port_has_listener(host, port):
+        return "port_in_use"
+    return None
+
+
 def main() -> int:
     # 保证从任意工作目录执行 ``python path/to/start_web.py`` 都能导入项目包。
     project_path = str(PROJECT_ROOT)
@@ -125,6 +164,21 @@ def main() -> int:
         # 不打印原始配置或异常正文，避免 JSON 配置错误时意外回显密钥。
         print("[ERROR] 启动环境变量无效，请检查 .env.example。", file=sys.stderr)
         return 2
+
+    paths = RestartPaths(PROJECT_ROOT)
+    conflict = _startup_conflict(
+        paths,
+        host=str(options["host"]),
+        port=int(options["port"]),
+    )
+    if conflict is not None:
+        message = (
+            "检测到本项目已有网关实例正在运行，请先关闭旧实例或使用 restart.py。"
+            if conflict == "active_instance"
+            else "目标 HOST/PORT 已有进程监听，请先关闭占用进程或修改端口。"
+        )
+        print(f"[ERROR] {message}", file=sys.stderr)
+        return 4
 
     url = _browser_url(str(options["host"]), int(options["port"]))
     print(f"[KEMO] Web 管理端: {url}")
@@ -152,7 +206,6 @@ def main() -> int:
     server = uvicorn.Server(config)
     app.state.uvicorn_server = server
     app.state.restart_service.configure_server(server)
-    paths = RestartPaths(PROJECT_ROOT)
     instance_id = app.state.runtime_state.instance_id
     write_pid_metadata(
         paths,
