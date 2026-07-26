@@ -41,6 +41,7 @@ async def create_response(
         tenant_id=principal.tenant_id,
         subject_id=principal.subject_id,
         request_id=request.request_id,
+        gateway_key_id=principal.key_id,
     )
     try:
         if request.stream:

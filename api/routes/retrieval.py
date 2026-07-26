@@ -74,6 +74,7 @@ async def create_embeddings(
         tenant_id=principal.tenant_id,
         subject_id=principal.subject_id,
         request_id=request.request_id,
+        gateway_key_id=principal.key_id,
     )
     try:
         return await executor.embeddings(request, context)
@@ -102,6 +103,7 @@ async def create_rerank(
         tenant_id=principal.tenant_id,
         subject_id=principal.subject_id,
         request_id=request.request_id,
+        gateway_key_id=principal.key_id,
     )
     try:
         return await executor.rerank(request, context)

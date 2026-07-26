@@ -7,12 +7,15 @@ from dataclasses import dataclass
 
 from fastapi import Header, HTTPException, Request
 
+from core.config import safe_key_id
+
 
 @dataclass(frozen=True, slots=True)
 class Principal:
     tenant_id: str
     subject_id: str
     scopes: frozenset[str]
+    key_id: str | None = None
 
 
 async def authenticated_principal(
@@ -46,6 +49,7 @@ def control_plane_auth_required(request: Request) -> bool:
         has_management_token
         or settings.web_username.strip()
         or settings.web_password.strip()
+        or settings.web_token.strip()
     )
 
 
@@ -68,16 +72,36 @@ async def _resolve_principal(
                 tenant_id="local",
                 subject_id="unauthenticated-web-console",
                 scopes=frozenset({"owner"}),
+                key_id="local-web-console",
             )
         raise HTTPException(status_code=401, detail="缺少 Bearer Token")
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="需要 Bearer Token")
     candidate = authorization[7:]
 
+    # 完整 Web 会话只属于管理面，不能作为模型调用密钥。
+    web_session = (
+        request.app.state.web_auth.resolve(candidate, stage="complete")
+        if allow_unconfigured_control_plane
+        else None
+    )
+    if web_session is not None:
+        return Principal(
+            tenant_id="local",
+            subject_id="web-session-console",
+            scopes=frozenset({"owner"}),
+            key_id="web-console-session",
+        )
+
     # .env 是重启生效的启动配置；api/keys.json 是无需重启的运行时密钥配置。
     available_keys = dict(settings.api_keys)
     available_keys.update(snapshot.api_keys)
     for token, config in available_keys.items():
         if hmac.compare_digest(candidate, token):
-            return Principal(config.tenant_id, config.subject_id, config.scopes)
+            return Principal(
+                config.tenant_id,
+                config.subject_id,
+                config.scopes,
+                safe_key_id(candidate, config.key_id),
+            )
     raise HTTPException(status_code=401, detail="Bearer Token 无效")
