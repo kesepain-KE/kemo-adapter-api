@@ -47,10 +47,10 @@ class FakeRetrievalProvider(ProviderPackage):
 
     @property
     def models(self) -> frozenset[str]:
-        return frozenset({"retrieval/embed-v1", "retrieval/rerank-v1"})
+        return frozenset({"retrieval-embed-v1", "retrieval-rerank-v1"})
 
     async def capabilities(self, model: str) -> ModelCapabilities:
-        if model == "retrieval/embed-v1":
+        if model == "retrieval-embed-v1":
             return ModelCapabilities(
                 model=model,
                 task="embedding",
@@ -66,7 +66,7 @@ class FakeRetrievalProvider(ProviderPackage):
                     normalization="always",
                 ),
             )
-        if model == "retrieval/rerank-v1":
+        if model == "retrieval-rerank-v1":
             return ModelCapabilities(
                 model=model,
                 task="rerank",
@@ -93,7 +93,7 @@ class FakeRetrievalProvider(ProviderPackage):
         ]
         return ProviderEmbeddingResult(
             embeddings=embeddings,
-            vector_space_id="retrieval/embed-v1@2026-07:3:normalized",
+            vector_space_id="retrieval-embed-v1@2026-07:3:normalized",
             model_version="2026-07",
             provider_response_id="vendor_embed_1",
             usage=Usage(
@@ -130,7 +130,7 @@ class BrokenEmbeddingProvider(FakeRetrievalProvider):
 
     @property
     def models(self) -> frozenset[str]:
-        return frozenset({"broken_retrieval/embed-v1"})
+        return frozenset({"broken_retrieval-embed-v1"})
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
@@ -191,7 +191,7 @@ def embedding_body() -> dict:
     return {
         "protocol_version": "1.0",
         "request_id": "embed_req_1",
-        "model": "retrieval/embed-v1",
+        "model": "retrieval-embed-v1",
         "input_type": "document",
         "inputs": [
             {"id": "node-a", "text": "alpha"},
@@ -205,7 +205,7 @@ def rerank_body() -> dict:
     return {
         "protocol_version": "1.0",
         "request_id": "rerank_req_1",
-        "model": "retrieval/rerank-v1",
+        "model": "retrieval-rerank-v1",
         "query": "graph retrieval",
         "documents": [
             {"id": "doc-a", "text": "a", "metadata": {"node": "a"}},
@@ -226,13 +226,14 @@ def test_embeddings_preserve_ids_order_usage_and_idempotency(tmp_path: Path) -> 
     assert first.status_code == 200
     payload = first.json()
     assert payload["object"] == "kemo.embedding_list"
-    assert payload["vector_space_id"] == "retrieval/embed-v1@2026-07:3:normalized"
+    assert payload["vector_space_id"] == "retrieval-embed-v1@2026-07:3:normalized"
     assert payload["dimensions"] == 3
     assert [item["id"] for item in payload["data"]] == ["node-a", "node-b"]
     assert [item["index"] for item in payload["data"]] == [0, 1]
     assert payload["usage"]["input_tokens"] == 7
     assert replay.json() == payload
     assert provider.embedding_calls == 1
+    assert app.state.runtime_state.snapshot()["active_executions"] == 0
 
 
 def test_embedding_idempotency_conflict_and_scope(tmp_path: Path) -> None:
@@ -277,12 +278,12 @@ def test_capabilities_expose_retrieval_task_contracts(tmp_path: Path) -> None:
         embedding = client.get(
             "/model/capabilities",
             headers=headers,
-            params={"model": "retrieval/embed-v1"},
+            params={"model": "retrieval-embed-v1"},
         )
         rerank = client.get(
             "/model/capabilities",
             headers=headers,
-            params={"model": "retrieval/rerank-v1"},
+            params={"model": "retrieval-rerank-v1"},
         )
 
     assert embedding.json()["task"] == "embedding"
@@ -296,10 +297,10 @@ def test_task_mismatch_and_bad_provider_result_are_sanitized(tmp_path: Path) -> 
     broken = BrokenEmbeddingProvider()
     app.state.registry.register(broken)
     mismatch = embedding_body()
-    mismatch["model"] = "retrieval/rerank-v1"
+    mismatch["model"] = "retrieval-rerank-v1"
     broken_body = embedding_body()
     broken_body["request_id"] = "broken_req_1"
-    broken_body["model"] = "broken_retrieval/embed-v1"
+    broken_body["model"] = "broken_retrieval-embed-v1"
     broken_body["inputs"] = [{"id": "node", "text": "secret source text"}]
     broken_headers = {**EMBED_HEADERS, "Idempotency-Key": "broken_req_1"}
 
@@ -316,3 +317,34 @@ def test_task_mismatch_and_bad_provider_result_are_sanitized(tmp_path: Path) -> 
     assert bad_result.status_code == 502
     assert bad_result.json()["error"]["code"] == "PROVIDER_BAD_RESPONSE"
     assert "secret source text" not in bad_result.text
+
+
+def test_strict_request_validation_rejects_unstable_graph_ids(tmp_path: Path) -> None:
+    app, _ = retrieval_app(tmp_path)
+    duplicate_embeddings = embedding_body()
+    duplicate_embeddings["inputs"][1]["id"] = "node-a"
+    invalid_rerank = rerank_body()
+    invalid_rerank["top_n"] = 4
+
+    with TestClient(app) as client:
+        embedding_response = client.post(
+            "/model/embeddings", headers=EMBED_HEADERS, json=duplicate_embeddings
+        )
+        rerank_response = client.post(
+            "/model/rerank", headers=RERANK_HEADERS, json=invalid_rerank
+        )
+
+    assert embedding_response.status_code == 422
+    assert rerank_response.status_code == 422
+
+
+def test_unknown_retrieval_model_has_task_specific_error(tmp_path: Path) -> None:
+    app, _ = retrieval_app(tmp_path)
+    body = embedding_body()
+    body["model"] = "missing-embed-model"
+
+    with TestClient(app) as client:
+        response = client.post("/model/embeddings", headers=EMBED_HEADERS, json=body)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "MODEL_NOT_FOUND"

@@ -30,7 +30,7 @@ class FakeProvider(ProviderPackage):
 
     @property
     def models(self) -> frozenset[str]:
-        return frozenset({"fake/model"})
+        return frozenset({"fake-model"})
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
@@ -96,7 +96,7 @@ class BrokenStreamProvider(FakeProvider):
 
     @property
     def models(self) -> frozenset[str]:
-        return frozenset({"broken/model"})
+        return frozenset({"broken-model"})
 
     async def _stream(
         self, request: KemoRequest, context: RequestContext
@@ -106,12 +106,26 @@ class BrokenStreamProvider(FakeProvider):
         raise ValueError("sensitive vendor body must not escape")
 
 
+class SlashNamedProvider(FakeProvider):
+    @property
+    def models(self) -> frozenset[str]:
+        return frozenset({"fake/model"})
+
+
+class HyphenatedProvider(FakeProvider):
+    provider_id = "custom-provider"
+
+    @property
+    def models(self) -> frozenset[str]:
+        return frozenset({"custom-provider-upstream-model-v2"})
+
+
 def request(*, stream: bool, system_prompt: str = "system") -> KemoRequest:
     return KemoRequest(
         protocol_version="1.0",
         request_id="req_1",
         attempt=1,
-        model="fake/model",
+        model="fake-model",
         stream=stream,
         system_prompt=system_prompt,
         generation={},
@@ -128,6 +142,21 @@ def executor() -> GatewayExecutor:
     registry = ProviderRegistry()
     registry.register(FakeProvider())
     return GatewayExecutor(registry, InMemoryExecutionStore())
+
+
+def test_registry_uses_canonical_provider_prefix_without_parsing_hyphens() -> None:
+    registry = ProviderRegistry()
+    provider = HyphenatedProvider()
+    registry.register(provider)
+
+    assert registry.resolve("custom-provider-upstream-model-v2") is provider
+    with pytest.raises(LookupError, match="没有注册模型"):
+        registry.resolve("custom/provider-upstream-model-v2")
+
+
+def test_registry_rejects_deprecated_slash_model_names() -> None:
+    with pytest.raises(ValueError, match="fake-"):
+        ProviderRegistry().register(SlashNamedProvider())
 
 
 def test_non_stream_usage_is_preserved_without_gateway_reinterpretation() -> None:
@@ -201,7 +230,7 @@ def test_broken_adapter_becomes_sanitized_terminal_failure() -> None:
         registry = ProviderRegistry()
         registry.register(BrokenStreamProvider())
         gateway = GatewayExecutor(registry, InMemoryExecutionStore())
-        broken_request = request(stream=True).model_copy(update={"model": "broken/model"})
+        broken_request = request(stream=True).model_copy(update={"model": "broken-model"})
         context = gateway.make_context(tenant_id="t1", subject_id="u1", request_id="req_1")
         events = [event async for event in gateway.stream(broken_request, context)]
 
@@ -220,7 +249,7 @@ def test_stage_aggregation_uses_provider_totals_without_double_counting_reasonin
             StageUsage(
                 stage="main_inference",
                 provider="fake",
-                model="fake/model",
+                model="fake-model",
                 input_tokens=10,
                 output_tokens=8,
                 reasoning_tokens=6,
@@ -231,7 +260,7 @@ def test_stage_aggregation_uses_provider_totals_without_double_counting_reasonin
             StageUsage(
                 stage="audio_transcription",
                 provider="fake",
-                model="fake/asr",
+                model="fake-asr",
                 output_tokens=2,
                 total_tokens=2,
                 media={"input_audio_seconds": 3.5},

@@ -66,7 +66,7 @@ def test_empty_auth_environment_allows_direct_web_owner_but_not_public_api(
         assert console.json()["permissions"] == {"can_restart": True}
         assert client.get("/admin/api/system/restart").status_code == 200
         assert client.get(
-            "/model/capabilities", params={"model": "unknown/model"}
+            "/model/capabilities", params={"model": "unknown-model"}
         ).status_code == 401
 
 
@@ -170,7 +170,7 @@ def test_admin_can_reenable_gateway_after_public_api_is_disabled(tmp_path: Path)
 
         public = client.get(
             "/model/capabilities",
-            params={"model": "unknown/model"},
+            params={"model": "unknown-model"},
             headers=CALLER_HEADERS,
         )
         assert public.status_code == 503
@@ -187,7 +187,7 @@ def test_admin_can_reenable_gateway_after_public_api_is_disabled(tmp_path: Path)
         assert enabled.status_code == 200
         restored = client.get(
             "/model/capabilities",
-            params={"model": "unknown/model"},
+            params={"model": "unknown-model"},
             headers=CALLER_HEADERS,
         )
         assert restored.status_code == 404

@@ -73,13 +73,13 @@ def test_live_config_refreshes_only_supported_runtime_controls(tmp_path: Path) -
             {
                 "highest_priority_system_prompt": "policy-v2-longer",
                 "disabled_providers": [],
-                "disabled_models": ["fake/model"],
+                "disabled_models": ["fake-model"],
             },
         )
         second = await manager.refresh()
         assert second.revision != first.revision
         assert second.gateway_system_prompt == "policy-v2-longer"
-        assert second.disabled_models == frozenset({"fake/model"})
+        assert second.disabled_models == frozenset({"fake-model"})
 
         registry = ProviderRegistry()
         provider = ReloadableFakeProvider()
@@ -87,8 +87,8 @@ def test_live_config_refreshes_only_supported_runtime_controls(tmp_path: Path) -
         await registry.apply_live_config(second)
         assert provider.applied_settings[-1] == {"base_url": "v1", "api_key": "secret"}
         with pytest.raises(LookupError, match="模型已禁用"):
-            registry.resolve("fake/model")
-        assert registry.resolve_registered("fake/model") is provider
+            registry.resolve("fake-model")
+        assert registry.resolve_registered("fake-model") is provider
 
         gateway = GatewayExecutor(registry, InMemoryExecutionStore(), manager)
         context = gateway.make_context(
@@ -128,7 +128,7 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
     with TestClient(app) as client:
         first = client.get(
             "/model/capabilities",
-            params={"model": "unknown/model"},
+            params={"model": "unknown-model"},
             headers={"Authorization": "Bearer live-token"},
         )
         assert first.status_code == 404
@@ -147,12 +147,12 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
         )
         old_key = client.get(
             "/model/capabilities",
-            params={"model": "unknown/model"},
+            params={"model": "unknown-model"},
             headers={"Authorization": "Bearer live-token"},
         )
         new_key = client.get(
             "/model/capabilities",
-            params={"model": "unknown/model"},
+            params={"model": "unknown-model"},
             headers={"Authorization": "Bearer replacement-token-longer"},
         )
         assert old_key.status_code == 401
@@ -161,7 +161,7 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
         write_json(root / "api" / "runtime.json", {"gateway_api": {"enabled": False}})
         disabled = client.get(
             "/model/capabilities",
-            params={"model": "unknown/model"},
+            params={"model": "unknown-model"},
             headers={"Authorization": "Bearer replacement-token-longer"},
         )
         assert disabled.status_code == 503
