@@ -9,11 +9,12 @@
 | --- | --- | --- |
 | 创建新厂商 | `ADD_DIY/provider-package.md` | `providers/<provider_id>/` |
 | 修改厂商协议、模型或 Usage | `ADD_DIY/provider-package.md` | 对应 Provider 包 |
-| 热更新厂商 API 配置/密钥 | `ADD_DIY/keys-and-secrets.md` | Provider 的 config/secrets |
+| 热更新厂商 API 配置/密钥 | `ADD_DIY/keys-and-secrets.md`、`ADD_DIY/architecture.md` | Provider 的 config/secrets |
 | 热更新网关 API 配置/密钥 | `ADD_DIY/keys-and-secrets.md` | `api/runtime.json` / `api/keys.json` |
 | 热更新最高权限提示词、禁用模型/厂商 | `ADD_DIY/architecture.md` | `core/live_control.json` |
 | 修改环境变量 | `ADD_DIY/keys-and-secrets.md` | `.env`，必须重启 |
 | 修改公开 LLM/Embedding/Rerank API | `api.md`、`ADD_DIY/verification.md` | `api/`、`core/models.py` |
+| 接入智能体全局状态感知 | `api.md` | 只读 `GET /status` 与独立 `STATUS_TOKEN` |
 | 修改网关执行与恢复 | `ADD_DIY/architecture.md` | `core/` |
 | 修改管理网页 | `web/README.md` | `web/`，不得污染 `api.md` |
 | 平滑重启网关 | `ADD_DIY/architecture.md` | `restart.py` / Web owner API |
@@ -30,7 +31,7 @@
 5. 智能体不得通过正文 `metadata.user` 决定租户或资源授权，必须使用认证后的 Principal。
 6. `api.md` 只记录网关对外提供的 LLM/Embedding/Rerank/Asset API，不记录 Web 管理端内部接口。
 7. 修改协议、Provider 契约或公开 API 后必须同步测试、`api.md` 和 `version.json`。
-8. 只有厂商 API 配置、网关 API 配置、最高权限系统提示词、模型/厂商启停允许无需重启；
+8. 只有 `ADD_DIY/architecture.md` 热插拔清单中列出的配置变化允许无需重启；
    其他任何改动都必须重启。环境变量永远属于必须重启的启动配置。
 
 ## 标准完成条件

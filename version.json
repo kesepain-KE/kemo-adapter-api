@@ -1,6 +1,6 @@
 {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "protocol_version": "1.0",
   "build": null,
-  "notes": "新增面向 kemo-graph 的 Embedding 与 Rerank 统一协议"
+  "notes": "新增使用独立 STATUS_TOKEN 的智能体只读全局感知接口"
 }

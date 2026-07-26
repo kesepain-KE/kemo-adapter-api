@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/version-0.4.0-blue" alt="version"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/version-0.5.0-blue" alt="version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="license"></a>
 </p>
 
@@ -116,7 +116,7 @@ python setup.py --install-dependencies --init-env
 python start_web.py
 ```
 
-管理网页默认位于 `http://127.0.0.1:8741/admin`。
+管理网页默认位于 `http://127.0.0.1:7531/admin`。
 
 启动参数从 `.env` 读取 `HOST`、`PORT`、`LOG_LEVEL` 等环境变量，已有进程环境变量优先。上述变量只在启动时读取，修改后必须重启。
 
@@ -145,7 +145,7 @@ python ADD_DIY/import_provider.py
 
 ## 当前状态
 
-版本：`0.4.0`
+版本：`0.5.0`
 
 已搭建：
 
@@ -154,6 +154,7 @@ python ADD_DIY/import_provider.py
 - Embedding/Rerank 统一执行器（新增）
 - 内存幂等、查询、取消与恢复
 - 认证与作用域鉴权
+- 独立 `STATUS_TOKEN` 鉴权的智能体只读全局感知接口
 - 四类运行时控制配置的热刷新
 - Web 管理控制台与受保护管理 API
 - Provider 包创建模板（新增）

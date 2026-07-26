@@ -19,25 +19,44 @@ api ──► core.executor ──► core.ProviderPackage contract
 
 Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不得反向导入某个具体厂商。
 
-## 热更新边界
+## 热插拔清单（无需重启）
 
-只有以下四类运行时控制允许不重启：
+以下配置变化通过 `LiveConfigManager` 在每轮 HTTP 请求中自动检测文件指纹（mtime + size），
+即时生效，不中断在途请求。修改可通过编辑 JSON 文件或通过 Web 管理端 REST API 触发。
 
-| 内容 | 文件 | 生效范围 |
-| --- | --- | --- |
-| 网关 API 配置与调用密钥 | `api/runtime.json`、`api/keys.json` | 后续新请求 |
-| 厂商 API Endpoint、密钥、超时等 | `providers/<id>/config.json`、`secrets.json` | 后续新请求 |
-| 网关最高权限系统提示词 | `core/live_control.json` | 后续新请求 |
-| 禁用/启用 Provider 和模型 | `core/live_control.json` | 后续新请求 |
+| 能力 | 配置文件 | 代码验证位置 | 生效时机 | 修改方式 |
+|------|----------|-------------|----------|----------|
+| 对外 API 启停 | `api/runtime.json` → `gateway_api.enabled` | `middleware.py:_resolve_principal()` 检查，`service.py:update_gateway()` 写入 | 下一请求 | 编辑 JSON 或 `POST /admin/api/system/gateway` |
+| API 密钥增删改 | `api/keys.json` → `keys` 对象 | `live_config.py:_load()` 解析，`middleware.py` 逐 Token HMAC 匹配 | 下一请求 | 编辑 JSON 或 Secret Manager 原子替换 |
+| 禁用/启用 Provider | `core/live_control.json` → `disabled_providers` | `registry.py:resolve()` 检查黑名单 | 下一请求 | 编辑 JSON 或 `POST /admin/api/system/control` |
+| 禁用/启用模型 | `core/live_control.json` → `disabled_models` | `registry.py:resolve()` 检查黑名单 | 下一请求 | 同上 |
+| 最高权限系统提示词 | `core/live_control.json` → `highest_priority_system_prompt` | `executor.py:make_context()` 注入到 RequestContext | 下一请求 | 编辑 JSON 或 `POST /admin/api/system/control` |
+| 厂商 API 地址/密钥/超时 | `providers/<id>/config.json` + `secrets.json` | `live_config.py:_load()` 读取并深合并，`package.reload_config()` 原子替换 Client | 下一请求 | 编辑 JSON 或 `POST /admin/api/providers/{id}/config` |
 
-运行时配置按内容生成 revision。系统只接受完整有效的 UTF-8 JSON；写入损坏或 Schema 无效时
-拒绝该版本并继续使用最后一个有效快照。配置文件应使用“写临时文件后原子替换”的方式更新。
+### 热插拔实现细节
 
-Provider API 配置切换必须采用新 Client 接收新请求、旧 Client 排空在途请求的方式，不能在
-轮换 Key 或 Endpoint 时中断正在进行的流。
+- **运行时配置按 revision 控制**：文件指纹（mtime + size）跳过无变化重载。写入损坏或 Schema 无效时拒绝该版本并继续使用最后一个有效快照（`live_config.py:_load()` 异常保护）。
+- **配置文件应使用原子写入**：先写临时文件再 `os.replace()`，避免部分写入（`service.py:_atomic_json()`）。
+- **Provider API 配置热更新**必须采用新 Client 接收新请求、旧 Client 排空在途请求的方式（`deepseek/provider.py:reload_config()`），不能在轮换 Key 或 Endpoint 时中断进行中的流。
+- **内建对已创建执行的无损保护**：`registry.resolve_registered()` 绕过禁用检查，已在运行中的 LLM 响应和检索请求不受 `disabled_providers`/`disabled_models` 影响。正在使用旧 API Key 的 Provider 请求仍由旧 Client 完成。
 
-Provider 代码、协议、模型映射代码、Usage 算法、核心/API/Web 源码、依赖和环境变量等其他
-变更全部需要重启。新增 Provider 目录也需要重启后才会被发现。
+### 生效条件
+
+以上所有热插拔仅影响新请求。已创建的执行记录（包括运行中的 LLM 流、Embedding/Rerank 任务）继续使用变更前的配置直到完成。
+
+## ❌ 需要重启的变更
+
+| 类别 | 原因 | 代码位置 |
+|------|------|----------|
+| 新增 Provider 厂商包 | `providers/` 只在启动时 `pkgutil.iter_modules` 扫描一次 | `registry.py:discover()` |
+| 新增模型注册 | 模型在 `discover()` → `register()` 中注册，启动后不再调用 | `registry.py:register()` |
+| Provider Python 代码 | protocol/streaming/usage/errors/capabilities 等包内文件 | `providers/<id>/` |
+| 核心/API/Web 源码 | core/、api/、web/ 目录代码 | — |
+| 环境变量（.env） | `Settings.from_env()` 只启动时调用一次 | `config.py` |
+| 依赖 | `requirements.txt` 变更 | — |
+| 协议版本 | `X-Kemo-Protocol-Version` 硬校验为 `"1.0"` | `routes/responses.py`、`routes/retrieval.py` |
+
+**环境变量永远属于必须重启的启动配置**，不得把环境变量误报为已热加载。
 
 ## Usage 边界
 

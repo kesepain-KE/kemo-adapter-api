@@ -25,6 +25,42 @@ Token 解析得到可信的 tenant、subject 和 scopes；正文中的 `metadata
 不重启的情况下更新，并从后续新请求开始生效。所有环境变量、源代码、协议、依赖和其他配置
 修改都必须重启。运行时控制文件不是对外 HTTP API，不向调用方暴露。
 
+## 智能体全局感知接口
+
+`GET /status` 为 kemo-agent 等外部智能体提供只读网关状态快照。它使用独立的
+`STATUS_TOKEN`，不得使用模型调用密钥或 Web 管理凭据：
+
+```http
+GET /status?date=2026-07-27&ranking_limit=100&log_limit=50
+Authorization: Bearer <STATUS_TOKEN>
+```
+
+`STATUS_TOKEN` 为空时接口返回 `503`；与 `WEB_TOKEN`、启动模型密钥或热加载模型密钥重复时
+同样拒绝启用。环境变量只在启动时读取，修改后必须重启。
+
+查询参数：
+
+| 参数 | 默认值 | 范围 | 说明 |
+| --- | --- | --- | --- |
+| `date` | 统计时区的当天 | ISO `YYYY-MM-DD` | Token、调用次数和排行所属日期 |
+| `ranking_limit` | `100` | `1..100` | Provider、模型、网关密钥 ID 排行数量 |
+| `log_limit` | `50` | `1..100` | 最近、成功和失败日志各自的最大数量 |
+
+响应 `object` 固定为 `kemo.gateway_status`，包含：
+
+- `runtime`：实例阶段、启动时间和活动执行数；
+- `version`：本地/远程版本、协议版本和是否需要更新，远程结果最多缓存 5 分钟；
+- `registry.providers`、`registered_provider_ids`、`enabled_models`：已注册厂商和实际启用模型；
+- `control.highest_priority_system_prompt`、禁用厂商和禁用模型；
+- `statistics.summary`、`token_cache_rate`，以及按 Provider、模型、网关密钥 ID 聚合的调用次数、
+  成功/失败次数、Token 用量、覆盖率、缓存命中率和平均延迟；
+- `logs.recent`、`successful`、`failed`、`last_invocation`：跨日最近调用的脱敏运行日志。
+
+日志仅包含时间、任务、Provider ID、模型、网关密钥 ID、状态、统一错误代码、延迟和规范化
+Token。接口禁止返回网关密钥原文、Provider 密钥、请求头密钥、租户、请求正文、请求 ID、
+响应 ID、Provider 原始响应或堆栈。响应固定携带 `Cache-Control: no-store`。该路由只支持 GET，
+不存在任何写操作。
+
 ## 公开模型命名
 
 所有 LLM、Embedding 和 Rerank 模型统一使用 `<provider_id>-<provider内部模型名>`：例如

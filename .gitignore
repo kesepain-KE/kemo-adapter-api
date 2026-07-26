@@ -12,6 +12,9 @@ providers/
 # 编辑自动备份
 *.bak
 
+# 更新冷备份
+.backup/
+
 # 前端构建产物（克隆后自行构建）
 web/frontend/node_modules/
 web/frontend/dist/
@@ -27,3 +30,4 @@ htmlcov/
 *.log
 *.pid
 core/runtime/
+storage/daily/
