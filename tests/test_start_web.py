@@ -80,6 +80,7 @@ def test_start_web_loads_project_env_and_process_values_take_priority(
 
     monkeypatch.setattr(start_web.uvicorn, "Config", FakeConfig)
     monkeypatch.setattr(start_web.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(start_web, "_startup_conflict", lambda *args, **kwargs: None)
     monkeypatch.setattr(start_web, "write_pid_metadata", lambda *args, **kwargs: None)
     monkeypatch.setattr(start_web, "clear_pid_metadata", lambda *args, **kwargs: None)
 
@@ -138,6 +139,26 @@ def test_start_web_requires_built_frontend(tmp_path: Path, monkeypatch, capsys) 
 
     assert start_web.main() == 2
     assert "pnpm run build" in capsys.readouterr().err
+
+
+def test_start_web_refuses_a_second_active_instance(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    clear_startup_env(monkeypatch)
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("ok", encoding="utf-8")
+    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setattr(start_web, "FRONTEND_DIST", dist)
+    monkeypatch.setattr(start_web, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        start_web,
+        "_startup_conflict",
+        lambda *args, **kwargs: "active_instance",
+    )
+
+    assert start_web.main() == 4
+    assert "已有网关实例" in capsys.readouterr().err
 
 
 def test_browser_url_uses_loopback_for_wildcard_bindings() -> None:
