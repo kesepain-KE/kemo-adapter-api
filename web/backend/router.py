@@ -1,21 +1,52 @@
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
+from datetime import datetime
+import hmac
+import json
+import time
+from zoneinfo import ZoneInfo
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from api.middleware import Principal, control_plane_auth_required, control_plane_principal
+from core.config import safe_key_id
+from core.models import EmbeddingRequest, KemoRequest, RerankRequest
+from core.retrieval_executor import ModelOperationFailure
+from core.runtime_state import GatewayDrainingError
 from web.backend.schemas import (
     GatewayRuntimeUpdate,
     LiveControlUpdate,
     ProviderApiUpdate,
     RestartRequestBody,
+    WebPasswordAuth,
+    WebTokenAuth,
 )
 from web.backend.restart_service import RestartAlreadyRunning
 from web.backend.service import RevisionConflict, RuntimeConfigWriter
 
 
 router = APIRouter(prefix="/admin/api", tags=["admin-internal"])
+
+
+def _password_auth_state(request: Request) -> tuple[bool, bool]:
+    settings = request.app.state.settings
+    username = bool(settings.web_username.strip())
+    password = bool(settings.web_password.strip())
+    return username or password, username == password
+
+
+def _no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:].strip()
+    return token or None
 
 
 def require_admin(principal: Principal = Depends(control_plane_principal)) -> Principal:
@@ -32,6 +63,94 @@ def require_owner(principal: Principal = Depends(control_plane_principal)) -> Pr
 
 def writer(request: Request) -> RuntimeConfigWriter:
     return request.app.state.runtime_config_writer
+
+
+def statistics_day(request: Request, value: str | None) -> str:
+    if value:
+        return value
+    store = request.app.state.statistics
+    return datetime.now(ZoneInfo(store.timezone_name)).date().isoformat()
+
+
+def invalid_statistics_query(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/auth/methods")
+async def web_auth_methods(request: Request, response: Response) -> dict[str, object]:
+    _no_store(response)
+    password_required, password_valid = _password_auth_state(request)
+    return {
+        "token_required": bool(request.app.state.settings.web_token.strip()),
+        "password_required": password_required,
+        "configuration_valid": password_valid,
+        "session_ttl_seconds": request.app.state.web_auth.ttl_seconds,
+    }
+
+
+@router.post("/auth/token")
+async def authenticate_web_token(
+    body: WebTokenAuth,
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    _no_store(response)
+    configured = request.app.state.settings.web_token.strip()
+    if not configured:
+        raise HTTPException(status_code=404, detail="Web Token 鉴权未启用")
+    if not hmac.compare_digest(body.token, configured):
+        raise HTTPException(status_code=401, detail="Web Token 无效")
+    password_required, password_valid = _password_auth_state(request)
+    if not password_valid:
+        raise HTTPException(status_code=503, detail="WEB_USERNAME 与 WEB_PASSWORD 必须同时配置")
+    session = request.app.state.web_auth.issue(
+        stage="password" if password_required else "complete"
+    )
+    return {
+        "session_token": session.token,
+        "expires_at": session.expires_at,
+        "expires_in": request.app.state.web_auth.ttl_seconds,
+        "next_step": "password" if password_required else "complete",
+    }
+
+
+@router.post("/auth/password")
+async def authenticate_web_password(
+    body: WebPasswordAuth,
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    _no_store(response)
+    settings = request.app.state.settings
+    password_required, password_valid = _password_auth_state(request)
+    if not password_valid:
+        raise HTTPException(status_code=503, detail="WEB_USERNAME 与 WEB_PASSWORD 必须同时配置")
+    if not password_required:
+        raise HTTPException(status_code=404, detail="用户名和密码鉴权未启用")
+
+    token_required = bool(settings.web_token.strip())
+    preauth_token = _bearer_token(authorization)
+    if token_required and (
+        preauth_token is None
+        or request.app.state.web_auth.resolve(preauth_token, stage="password") is None
+    ):
+        raise HTTPException(status_code=401, detail="请先完成 Web Token 鉴权")
+
+    username_ok = hmac.compare_digest(body.username, settings.web_username)
+    password_ok = hmac.compare_digest(body.password, settings.web_password)
+    if not (username_ok and password_ok):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    session = request.app.state.web_auth.issue(stage="complete")
+    if preauth_token is not None:
+        request.app.state.web_auth.revoke(preauth_token)
+    return {
+        "session_token": session.token,
+        "expires_at": session.expires_at,
+        "expires_in": request.app.state.web_auth.ttl_seconds,
+        "next_step": "complete",
+    }
 
 
 async def refresh_after_write(request: Request):
@@ -63,6 +182,266 @@ async def console_data(
     }
 
 
+@router.get("/keys")
+async def gateway_api_keys(
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+) -> dict[str, object]:
+    """Return configured gateway keys and their real all-time usage to owners."""
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+
+    metadata: dict[str, dict[str, object]] = {}
+    keys_path = request.app.state.runtime_config_writer.project_root / "api" / "keys.json"
+    try:
+        parsed = json.loads(keys_path.read_text(encoding="utf-8"))
+        raw_keys = parsed.get("keys", {}) if isinstance(parsed, dict) else {}
+        if isinstance(raw_keys, dict):
+            metadata = {
+                token: value
+                for token, value in raw_keys.items()
+                if isinstance(token, str) and isinstance(value, dict)
+            }
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        # The live snapshot remains authoritative when an invalid edit was rejected.
+        metadata = {}
+
+    configured: dict[str, dict[str, object]] = {}
+    for token, config in request.app.state.settings.api_keys.items():
+        stable_id = safe_key_id(token, config.key_id)
+        configured[token] = {
+            "id": stable_id,
+            "name": config.subject_id.strip() or stable_id,
+            "token": token,
+            "source": "environment",
+            "created_at": None,
+        }
+    for token, config in request.app.state.live_config.current.api_keys.items():
+        raw = metadata.get(token, {})
+        created_at = raw.get("created_at")
+        configured_name = raw.get("key_id")
+        stable_id = safe_key_id(token, config.key_id)
+        configured[token] = {
+            "id": stable_id,
+            "name": (
+                configured_name.strip()
+                if isinstance(configured_name, str) and configured_name.strip()
+                else config.subject_id.strip() or stable_id
+            ),
+            "token": token,
+            "source": "runtime",
+            "created_at": created_at if isinstance(created_at, str) and created_at.strip() else None,
+        }
+
+    usage = await request.app.state.statistics.gateway_key_usage()
+    items: list[dict[str, object]] = []
+    for item in configured.values():
+        key_usage = usage.get(str(item["id"]), {})
+        items.append(
+            {
+                **item,
+                "usage": {
+                    "calls": int(key_usage.get("calls", 0)),
+                    "successes": int(key_usage.get("successes", 0)),
+                    "total_tokens": key_usage.get("total_tokens"),
+                },
+                "last_used_at": key_usage.get("last_used_at"),
+            }
+        )
+    items.sort(key=lambda item: str(item["name"]).lower())
+    return {"items": items}
+
+
+@router.get("/statistics/daily")
+async def daily_statistics(
+    request: Request,
+    day: str | None = Query(default=None, alias="date"),
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    try:
+        return await request.app.state.statistics.daily(statistics_day(request, day))
+    except ValueError as exc:
+        raise invalid_statistics_query(exc) from exc
+
+
+@router.get("/statistics/hourly")
+async def hourly_statistics(
+    request: Request,
+    day: str | None = Query(default=None, alias="date"),
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    try:
+        return await request.app.state.statistics.hourly(statistics_day(request, day))
+    except ValueError as exc:
+        raise invalid_statistics_query(exc) from exc
+
+
+@router.get("/statistics/rankings")
+async def statistics_rankings(
+    request: Request,
+    dimension: str = Query(pattern="^(provider|model|gateway_key)$"),
+    day: str | None = Query(default=None, alias="date"),
+    limit: int = Query(default=20, ge=1, le=100),
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    try:
+        return await request.app.state.statistics.rankings(
+            statistics_day(request, day), dimension, limit=limit
+        )
+    except ValueError as exc:
+        raise invalid_statistics_query(exc) from exc
+
+
+@router.get("/statistics/series")
+async def statistics_series(
+    request: Request,
+    start: str = Query(alias="from"),
+    end: str = Query(alias="to"),
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    try:
+        return await request.app.state.statistics.series(start, end)
+    except ValueError as exc:
+        raise invalid_statistics_query(exc) from exc
+
+
+@router.get("/providers/{provider_id}/capabilities")
+async def provider_capabilities(
+    provider_id: str,
+    request: Request,
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    package = request.app.state.registry.providers.get(provider_id)
+    if package is None:
+        raise HTTPException(status_code=404, detail=f"Provider 不存在: {provider_id}")
+    models: list[dict[str, object]] = []
+    errors: list[dict[str, str]] = []
+    for model in sorted(package.models):
+        try:
+            declaration = await package.capabilities(model)
+            models.append(declaration.model_dump(mode="json"))
+        except Exception as exc:
+            errors.append({"model": model, "error": type(exc).__name__})
+    return {
+        "provider_id": provider_id,
+        "models": models,
+        "errors": errors,
+    }
+
+
+@router.post("/models/{model}/probe")
+async def probe_model(
+    model: str,
+    request: Request,
+    principal: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    try:
+        package = request.app.state.registry.resolve(model)
+        declaration = await package.capabilities(model)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=f"模型不存在或当前已禁用: {model}") from exc
+
+    request_id = f"probe_{uuid4().hex}"
+    started_ns = time.perf_counter_ns()
+    reachable = False
+    result_status = "failed"
+    error_code: str | None = None
+    try:
+        if declaration.task == "llm":
+            context = request.app.state.executor.make_context(
+                tenant_id=principal.tenant_id,
+                subject_id=principal.subject_id,
+                request_id=request_id,
+                gateway_key_id=principal.key_id,
+            )
+            result = await request.app.state.executor.execute(
+                KemoRequest(
+                    protocol_version="1.0",
+                    request_id=request_id,
+                    attempt=1,
+                    model=model,
+                    stream=False,
+                    system_prompt="",
+                    generation={"max_output_tokens": 1},
+                    output={"modalities": ["text"]},
+                    tools=[],
+                    input=[
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "text", "text": "ping"}],
+                        }
+                    ],
+                    provider_options={},
+                    metadata={"purpose": "admin_reachability_probe"},
+                    extensions={},
+                ),
+                context,
+            )
+            result_status = result.status
+            reachable = result.status not in {"failed", "cancelled"}
+            error_code = result.error.code if result.error else None
+        elif declaration.task == "embedding":
+            assert declaration.embedding is not None
+            context = request.app.state.retrieval_executor.make_context(
+                tenant_id=principal.tenant_id,
+                subject_id=principal.subject_id,
+                request_id=request_id,
+                gateway_key_id=principal.key_id,
+            )
+            await request.app.state.retrieval_executor.embeddings(
+                EmbeddingRequest(
+                    protocol_version="1.0",
+                    request_id=request_id,
+                    model=model,
+                    input_type=declaration.embedding.input_types[0],
+                    inputs=[{"id": "probe", "text": "ping"}],
+                    metadata={"purpose": "admin_reachability_probe"},
+                ),
+                context,
+            )
+            result_status = "completed"
+            reachable = True
+        else:
+            context = request.app.state.retrieval_executor.make_context(
+                tenant_id=principal.tenant_id,
+                subject_id=principal.subject_id,
+                request_id=request_id,
+                gateway_key_id=principal.key_id,
+            )
+            await request.app.state.retrieval_executor.rerank(
+                RerankRequest(
+                    protocol_version="1.0",
+                    request_id=request_id,
+                    model=model,
+                    query="ping",
+                    documents=[{"id": "probe", "text": "ping"}],
+                    top_n=1,
+                    metadata={"purpose": "admin_reachability_probe"},
+                ),
+                context,
+            )
+            result_status = "completed"
+            reachable = True
+    except ModelOperationFailure as exc:
+        error_code = exc.error.code
+    except GatewayDrainingError:
+        error_code = "GATEWAY_DRAINING"
+    except Exception:
+        error_code = "PROBE_FAILED"
+
+    return {
+        "model": model,
+        "task": declaration.task,
+        "reachable": reachable,
+        "status": result_status,
+        "latency_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 2),
+        "error_code": error_code,
+        "tested_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+    }
+
+
 @router.get("/system/restart")
 async def restart_status(
     request: Request, _: Principal = Depends(require_owner)
@@ -71,6 +450,20 @@ async def restart_status(
         "gateway": request.app.state.runtime_state.snapshot(),
         "restart": request.app.state.restart_service.status(),
     }
+
+
+@router.get("/system/restart-required")
+async def restart_required(
+    request: Request, _: Principal = Depends(require_admin)
+) -> dict[str, object]:
+    return await asyncio.to_thread(request.app.state.system_inspector.restart_required)
+
+
+@router.get("/system/version-check")
+async def version_check(
+    request: Request, _: Principal = Depends(require_admin)
+) -> dict[str, object]:
+    return await asyncio.to_thread(request.app.state.system_inspector.version_check)
 
 
 @router.post("/system/restart", status_code=status.HTTP_202_ACCEPTED)

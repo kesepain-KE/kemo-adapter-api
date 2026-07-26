@@ -9,6 +9,15 @@ class AdminModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WebTokenAuth(AdminModel):
+    token: str = Field(min_length=1, max_length=4096)
+
+
+class WebPasswordAuth(AdminModel):
+    username: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=1, max_length=4096)
+
+
 class GatewayRuntimeUpdate(AdminModel):
     expected_revision: str
     enabled: bool
