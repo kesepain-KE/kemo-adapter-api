@@ -34,12 +34,16 @@ async def control_plane_principal(
 
 
 def control_plane_auth_required(request: Request) -> bool:
-    """任一 Token 或 Web 用户认证字段有值时，管理面必须显式认证。"""
+    """存在管理 Token 或 Web 用户认证字段时，管理面必须显式认证。"""
     settings = request.app.state.settings
     snapshot = request.app.state.live_config.current
+    principals = (*settings.api_keys.values(), *snapshot.api_keys.values())
+    has_management_token = any(
+        "admin:web" in principal.scopes or "owner" in principal.scopes
+        for principal in principals
+    )
     return bool(
-        settings.api_keys
-        or snapshot.api_keys
+        has_management_token
         or settings.web_username.strip()
         or settings.web_password.strip()
     )
