@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 
 import start_web
@@ -12,6 +13,10 @@ STARTUP_ENV_NAMES = (
     "LOG_LEVEL",
     "WEB_ACCESS_LOG",
     "WEB_OPEN_BROWSER",
+    "WEB_TOKEN",
+    "WEB_USERNAME",
+    "WEB_PASSWORD",
+    "STATUS_TOKEN",
     "GATEWAY_API_KEYS_JSON",
     "GATEWAY_API_KEY",
     "PROVIDER_SETTINGS_JSON",
@@ -111,6 +116,20 @@ def test_start_web_rejects_invalid_environment_without_echoing_value(
     assert called is False
 
 
+def test_start_web_rejects_reused_status_token(monkeypatch) -> None:
+    clear_startup_env(monkeypatch)
+    monkeypatch.setenv("STATUS_TOKEN", "same-secret")
+    monkeypatch.setenv("WEB_TOKEN", "same-secret")
+
+    try:
+        start_web._startup_options()
+    except ValueError as exc:
+        assert "STATUS_TOKEN" in str(exc)
+        assert "same-secret" not in str(exc)
+    else:
+        raise AssertionError("reused STATUS_TOKEN must be rejected")
+
+
 def test_start_web_requires_built_frontend(tmp_path: Path, monkeypatch, capsys) -> None:
     clear_startup_env(monkeypatch)
     monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.env")
@@ -122,5 +141,20 @@ def test_start_web_requires_built_frontend(tmp_path: Path, monkeypatch, capsys) 
 
 
 def test_browser_url_uses_loopback_for_wildcard_bindings() -> None:
-    assert start_web._browser_url("0.0.0.0", 8741) == "http://127.0.0.1:8741/admin"
-    assert start_web._browser_url("::", 8741) == "http://127.0.0.1:8741/admin"
+    assert start_web._browser_url("0.0.0.0", 7531) == "http://127.0.0.1:7531"
+    assert start_web._browser_url("::", 7531) == "http://127.0.0.1:7531"
+
+
+def test_access_log_filter_redacts_url_token() -> None:
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1", "GET", "/?token=must-not-leak&next=1", "1.1", 307),
+        None,
+    )
+    assert start_web._RedactTokenQueryFilter().filter(record) is True
+    assert "must-not-leak" not in record.getMessage()
+    assert "token=<redacted>" in record.getMessage()
