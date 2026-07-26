@@ -21,6 +21,7 @@ from core.provider_contract import (
 from core.registry import ProviderRegistry
 from core.runtime_state import ExecutionLease, GatewayRuntimeState
 from core.stores import ExecutionRecord, ExecutionStore, InternalStatus
+from storage.statistics import InvocationHandle, StatisticsStore
 
 
 def canonical_request_hash(request: KemoRequest) -> str:
@@ -40,11 +41,13 @@ class GatewayExecutor:
         store: ExecutionStore,
         live_config: LiveConfigManager | None = None,
         runtime_state: GatewayRuntimeState | None = None,
+        statistics: StatisticsStore | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.live_config = live_config
         self.runtime_state = runtime_state
+        self.statistics = statistics
 
     async def prepare(self, request: KemoRequest, context: RequestContext) -> tuple[ExecutionRecord, bool]:
         package = self.registry.resolve(request.model)
@@ -65,7 +68,14 @@ class GatewayExecutor:
         )
         return await self.store.create_or_get(record)
 
-    def make_context(self, *, tenant_id: str, subject_id: str, request_id: str) -> RequestContext:
+    def make_context(
+        self,
+        *,
+        tenant_id: str,
+        subject_id: str,
+        request_id: str,
+        gateway_key_id: str | None = None,
+    ) -> RequestContext:
         snapshot = self.live_config.current if self.live_config is not None else None
         return RequestContext(
             tenant_id=tenant_id,
@@ -75,7 +85,34 @@ class GatewayExecutor:
             trace_id=f"trace_{uuid4().hex}",
             gateway_system_prompt=snapshot.gateway_system_prompt if snapshot else "",
             live_config_revision=snapshot.revision if snapshot else "empty",
+            gateway_key_id=gateway_key_id,
         )
+
+    async def _begin_statistics(
+        self, request: KemoRequest, context: RequestContext, record: ExecutionRecord
+    ) -> InvocationHandle | None:
+        if self.statistics is None:
+            return None
+        return await self.statistics.begin_invocation(
+            task="llm",
+            provider_id=record.provider_id,
+            model=request.model,
+            tenant_id=context.tenant_id,
+            gateway_key_id=context.gateway_key_id,
+            request_id=request.request_id,
+            response_id=record.response_id,
+        )
+
+    async def _record_replay(
+        self, request: KemoRequest, context: RequestContext, record: ExecutionRecord
+    ) -> None:
+        if self.statistics is not None:
+            await self.statistics.record_replay(
+                task="llm",
+                provider_id=record.provider_id,
+                model=request.model,
+                gateway_key_id=context.gateway_key_id,
+            )
 
     def _response_from_result(
         self, request: KemoRequest, record: ExecutionRecord, result: ProviderResult
@@ -107,6 +144,7 @@ class GatewayExecutor:
         try:
             record, created = await self.prepare(request, context)
             if not created:
+                await self._record_replay(request, context, record)
                 if record.response is not None:
                     return record.response
                 return await self.store.wait_terminal(record)
@@ -114,6 +152,7 @@ class GatewayExecutor:
             package = self.registry.resolve_registered(request.model)
             record.status = InternalStatus.RUNNING
             await self.store.save(record)
+            statistics_handle = await self._begin_statistics(request, context, record)
             try:
                 result = await package.execute(request, context)
             except ProviderException as exc:
@@ -134,6 +173,14 @@ class GatewayExecutor:
             record.response = response
             record.provider_response_id = response.provider_response_id
             await self.store.save(record)
+            if self.statistics is not None:
+                await self.statistics.finish_invocation(
+                    statistics_handle,
+                    status=response.status,
+                    usage=response.usage,
+                    error_code=response.error.code if response.error else None,
+                    provider_response_id=response.provider_response_id,
+                )
             return response
         finally:
             if lease is not None:
@@ -159,12 +206,17 @@ class GatewayExecutor:
                     request_id=request.request_id, response_id=record.response_id
                 )
                 await self.store.append_event(record, created_event)
+                statistics_handle = await self._begin_statistics(request, context, record)
                 record.producer_task = asyncio.create_task(
-                    self._produce_stream(request, context, record, lease),
+                    self._produce_stream(
+                        request, context, record, lease, statistics_handle
+                    ),
                     name=f"provider-stream:{record.response_id}",
                 )
                 lease_owned_by_producer = lease is not None
                 await self.store.save(record)
+            else:
+                await self._record_replay(request, context, record)
 
             after_sequence = -1
             if last_event_id is not None:
@@ -184,10 +236,24 @@ class GatewayExecutor:
         context: RequestContext,
         record: ExecutionRecord,
         execution_lease: ExecutionLease | None = None,
+        statistics_handle: InvocationHandle | None = None,
     ) -> None:
         try:
             await self._produce_stream_inner(request, context, record)
         finally:
+            if self.statistics is not None:
+                response = record.response
+                await self.statistics.finish_invocation(
+                    statistics_handle,
+                    status=response.status if response is not None else "incomplete",
+                    usage=response.usage if response is not None else None,
+                    error_code=(
+                        response.error.code
+                        if response is not None and response.error is not None
+                        else "STREAM_TERMINATED" if response is None else None
+                    ),
+                    provider_response_id=record.provider_response_id,
+                )
             if execution_lease is not None:
                 await execution_lease.release()
 
@@ -334,6 +400,7 @@ class GatewayExecutor:
             live_config_revision=(
                 self.live_config.current.revision if self.live_config else "empty"
             ),
+            gateway_key_id=None,
         )
         await package.cancel(record.provider_response_id, context)
         response = KemoResponse(

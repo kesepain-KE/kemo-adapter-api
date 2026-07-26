@@ -31,6 +31,7 @@ class RequestContext:
     trace_id: str
     gateway_system_prompt: str = ""
     live_config_revision: str = "empty"
+    gateway_key_id: str | None = None
 
 
 class ProviderEventKind(StrEnum):

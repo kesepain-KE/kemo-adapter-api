@@ -32,6 +32,7 @@ from core.provider_contract import (
 from core.registry import ProviderRegistry
 from core.runtime_state import GatewayRuntimeState
 from core.stores import IdempotencyConflict
+from storage.statistics import StatisticsStore
 
 
 T = TypeVar("T")
@@ -71,14 +72,23 @@ class RetrievalExecutor:
         registry: ProviderRegistry,
         live_config: LiveConfigManager | None = None,
         runtime_state: GatewayRuntimeState | None = None,
+        statistics: StatisticsStore | None = None,
     ) -> None:
         self.registry = registry
         self.live_config = live_config
         self.runtime_state = runtime_state
+        self.statistics = statistics
         self._records: dict[tuple[str, str, str], _OperationRecord] = {}
         self._records_lock = asyncio.Lock()
 
-    def make_context(self, *, tenant_id: str, subject_id: str, request_id: str) -> RequestContext:
+    def make_context(
+        self,
+        *,
+        tenant_id: str,
+        subject_id: str,
+        request_id: str,
+        gateway_key_id: str | None = None,
+    ) -> RequestContext:
         snapshot = self.live_config.current if self.live_config is not None else None
         return RequestContext(
             tenant_id=tenant_id,
@@ -88,6 +98,7 @@ class RetrievalExecutor:
             trace_id=f"trace_{uuid4().hex}",
             gateway_system_prompt="",
             live_config_revision=snapshot.revision if snapshot else "empty",
+            gateway_key_id=gateway_key_id,
         )
 
     async def _idempotent(
@@ -97,6 +108,9 @@ class RetrievalExecutor:
         request_id: str,
         request: BaseModel,
         producer: Callable[[], Awaitable[T]],
+        provider_id: str,
+        model: str,
+        gateway_key_id: str | None,
     ) -> T:
         key = (operation, tenant_id, request_id)
         digest = _request_hash(request)
@@ -106,10 +120,19 @@ class RetrievalExecutor:
                 if record.request_hash != digest:
                     raise IdempotencyConflict("相同 request_id 对应不同请求正文")
                 task = record.task
+                replay = True
             else:
                 task = asyncio.create_task(producer(), name=f"{operation}:{request_id}")
                 record = _OperationRecord(request_hash=digest, task=task)
                 self._records[key] = record
+                replay = False
+        if replay and self.statistics is not None:
+            await self.statistics.record_replay(
+                task=operation,
+                provider_id=provider_id,
+                model=model,
+                gateway_key_id=gateway_key_id,
+            )
         try:
             return await asyncio.shield(task)
         except Exception:
@@ -121,23 +144,31 @@ class RetrievalExecutor:
     async def embeddings(
         self, request: EmbeddingRequest, context: RequestContext
     ) -> EmbeddingResponse:
+        package = self.registry.resolve(request.model)
         return await self._idempotent(
             "embedding",
             context.tenant_id,
             request.request_id,
             request,
             lambda: self._embed_once(request, context),
+            package.provider_id,
+            request.model,
+            context.gateway_key_id,
         )
 
     async def rerank(
         self, request: RerankRequest, context: RequestContext
     ) -> RerankResponse:
+        package = self.registry.resolve(request.model)
         return await self._idempotent(
             "rerank",
             context.tenant_id,
             request.request_id,
             request,
             lambda: self._rerank_once(request, context),
+            package.provider_id,
+            request.model,
+            context.gateway_key_id,
         )
 
     async def _embed_once(
@@ -168,13 +199,56 @@ class RetrievalExecutor:
         if request.normalize is False and normalization == "always":
             self._invalid_request(request.request_id, "模型只返回归一化向量")
 
-        result = await self._call_provider_embedding(package, request, context)
+        statistics_handle = (
+            await self.statistics.begin_invocation(
+                task="embedding",
+                provider_id=package.provider_id,
+                model=request.model,
+                tenant_id=context.tenant_id,
+                gateway_key_id=context.gateway_key_id,
+                request_id=request.request_id,
+                response_id=context.response_id,
+            )
+            if self.statistics is not None
+            else None
+        )
+        result: ProviderEmbeddingResult | None = None
         try:
-            return self._build_embedding_response(request, result, expected_dimensions)
-        except ModelOperationFailure:
+            result = await self._call_provider_embedding(package, request, context)
+            response = self._build_embedding_response(request, result, expected_dimensions)
+        except ModelOperationFailure as exc:
+            if self.statistics is not None:
+                await self.statistics.finish_invocation(
+                    statistics_handle,
+                    status="failed",
+                    usage=result.usage if result is not None else None,
+                    error_code=exc.error.code,
+                    provider_response_id=(
+                        result.provider_response_id if result is not None else None
+                    ),
+                )
             raise
         except Exception as exc:
-            raise self._provider_contract_failure(request.request_id, exc) from exc
+            failure = self._provider_contract_failure(request.request_id, exc)
+            if self.statistics is not None:
+                await self.statistics.finish_invocation(
+                    statistics_handle,
+                    status="failed",
+                    usage=result.usage if result is not None else None,
+                    error_code=failure.error.code,
+                    provider_response_id=(
+                        result.provider_response_id if result is not None else None
+                    ),
+                )
+            raise failure from exc
+        if self.statistics is not None:
+            await self.statistics.finish_invocation(
+                statistics_handle,
+                status="completed",
+                usage=response.usage,
+                provider_response_id=response.provider_response_id,
+            )
+        return response
 
     async def _rerank_once(
         self, request: RerankRequest, context: RequestContext
@@ -192,13 +266,56 @@ class RetrievalExecutor:
         if request.return_documents and not rerank_capabilities.supports_return_documents:
             self._invalid_request(request.request_id, "模型不支持 return_documents")
 
-        result = await self._call_provider_rerank(package, request, context)
+        statistics_handle = (
+            await self.statistics.begin_invocation(
+                task="rerank",
+                provider_id=package.provider_id,
+                model=request.model,
+                tenant_id=context.tenant_id,
+                gateway_key_id=context.gateway_key_id,
+                request_id=request.request_id,
+                response_id=context.response_id,
+            )
+            if self.statistics is not None
+            else None
+        )
+        result: ProviderRerankResult | None = None
         try:
-            return self._build_rerank_response(request, result)
-        except ModelOperationFailure:
+            result = await self._call_provider_rerank(package, request, context)
+            response = self._build_rerank_response(request, result)
+        except ModelOperationFailure as exc:
+            if self.statistics is not None:
+                await self.statistics.finish_invocation(
+                    statistics_handle,
+                    status="failed",
+                    usage=result.usage if result is not None else None,
+                    error_code=exc.error.code,
+                    provider_response_id=(
+                        result.provider_response_id if result is not None else None
+                    ),
+                )
             raise
         except Exception as exc:
-            raise self._provider_contract_failure(request.request_id, exc) from exc
+            failure = self._provider_contract_failure(request.request_id, exc)
+            if self.statistics is not None:
+                await self.statistics.finish_invocation(
+                    statistics_handle,
+                    status="failed",
+                    usage=result.usage if result is not None else None,
+                    error_code=failure.error.code,
+                    provider_response_id=(
+                        result.provider_response_id if result is not None else None
+                    ),
+                )
+            raise failure from exc
+        if self.statistics is not None:
+            await self.statistics.finish_invocation(
+                statistics_handle,
+                status="completed",
+                usage=response.usage,
+                provider_response_id=response.provider_response_id,
+            )
+        return response
 
     async def _call_provider_embedding(
         self, package: Any, request: EmbeddingRequest, context: RequestContext
