@@ -23,14 +23,14 @@ interface AdminSessionValue {
   booting: boolean
   data: AdminConsoleData | null
   error: string
-  connect: (token: string) => Promise<boolean>
+  connect: (token: string, allowEmpty?: boolean) => Promise<boolean>
 }
 
 const AdminContext = createContext<AdminContextValue | null>(null)
 const AdminSessionContext = createContext<AdminSessionValue | null>(null)
 
 export function AdminProvider({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? '')
+  const [token, setToken] = useState(() => new URLSearchParams(window.location.search).has('token') ? '' : (sessionStorage.getItem(TOKEN_KEY) ?? ''))
   const [data, setData] = useState<AdminConsoleData | null>(null)
   const [restart, setRestart] = useState<RestartStatus | null>(null)
   const [isOwner, setIsOwner] = useState(false)
