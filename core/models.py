@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -74,14 +74,143 @@ class ToolCapabilities(StrictModel):
     multimodal_results: bool = False
 
 
+class EmbeddingCapabilities(StrictModel):
+    input_types: list[Literal["query", "document"]]
+    default_dimensions: int = Field(gt=0)
+    supported_dimensions: list[int] = Field(default_factory=list)
+    max_batch_size: int = Field(gt=0)
+    max_input_tokens_per_item: int | None = Field(default=None, gt=0)
+    normalization: Literal["always", "optional", "never", "unknown"] = "unknown"
+
+
+class RerankCapabilities(StrictModel):
+    max_documents: int = Field(gt=0)
+    max_query_tokens: int | None = Field(default=None, gt=0)
+    max_document_tokens: int | None = Field(default=None, gt=0)
+    supports_return_documents: bool = True
+    score_semantics: Literal["higher_is_more_relevant"] = "higher_is_more_relevant"
+
+
 class ModelCapabilities(StrictModel):
     model: str
+    task: Literal["llm", "embedding", "rerank"] = "llm"
     input_modalities: list[str]
     output_modalities: list[str]
     streaming: bool
     reasoning: ReasoningCapabilities = Field(default_factory=ReasoningCapabilities)
     tools: ToolCapabilities = Field(default_factory=ToolCapabilities)
     structured_output: bool = False
+    embedding: EmbeddingCapabilities | None = None
+    rerank: RerankCapabilities | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    extensions: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_task_capabilities(self) -> "ModelCapabilities":
+        if self.task == "embedding" and self.embedding is None:
+            raise ValueError("embedding 模型必须声明 embedding capabilities")
+        if self.task == "rerank" and self.rerank is None:
+            raise ValueError("rerank 模型必须声明 rerank capabilities")
+        if self.task != "embedding" and self.embedding is not None:
+            raise ValueError("非 embedding 模型不能声明 embedding capabilities")
+        if self.task != "rerank" and self.rerank is not None:
+            raise ValueError("非 rerank 模型不能声明 rerank capabilities")
+        return self
+
+
+class EmbeddingInput(StrictModel):
+    id: str = Field(min_length=1, max_length=256)
+    text: str = Field(min_length=1, max_length=2_000_000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EmbeddingRequest(StrictModel):
+    protocol_version: Literal["1.0"]
+    request_id: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1)
+    input_type: Literal["query", "document"]
+    inputs: list[EmbeddingInput] = Field(min_length=1, max_length=2048)
+    dimensions: int | None = Field(default=None, gt=0)
+    normalize: bool | None = None
+    provider_options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    extensions: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "EmbeddingRequest":
+        ids = [item.id for item in self.inputs]
+        if len(ids) != len(set(ids)):
+            raise ValueError("embedding input id 必须唯一")
+        return self
+
+
+class EmbeddingData(StrictModel):
+    id: str
+    index: int = Field(ge=0)
+    vector: list[float]
+
+
+class EmbeddingResponse(StrictModel):
+    protocol_version: Literal["1.0"] = "1.0"
+    object: Literal["kemo.embedding_list"] = "kemo.embedding_list"
+    request_id: str
+    model: str
+    model_version: str | None = None
+    vector_space_id: str
+    dimensions: int = Field(gt=0)
+    data: list[EmbeddingData]
+    usage: Usage = Field(default_factory=Usage)
+    provider_response_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    extensions: dict[str, Any] = Field(default_factory=dict)
+
+
+class RerankDocument(StrictModel):
+    id: str = Field(min_length=1, max_length=256)
+    text: str = Field(min_length=1, max_length=2_000_000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RerankRequest(StrictModel):
+    protocol_version: Literal["1.0"]
+    request_id: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1)
+    query: str = Field(min_length=1, max_length=2_000_000)
+    documents: list[RerankDocument] = Field(min_length=1, max_length=4096)
+    top_n: int | None = Field(default=None, gt=0)
+    return_documents: bool = False
+    provider_options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    extensions: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_documents(self) -> "RerankRequest":
+        ids = [item.id for item in self.documents]
+        if len(ids) != len(set(ids)):
+            raise ValueError("rerank document id 必须唯一")
+        if self.top_n is not None and self.top_n > len(self.documents):
+            raise ValueError("top_n 不能超过 documents 数量")
+        return self
+
+
+class RerankResultItem(StrictModel):
+    rank: int = Field(ge=1)
+    document_id: str
+    index: int = Field(ge=0)
+    relevance_score: float
+    document: RerankDocument | None = None
+
+
+class RerankResponse(StrictModel):
+    protocol_version: Literal["1.0"] = "1.0"
+    object: Literal["kemo.rerank"] = "kemo.rerank"
+    request_id: str
+    model: str
+    model_version: str | None = None
+    score_semantics: Literal["higher_is_more_relevant"] = "higher_is_more_relevant"
+    results: list[RerankResultItem]
+    usage: Usage = Field(default_factory=Usage)
+    provider_response_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     extensions: dict[str, Any] = Field(default_factory=dict)
 
