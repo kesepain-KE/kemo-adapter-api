@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from core.models import ErrorObject, KemoRequest, ModelCapabilities, Usage
+from core.models import (
+    EmbeddingRequest,
+    ErrorObject,
+    KemoRequest,
+    ModelCapabilities,
+    RerankRequest,
+    Usage,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +58,43 @@ class ProviderResult:
     provider_response_id: str | None = None
     error: ErrorObject | None = None
     incomplete_details: dict[str, Any] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderEmbedding:
+    """厂商向量结果；index 必须对应请求 inputs 的原始位置。"""
+
+    index: int
+    vector: list[float]
+
+
+@dataclass(slots=True)
+class ProviderEmbeddingResult:
+    embeddings: list[ProviderEmbedding]
+    vector_space_id: str
+    usage: Usage = field(default_factory=Usage)
+    model_version: str | None = None
+    provider_response_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRerankItem:
+    """厂商排序结果；index 必须对应请求 documents 的原始位置。"""
+
+    index: int
+    relevance_score: float
+
+
+@dataclass(slots=True)
+class ProviderRerankResult:
+    results: list[ProviderRerankItem]
+    usage: Usage = field(default_factory=Usage)
+    model_version: str | None = None
+    provider_response_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     extensions: dict[str, Any] = field(default_factory=dict)
 
@@ -95,15 +139,31 @@ class ProviderPackage(ABC):
     async def capabilities(self, model: str) -> ModelCapabilities:
         """返回该厂商包确认过的真实能力。"""
 
-    @abstractmethod
     async def execute(self, request: KemoRequest, context: RequestContext) -> ProviderResult:
-        """完成一次非流式执行，并返回统一结果。"""
+        """完成一次 LLM 非流式执行；非 LLM 包保持默认实现。"""
+        del request, context
+        raise LookupError(f"Provider {self.provider_id} 不支持 LLM response")
 
-    @abstractmethod
     def stream(
         self, request: KemoRequest, context: RequestContext
     ) -> AsyncIterator[ProviderEvent]:
-        """把厂商流转换为无 SSE 信封的统一事件。"""
+        """执行 LLM 流；非 LLM 包保持默认实现。"""
+        del request, context
+        raise LookupError(f"Provider {self.provider_id} 不支持 LLM stream")
+
+    async def embed(
+        self, request: EmbeddingRequest, context: RequestContext
+    ) -> ProviderEmbeddingResult:
+        """执行向量化；不支持该任务的包保持默认实现。"""
+        del request, context
+        raise LookupError(f"Provider {self.provider_id} 不支持 embedding")
+
+    async def rerank(
+        self, request: RerankRequest, context: RequestContext
+    ) -> ProviderRerankResult:
+        """执行重排序；不支持该任务的包保持默认实现。"""
+        del request, context
+        raise LookupError(f"Provider {self.provider_id} 不支持 rerank")
 
     async def cancel(self, provider_response_id: str | None, context: RequestContext) -> None:
         """取消厂商任务。同步完成型厂商可以保持默认实现。"""
