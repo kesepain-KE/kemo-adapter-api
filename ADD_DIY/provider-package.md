@@ -17,7 +17,7 @@
 
 ### 实现步骤
 
-1. 将 `providers/_template` 复制为 `providers/<provider_id>`；
+1. 将 `template/provider/` 复制为 `providers/<provider_id>/`；
 2. `provider_id` 使用小写字母、数字和下划线，并保持长期稳定；
 3. 将模板类名和示例模型替换为步骤 7 检测到的真实厂商信息；
 4. 按职责实现 `client.py`、`protocol.py`、`streaming.py`、`usage.py`、`errors.py` 和
