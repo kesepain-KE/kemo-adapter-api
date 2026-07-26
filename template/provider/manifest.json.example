@@ -3,6 +3,7 @@
   "display_name": "Example Provider",
   "models": {
     "example-model-name": {
+      "task": "llm",
       "upstream_model": "model-name",
       "input_modalities": ["text"],
       "output_modalities": ["text"],
@@ -11,7 +12,9 @@
         "max_output_tokens": 8192
       },
       "operations": {
-        "conversation": {"supported": true}
+        "conversation": {"supported": true},
+        "streaming": {"supported": true},
+        "function_calling": {"supported": true, "parallel": true}
       }
     }
   }

@@ -8,13 +8,14 @@ from core.models import ModelCapabilities, ReasoningCapabilities, ToolCapabiliti
 MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     "example-model-name": ModelCapabilities(
         model="example-model-name",
+        task="llm",
         input_modalities=["text"],
         output_modalities=["text"],
         streaming=True,
         reasoning=ReasoningCapabilities(supported=False),
-        tools=ToolCapabilities(function_calling=True),
+        tools=ToolCapabilities(function_calling=True, parallel_calls=True),
         structured_output=True,
-        metadata={"source": "provider_package"},
+        metadata={"source": "provider_package", "upstream_model": "model-name"},
         extensions={
             "limits": {"max_input_tokens": 128000, "max_output_tokens": 8192},
             "operations": {"conversation": {"supported": True}},

@@ -1,13 +1,19 @@
 # Provider Package 模板
 
 提供创建新 LLM 厂商 Provider 包的最小骨架。
-参考实现见 `providers/deepseek/`（本地部署态，由 `create_provider` 生成）。
+参考实现见 `providers/deepseek/`（本地测试厂商）。本目录是唯一 Provider 模板源。
 
 ## 使用方式
 
 ```bash
 # 复制本目录为 providers/<provider_id>/
 cp -r template/provider/ providers/deepseek-v2/
+```
+
+PowerShell：
+
+```powershell
+Copy-Item -Recurse template/provider providers/deepseek_v2
 ```
 
 然后去掉文件名中的 `.example` 后缀，实现所有 TODO 注释。
@@ -29,7 +35,7 @@ cp -r template/provider/ providers/deepseek-v2/
     ↓  errors.py（错误码 → ErrorObject）
     ▼
 ProviderEvent / ProviderResult  ← 网关认识的唯一语言
-    ↓  api/assembler.py（加 SSE 信封、sequence）
+    ↓  core/event_assembler.py（加 SSE 信封、sequence）
     ▼
 Kemo SSE 事件（输出给 kemo-agent）
 ```
@@ -75,8 +81,20 @@ KemoRequest.reasoning        → 厂商 thinking/reasoning_effort 参数
 
 # streaming.py (流式)
 厂商 SSE delta               → ProviderEvent(TEXT_DELTA / REASONING...)
+厂商工具参数 delta            → ProviderEvent(TOOL_ARGUMENTS_DELTA)
+完整工具调用                  → ProviderEvent(TOOL_COMPLETED)
 厂商 finish_reason           → ProviderEvent(COMPLETED / FAILED)
 ```
+
+工具调用必须同时满足：
+
+1. 每个并行工具调用拥有独立 `item_id` 和厂商 `call_id`；
+2. 流式参数片段使用 `TOOL_ARGUMENTS_DELTA`，完整 JSON 到齐后必须发送一次
+   `TOOL_COMPLETED`；
+3. 终态 `ProviderResult.output` 仍要包含全部 `tool_call` item，状态为
+   `requires_action`；
+4. Provider 只翻译工具调用，绝不能自行执行工具；
+5. 参数 JSON 无效时保留有限长度的 `arguments_raw` 和脱敏 `parse_error`，不能静默丢失。
 
 ### 3. 错误映射
 
@@ -94,6 +112,11 @@ HTTP 500 → PROVIDER_UNAVAILABLE (retryable=True)
 3. 不得把厂商原始 Usage 交给核心猜测。
 4. 不得返回未经脱敏的错误体、Headers、签名 URL 或 Provider State。
 5. 所有 `provider_options` 必须在本包内按白名单解析，禁止透传任意 Header、URL 或密钥。
+6. 参数校验失败必须抛出携带 `ErrorObject` 的 `ProviderException`，禁止把字符串直接传给
+   `ProviderException`。
+7. `RequestContext.gateway_system_prompt` 必须映射到厂商可用的最高指令层，不得从请求
+   `extensions` 接受同名内容，也不得降级为 user message。
+8. 统一协议字段优先；为旧客户端兼容而消费的 `provider_options` 不得再次覆盖统一字段。
 
 `config.json` 和 `secrets.json` 更新无需重启。任何 Python、manifest、依赖或协议
 代码变化都必须重启。

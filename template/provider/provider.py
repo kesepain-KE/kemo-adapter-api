@@ -28,19 +28,30 @@ class ExampleProvider(ProviderPackage):
         self._client = client
         self._retired_clients: list[ExampleClient] = []
         self._usage = ExampleUsageMapper()
-        self._protocol = ExampleProtocolMapper(self._usage)
-        self._streaming = ExampleStreamMapper(self._usage)
         self._errors = ExampleErrorMapper()
+        self._protocol = ExampleProtocolMapper(self._usage, self._errors)
+        self._streaming = ExampleStreamMapper(
+            self._usage,
+            self._protocol,
+            self._errors,
+        )
 
     @classmethod
     def from_settings(cls, settings: Mapping[str, Any]) -> "ExampleProvider":
         # 实际包应在启动时快速校验缺失配置，但不得输出密钥值。
-        return cls(
-            ExampleClient(
-                api_key=str(settings.get("api_key", "")),
-                base_url=str(settings.get("base_url", "https://api.example.invalid")),
-                timeout_seconds=float(settings.get("timeout_seconds", 120)),
-            )
+        return cls(cls._client_from_settings(settings))
+
+    @staticmethod
+    def _client_from_settings(settings: Mapping[str, Any]) -> ExampleClient:
+        api_key = str(settings.get("api_key", "")).strip()
+        if not api_key:
+            raise ValueError("Example Provider 缺少 api_key")
+        headers = settings.get("default_headers")
+        return ExampleClient(
+            api_key=api_key,
+            base_url=str(settings.get("base_url", "https://api.example.invalid")),
+            timeout_seconds=float(settings.get("timeout_seconds", 120)),
+            default_headers=headers if isinstance(headers, Mapping) else None,
         )
 
     @property
@@ -88,11 +99,7 @@ class ExampleProvider(ProviderPackage):
 
     async def reload_config(self, settings: Mapping[str, Any]) -> None:
         """新请求使用新 Client；旧 Client 保留到进程退出，避免打断在途请求。"""
-        replacement = ExampleClient(
-            api_key=str(settings.get("api_key", "")),
-            base_url=str(settings.get("base_url", "https://api.example.invalid")),
-            timeout_seconds=float(settings.get("timeout_seconds", 120)),
-        )
+        replacement = self._client_from_settings(settings)
         previous = self._client
         self._client = replacement
         self._retired_clients.append(previous)
