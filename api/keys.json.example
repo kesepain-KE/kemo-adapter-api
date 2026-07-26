@@ -1,0 +1,9 @@
+{
+  "keys": {
+    "replace-with-a-random-token": {
+      "tenant_id": "tenant-1",
+      "subject_id": "kemo-agent",
+      "scopes": ["model:invoke", "asset:read", "asset:write"]
+    }
+  }
+}
