@@ -12,11 +12,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.errors import install_exception_handlers
-from api.routes import capabilities_router, responses_router
+from api.routes import capabilities_router, responses_router, retrieval_router
 from core.config import Settings
 from core.executor import GatewayExecutor
 from core.live_config import LiveConfigManager
 from core.registry import ProviderRegistry
+from core.retrieval_executor import RetrievalExecutor
 from core.runtime_state import GatewayRuntimeState
 from core.stores import InMemoryExecutionStore
 from web.backend.router import router as admin_router
@@ -71,7 +72,9 @@ def create_app(
         live_config,
         runtime_state,
     )
+    app.state.retrieval_executor = RetrievalExecutor(registry, live_config, runtime_state)
     app.include_router(responses_router)
+    app.include_router(retrieval_router)
     app.include_router(capabilities_router)
     app.include_router(admin_router)
 
@@ -82,6 +85,10 @@ def create_app(
             StaticFiles(directory=frontend_dist / "assets"),
             name="admin-assets",
         )
+
+        @app.get("/admin/logo.png", include_in_schema=False)
+        async def admin_logo() -> FileResponse:
+            return FileResponse(PROJECT_ROOT / "kemo-adapter-api.png")
 
         @app.get("/admin", include_in_schema=False)
         @app.get("/admin/{path:path}", include_in_schema=False)
