@@ -3,14 +3,19 @@
 api/keys.json
 providers/*/secrets.json
 
-# 厂商包（AI生成，不纳入版本管理）
-providers/
+# 厂商包由部署端热加载；仓库仅保留 Python 命名空间。
+providers/*
+!providers/__init__.py
 
 # 开发者私有资料，不上传 GitHub
 开发目录/
 
 # 编辑自动备份
 *.bak
+*.bak.*
+
+# 本地浏览器调试记录
+.playwright-cli/
 
 # 更新冷备份
 .backup/
@@ -18,6 +23,7 @@ providers/
 # 前端构建产物（克隆后自行构建）
 web/frontend/node_modules/
 web/frontend/dist/
+*.tsbuildinfo
 
 # Python / test caches
 __pycache__/

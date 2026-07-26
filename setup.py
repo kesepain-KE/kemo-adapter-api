@@ -1,6 +1,7 @@
 """Kemo 网关首次部署助手。
 
-默认只检查环境；使用 --init-env 创建本地配置，使用 --install-dependencies 安装依赖。
+默认只检查环境；使用 --init-env 创建本地配置，使用 --install-dependencies 安装 Python 依赖，
+使用 --build-frontend 安装并构建 Web 管理端。
 脚本永远不会覆盖已有 .env。
 """
 
@@ -21,6 +22,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+FRONTEND_ROOT = PROJECT_ROOT / "web" / "frontend"
 DEPENDENCIES = (
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -42,6 +44,7 @@ REQUIRED_PATHS = (
     "providers",
     "tests",
     "web",
+    "web/frontend/dist/index.html",
     ".env.example",
     "version.json",
     "agent_control.md",
@@ -85,17 +88,40 @@ def install_dependencies() -> None:
     )
 
 
+def build_frontend() -> None:
+    package_manager = shutil.which("pnpm")
+    if package_manager is None:
+        raise RuntimeError("缺少 pnpm，请先安装 Node.js 与 pnpm")
+    subprocess.run(
+        [package_manager, "install", "--frozen-lockfile"],
+        cwd=FRONTEND_ROOT,
+        check=True,
+    )
+    subprocess.run(
+        [package_manager, "run", "build"],
+        cwd=FRONTEND_ROOT,
+        check=True,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Kemo 网关首次部署")
     parser.add_argument("--check", action="store_true", help="检查 Python、依赖和目录")
     parser.add_argument("--init-env", action="store_true", help="缺失时创建本地 .env")
     parser.add_argument("--install-dependencies", action="store_true", help="安装网关依赖")
+    parser.add_argument("--build-frontend", action="store_true", help="安装并构建 Web 管理端")
     args = parser.parse_args()
 
-    if args.install_dependencies:
-        install_dependencies()
-    if args.init_env:
-        initialize_env()
+    try:
+        if args.install_dependencies:
+            install_dependencies()
+        if args.build_frontend:
+            build_frontend()
+        if args.init_env:
+            initialize_env()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"[ERROR] 首次部署步骤失败: {exc}", file=sys.stderr)
+        return 2
     # 无参数时也执行无副作用检查。
     return 0 if check_environment() else 1
 

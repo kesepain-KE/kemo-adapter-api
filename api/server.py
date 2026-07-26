@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 import mimetypes
 from pathlib import Path
 
@@ -31,6 +32,15 @@ from web.backend.system_inspector import SystemInspector
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
+
+
+def _project_version() -> str:
+    try:
+        value = json.loads((PROJECT_ROOT / "version.json").read_text(encoding="utf-8"))
+        version = value.get("version") if isinstance(value, dict) else None
+        return version.strip() if isinstance(version, str) and version.strip() else "0.0.0"
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "0.0.0"
 
 
 def create_app(
@@ -67,7 +77,7 @@ def create_app(
         await runtime_state.mark_stopping()
         await registry.close()
 
-    app = FastAPI(title="Kemo Provider Gateway", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="Kemo Provider Gateway", version=_project_version(), lifespan=lifespan)
     app.state.settings = resolved_settings
     app.state.registry = registry
     app.state.live_config = live_config

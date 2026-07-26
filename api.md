@@ -1,6 +1,7 @@
 # Kemo 网关公开 API
 
-本文只说明网关对外提供给 kemo-agent / kemo-graph 的 LLM、Embedding、Rerank 与 Asset API，
+本文只说明网关对外提供给 kemo-agent / kemo-graph 的 LLM、Embedding、Rerank、Asset 与
+智能体只读状态 API，
 不包含 Web 管理端接口。
 
 协议版本：`1.0`

@@ -5,13 +5,17 @@
 </p>
 
 <p align="center">
-  <strong>面向多厂商的标准化 LLM Provider 协议网关</strong>
+  <strong>面向多厂商的统一模型 Provider 协议网关</strong>
 </p>
 
 <p align="center">
   Kemo Gateway 为 <a href="https://github.com/kesepain-KE/kemo-agent">kemo-agent</a> 提供统一的 Provider 协议层，<br>
   将不同厂商的请求协议、流式事件、工具调用、能力声明、错误处理和用量计量<br>
   转换为稳定的 Kemo Response/SSE 契约，支持 LLM、Embedding 与 Rerank 三类任务。
+</p>
+
+<p align="center">
+  内置 Web 管理控制台、每日 SQLite 调用统计，以及使用独立 STATUS_TOKEN 的智能体只读全局感知接口。
 </p>
 
 <p align="center">
@@ -54,8 +58,8 @@ Kemo Gateway 尝试换一种方式。
 
 | 任务 | 端点 | 协议 Object |
 |------|------|------------|
-| LLM 响应 | `POST /v1/chat/completions` | `chat.completion` / `chat.completion.chunk` |
-| LLM 能力 | `GET /v1/models` | `model.capabilities` |
+| LLM 响应 | `POST /model/responses` | `KemoResponse` / Kemo SSE 事件 |
+| 模型能力 | `GET /model/capabilities` | `ModelCapabilities` |
 | Embedding | `POST /model/embeddings` | `kemo.embedding_list` |
 | Rerank | `POST /model/rerank` | `kemo.rerank` |
 
@@ -79,26 +83,28 @@ Kemo Gateway 尝试换一种方式。
 
 ```text
 api/                    对外 API 路由、认证和 SSE
-  routes/retrieval.py   Embedding/Rerank 端点（新增）
+  routes/retrieval.py   Embedding/Rerank 端点
+  routes/status.py      智能体只读全局感知端点
   server.py             应用创建与生命周期
   errors.py             统一异常处理
   dependencies.py       依赖注入
 core/                   执行核心、统一模型和运行时状态
   models.py             数据模型（LLM + Embedding + Rerank）
   provider_contract.py  Provider 契约接口
-  retrieval_executor.py Embedding/Rerank 统一执行器（新增）
+  retrieval_executor.py Embedding/Rerank 统一执行器
   executor.py           LLM 统一执行器
   registry.py           Provider 注册表
   runtime_state.py      运行时状态与 Drain
   live_config.py        热配置管理
   stores.py             幂等存储
-providers/              动态发现的独立厂商包
+providers/              部署本地热加载的独立厂商包
+storage/                每日 SQLite 调用统计与脱敏调用日志
 web/                    网关管理网页（React 控制台）
 tests/                  网关及 Provider 契约测试
-template/provider/      Provider 包创建模板（新增）
+template/provider/      Provider 包创建模板
 ADD_DIY/                厂商创建与管理操作手册
 agent_control.md        智能体操纵网关总索引
-api.md                  对外 LLM/Asset API 说明
+api.md                  对外模型、Asset 与智能体状态 API 说明
 kemo-adapter-api.png    网关 Logo
 .env.example            环境变量样例
 start_web.py            网关与 Web 管理端启动入口
@@ -111,8 +117,10 @@ version.json            网关与协议版本
 
 ## 快速开始
 
+环境要求：Python 3.11 或更高版本，以及 Node.js 和 pnpm。
+
 ```powershell
-python setup.py --install-dependencies --init-env
+python setup.py --install-dependencies --build-frontend --init-env
 python start_web.py
 ```
 
@@ -122,7 +130,9 @@ python start_web.py
 
 ### 免登录模式
 
-未配置任何带 `admin:web`/`owner` scope 的启动 Token，且 `WEB_USERNAME`、`WEB_PASSWORD` 均为空时，管理网页进入免登录 owner 模式。普通模型调用 Key 不影响该判定，公开 LLM/Asset API 也不会因此取消鉴权。非可信网络部署必须配置管理 Token。
+未配置任何带 `admin:web`/`owner` scope 的启动 Token，且 `WEB_TOKEN`、`WEB_USERNAME`、
+`WEB_PASSWORD` 均为空时，管理网页进入免登录 owner 模式。普通模型调用 Key 不影响该判定，
+公开模型、Asset 与状态 API 也不会因此取消鉴权。非可信网络部署必须配置管理凭据。
 
 ### 平滑重启
 
@@ -135,11 +145,9 @@ python restart.py --status
 
 ### 创建厂商包
 
-```powershell
-python ADD_DIY/import_provider.py
-```
-
-或参考 `template/provider/` 手动创建。详细说明见 [agent_control.md](agent_control.md)。
+Provider 包属于部署本地内容，默认不会提交到网关主仓库。参考 `template/provider/` 创建
+`providers/<provider_id>/`，或由智能体按照 [agent_control.md](agent_control.md) 和 `ADD_DIY/`
+中的规程生成。新增目录后需要重启，已有 Provider 的 API 配置与密钥可以热更新。
 
 ---
 
@@ -151,18 +159,19 @@ python ADD_DIY/import_provider.py
 
 - Provider Package 骨架与模型路由
 - LLM 非流式/流式执行与统一事件协议
-- Embedding/Rerank 统一执行器（新增）
+- Embedding/Rerank 统一执行器
 - 内存幂等、查询、取消与恢复
 - 认证与作用域鉴权
 - 独立 `STATUS_TOKEN` 鉴权的智能体只读全局感知接口
+- 每日 SQLite 调用统计、Token 排行与脱敏调用日志
 - 四类运行时控制配置的热刷新
 - Web 管理控制台与受保护管理 API
-- Provider 包创建模板（新增）
+- Provider 包创建模板
 
 仍在实现中：
 
-- 真实厂商包（OpenAI、Anthropic 等）
-- 生产级持久化存储
+- 更多真实厂商包（OpenAI、Anthropic 等）
+- 跨进程执行状态与响应持久化
 - 完整 Asset API
 - Provider State 服务与流恢复
 
