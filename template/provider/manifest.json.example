@@ -1,0 +1,18 @@
+{
+  "provider_id": "example",
+  "display_name": "Example Provider",
+  "models": {
+    "example/model-name": {
+      "upstream_model": "model-name",
+      "input_modalities": ["text"],
+      "output_modalities": ["text"],
+      "limits": {
+        "max_input_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "operations": {
+        "conversation": {"supported": true}
+      }
+    }
+  }
+}

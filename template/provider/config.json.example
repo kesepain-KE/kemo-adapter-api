@@ -1,0 +1,6 @@
+{
+  "api_key_id": "primary",
+  "base_url": "https://api.example.invalid",
+  "timeout_seconds": 120,
+  "default_headers": {}
+}
