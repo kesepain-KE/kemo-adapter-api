@@ -10,7 +10,7 @@
 4. **读取对应操作手册** — 创建新厂商读本文件（`ADD_DIY/provider-package.md`）；
 5. **检查厂商是否可访问** — 用真实 API Key 请求 `GET /v1/models` 或厂商健康端点；
 6. **获得厂商模型列表** — 从步骤 5 的响应中提取所有可用的上游模型名；
-7. **对所有模型进行能力范围测试** — 对每个模型发一次最小对话请求，确认支持的特性（流式、工具、思考模式、多模态、JSON Output 等）；
+7. **对所有模型进行能力范围测试** — 先辨别 `llm`、`embedding`、`rerank` 任务；LLM 验证流式、工具、思考、多模态和 JSON Output，Embedding 验证 query/document、维度、归一化和批量限制，Rerank 验证候选数、top_n、返回原文和分数方向；
 8. **向用户报告检测到的模型配置** — 展示模型名、能力、定价，等待用户确认；
 9. **经过用户允许后创建厂商目录** — 复制模板并实现代码；
 10. **检查创建是否成功** — 验证目录完整性、语法、基本导入。
@@ -19,7 +19,8 @@
 
 1. 将 `template/provider/` 复制为 `providers/<provider_id>/`；
 2. `provider_id` 使用小写字母、数字和下划线，并保持长期稳定；
-3. 将模板类名和示例模型替换为步骤 7 检测到的真实厂商信息；
+3. 将模板类名和示例模型替换为步骤 7 检测到的真实厂商信息；公开模型名必须使用
+   `<provider_id>-<厂商内部模型名>`，例如 `deepseek-deepseek-v4-flash`；
 4. 按职责实现 `client.py`、`protocol.py`、`streaming.py`、`usage.py`、`errors.py` 和
    `capabilities.py`；
 5. 在包的 `__init__.py` 中只暴露 `create_provider(settings)`；
@@ -58,3 +59,18 @@
 - 不得把厂商原始错误体和密钥写入统一错误。
 
 Provider Package 的权威接口是 `core/provider_contract.py`，可复制模板但不得复制并修改这份契约。
+
+模型归属由 Registry 在注册时精确保存。厂商内部模型名允许包含多个连字符，核心、管理端和
+Provider 都不得按任意连字符切分并猜测 Provider；Provider 映射上游名称时只能移除自身完整的
+`<provider_id>-` 前缀。斜杠形式的 `provider_id/model` 是废弃格式，注册时会被拒绝。
+
+## kemo-graph 模型契约
+
+- 每个模型必须通过 `ModelCapabilities.task` 明确声明 `llm`、`embedding` 或 `rerank`。
+- 纯 Embedding/Rerank 厂商无需实现 LLM `execute()` / `stream()`。
+- Embedding 实现 `ProviderPackage.embed()`，只返回 `ProviderEmbeddingResult`；每个结果的 `index`
+  必须指向原请求位置，并提供稳定 `vector_space_id`。不得静默改变维度、顺序或归一化策略。
+- Rerank 实现 `ProviderPackage.rerank()`，只返回 `ProviderRerankResult`；结果必须使用原请求
+  document index，分数必须满足“越高越相关”，但不得伪造跨模型统一分值。
+- 两类任务的 Token、计费单位、截断和批处理规则仍由厂商目录的 `usage.py` / `protocol.py`
+  解释，核心只校验统一契约。
