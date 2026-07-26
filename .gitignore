@@ -1,0 +1,29 @@
+# 本地密钥与运行配置
+.env
+api/keys.json
+providers/*/secrets.json
+
+# 厂商包（AI生成，不纳入版本管理）
+providers/
+
+# 开发者私有资料，不上传 GitHub
+开发目录/
+
+# 编辑自动备份
+*.bak
+
+# 前端构建产物（克隆后自行构建）
+web/frontend/node_modules/
+web/frontend/dist/
+
+# Python / test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime state
+*.log
+*.pid
+core/runtime/
