@@ -18,8 +18,7 @@ function Login() {
     void connect(token)
   }
   return <main className="login-screen"><section className="login-card">
-    <div className="brand-mark login-mark" aria-label="Kemo Gateway Logo"><span>K</span></div>
-    <span className="top-eyebrow">KEMO CONTROL PLANE</span>
+    <img className="brand-logo login-logo" src="/admin/logo.png" alt="Kemo Gateway Logo"/>
     <h1>Kemo Gateway</h1>
     <p>连接真实管理 API 后才能查看和修改网关。页面不会使用演示数据。</p>
     <form onSubmit={submit}>

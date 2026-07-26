@@ -14,10 +14,9 @@ const nav: { id: PageId; label: string; icon: typeof Activity }[] = [
 
 export function Sidebar({ page, onPage }: { page: PageId; onPage: (page: PageId) => void }) {
   return <aside className="sidebar">
-    <div className="brand"><div className="brand-mark" aria-label="Kemo Gateway Logo"><span>K</span></div><div className="brand-copy"><strong>Kemo Gateway</strong><span>Unified Provider Infrastructure</span><em>CONTROL PLANE</em></div></div>
+    <div className="brand"><img className="brand-logo" src="/admin/logo.png" alt="Kemo Gateway Logo"/><div className="brand-copy"><strong>kemo gateway</strong></div></div>
     <span className="nav-label">Navigation</span>
     <nav className="nav-list">{nav.map(item => { const Icon = item.icon; return <button key={item.id} className={page === item.id ? 'active' : ''} onClick={() => onPage(item.id)}><Icon size={17}/><span>{item.label}</span></button> })}</nav>
-    <div className="sidebar-note"><div className="sidebar-rule"/><strong>真实管理状态</strong><p>页面数据来自受保护的 /admin/api，不显示模拟调用量和日志。</p><div><span>LIVE</span><span>REVISION</span><span>DRAIN</span></div></div>
     <div className="sidebar-watermark">KEMO</div>
   </aside>
 }
@@ -34,7 +33,7 @@ export function Topbar({ page, children }: { page: PageId; children: ReactNode }
   }
   const phase = restart?.gateway.phase ?? data.runtime.phase
   return <main className="main">
-    <header className="topbar"><div><span className="top-eyebrow">KEMO CONTROL PLANE</span><h1><b>Kemo</b> {titles[page][0].replace('Kemo ', '')}</h1><p>{titles[page][1]}</p></div><div className="top-actions"><span className={`online phase-${phase}`}><i/>{phase}</span><span className="top-chip">Protocol {data.protocol_version}</span><span className="top-chip">v{data.version}</span>{!data.authentication.required && <span className="top-chip">免登录模式</span>}<button className="btn" disabled={refreshing} onClick={() => void refresh()}><RefreshCw className={refreshing ? 'spin' : ''} size={15}/>刷新</button>{data.authentication.required && <button className="btn" onClick={disconnect}><LogOut size={15}/>退出</button>}</div></header>
+    <header className="topbar"><div><h1><b>Kemo</b> {titles[page][0].replace('Kemo ', '')}</h1><p>{titles[page][1]}</p></div><div className="top-actions"><span className={`online phase-${phase}`}><i/>{phase}</span><span className="top-chip">Protocol {data.protocol_version}</span><span className="top-chip">v{data.version}</span>{!data.authentication.required && <span className="top-chip">免登录模式</span>}<button className="btn" disabled={refreshing} onClick={() => void refresh()}><RefreshCw className={refreshing ? 'spin' : ''} size={15}/>刷新</button>{data.authentication.required && <button className="btn" onClick={disconnect}><LogOut size={15}/>退出</button>}</div></header>
     {error && <div className="global-alert" role="alert"><span>{error}</span><button onClick={clearError}>×</button></div>}
     {children}
   </main>

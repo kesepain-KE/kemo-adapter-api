@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, CircleAlert, Power, RotateCw, Save, Shield, TerminalSquare } from 'lucide-react'
+import { Check, CircleAlert, Power, RotateCw, Save, TerminalSquare } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import { Badge, Card, CardHeader, EmptyState, SectionTitle, Subtabs } from '../components/UI'
 
@@ -101,7 +101,6 @@ export default function Settings() {
       <Card><CardHeader title="对外模型 API" description="对下一次新请求即时生效" action={<Badge>无需重启</Badge>}/><label className="setting-switch"><span><b>接受新的 LLM API 请求</b><small>停用后已有 Response 仍可查询和取消</small></span><button className={`toggle ${gatewayEnabled ? 'on' : ''}`} onClick={() => setGatewayEnabled(!gatewayEnabled)}><i/></button></label></Card>
       <Card><CardHeader title="最高权限系统提示词" description="独立于 kemo-agent 的 system_prompt" action={<Badge>无需重启</Badge>}/><div className="form-field"><textarea value={prompt} onChange={event => setPrompt(event.target.value)} rows={8}/><small>仅影响配置生效后的新请求。</small></div></Card>
       <Card><CardHeader title="Provider 启停" description="提交完整禁用列表" action={<Badge>无需重启</Badge>}/>{providerIds.length ? <div className="control-list">{providerIds.map(id => { const enabled = !disabledProviders.includes(id); return <label key={id}><span><b>{id}</b><small>{data.providers.find(provider => provider.provider_id === id)?.models.length ?? 0} models</small></span><button className={`toggle ${enabled ? 'on' : ''}`} onClick={() => toggleProvider(id)}><i/></button></label> })}</div> : <p>没有已加载 Provider。</p>}</Card>
-      <Card className="policy-card"><Shield size={24}/><div><h3>Revision 保护</h3><p>保存时携带当前 revision；发生 409 时不会覆盖其他操作者的新配置，请刷新后重新确认。</p></div></Card>
     </div>}
     {tab === 'providers' && (!providerIds.length ? <EmptyState title="没有已加载 Provider" description="新厂商目录需要部署代码并重启后才会出现。"/> : <div className="provider-settings-list">{providerIds.map(id => { const draft = providerDrafts[id] ?? { configText: '{}', apiKey: '' }; return <Card key={id}><CardHeader title={id} description="厂商自定义 JSON 配置" action={<Badge>无需重启</Badge>}/><div className="form-field"><label>config.json</label><textarea className="code-editor" rows={10} spellCheck={false} value={draft.configText} onChange={event => updateDraft(id, { configText: event.target.value })}/><small>保留不认识的厂商字段；敏感值不能放在此对象中。</small></div><div className="form-field"><label>API Key（只写）</label><input type="password" autoComplete="new-password" value={draft.apiKey} onChange={event => updateDraft(id, { apiKey: event.target.value })} placeholder="留空表示不轮换现有密钥"/><small>现有密钥不会从后端读回。</small></div><div className="card-actions"><button className="btn primary" disabled={busy === id} onClick={() => void saveProviderSettings(id)}><Save size={14}/>保存 {id} 配置</button></div></Card> })}</div>)}
     {tab === 'startup' && <div className="two-grid">
