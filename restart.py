@@ -142,7 +142,7 @@ def _replacement_process(args: argparse.Namespace) -> int:
         return 6
 
     host = str(metadata.get("host", "127.0.0.1"))
-    port = int(metadata.get("port", 8741))
+    port = int(metadata.get("port", 7531))
     stop_deadline = time.monotonic() + min(60.0, args.startup_timeout)
     while process_exists(args.old_pid) and time.monotonic() < stop_deadline:
         time.sleep(0.2)
@@ -261,7 +261,7 @@ def _submit_and_wait(args: argparse.Namespace) -> int:
         return 6
     try:
         with urlopen(
-            _health_url(str(metadata.get("host", "127.0.0.1")), int(metadata.get("port", 8741))),
+            _health_url(str(metadata.get("host", "127.0.0.1")), int(metadata.get("port", 7531))),
             timeout=2.0,
         ) as response:
             health = json.loads(response.read(64 * 1024).decode("utf-8"))
