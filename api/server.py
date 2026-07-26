@@ -58,7 +58,7 @@ def create_app(
         await runtime_state.mark_stopping()
         await registry.close()
 
-    app = FastAPI(title="Kemo Provider Gateway", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Kemo Provider Gateway", version="0.4.0", lifespan=lifespan)
     app.state.settings = resolved_settings
     app.state.registry = registry
     app.state.live_config = live_config
