@@ -208,7 +208,8 @@ class RetrievalExecutor:
             try:
                 return await package.embed(request, context)
             except ProviderException as exc:
-                raise ModelOperationFailure(request.request_id, exc.error, 502) from exc
+                status_code = 429 if exc.error.provider_status == 429 else 502
+                raise ModelOperationFailure(request.request_id, exc.error, status_code) from exc
             except Exception as exc:
                 raise self._provider_contract_failure(request.request_id, exc) from exc
         finally:
@@ -223,7 +224,8 @@ class RetrievalExecutor:
             try:
                 return await package.rerank(request, context)
             except ProviderException as exc:
-                raise ModelOperationFailure(request.request_id, exc.error, 502) from exc
+                status_code = 429 if exc.error.provider_status == 429 else 502
+                raise ModelOperationFailure(request.request_id, exc.error, status_code) from exc
             except Exception as exc:
                 raise self._provider_contract_failure(request.request_id, exc) from exc
         finally:

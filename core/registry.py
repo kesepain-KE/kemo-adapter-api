@@ -31,19 +31,20 @@ class ProviderRegistry:
         for model in package.models:
             if model in self._models:
                 raise ValueError(f"模型路由重复注册: {model}")
-            if not model.startswith(f"{package.provider_id}/"):
-                raise ValueError(f"模型必须以 {package.provider_id}/ 开头: {model}")
+            prefix = f"{package.provider_id}-"
+            if not model.startswith(prefix) or len(model) == len(prefix):
+                raise ValueError(f"模型必须以 {prefix} 开头且包含模型名: {model}")
         self._providers[package.provider_id] = package
         for model in package.models:
             self._models[model] = package
 
     def resolve(self, model: str) -> ProviderPackage:
-        provider_id = model.split("/", 1)[0]
-        if provider_id in self._disabled_providers:
-            raise LookupError(f"Provider 已禁用: {provider_id}")
+        package = self.resolve_registered(model)
+        if package.provider_id in self._disabled_providers:
+            raise LookupError(f"Provider 已禁用: {package.provider_id}")
         if model in self._disabled_models:
             raise LookupError(f"模型已禁用: {model}")
-        return self.resolve_registered(model)
+        return package
 
     def resolve_registered(self, model: str) -> ProviderPackage:
         """供已创建执行继续运行或取消，不应用新请求禁用策略。"""

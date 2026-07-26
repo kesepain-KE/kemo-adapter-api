@@ -133,7 +133,7 @@ class ProviderPackage(ABC):
     @property
     @abstractmethod
     def models(self) -> frozenset[str]:
-        """该包接受的完整网关模型名，例如 ``openai/gpt-5``。"""
+        """该包接受的完整网关模型名，例如 ``openai-gpt-5``。"""
 
     @abstractmethod
     async def capabilities(self, model: str) -> ModelCapabilities:

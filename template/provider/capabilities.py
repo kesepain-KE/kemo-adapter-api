@@ -6,8 +6,8 @@ from core.models import ModelCapabilities, ReasoningCapabilities, ToolCapabiliti
 
 
 MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
-    "example/model-name": ModelCapabilities(
-        model="example/model-name",
+    "example-model-name": ModelCapabilities(
+        model="example-model-name",
         input_modalities=["text"],
         output_modalities=["text"],
         streaming=True,

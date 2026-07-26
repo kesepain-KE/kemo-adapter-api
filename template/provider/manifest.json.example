@@ -2,7 +2,7 @@
   "provider_id": "example",
   "display_name": "Example Provider",
   "models": {
-    "example/model-name": {
+    "example-model-name": {
       "upstream_model": "model-name",
       "input_modalities": ["text"],
       "output_modalities": ["text"],

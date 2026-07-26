@@ -12,6 +12,10 @@ cp -r template/provider/ providers/deepseek-v2/
 
 然后去掉文件名中的 `.example` 后缀，实现所有 TODO 注释。
 
+公开模型名固定为 `<provider_id>-<厂商内部模型名>`，例如
+`deepseek-deepseek-v4-flash`。厂商内部模型名可含更多连字符；协议映射只能移除自身完整的
+`<provider_id>-` 前缀，不能按任意连字符拆分。斜杠格式 `provider_id/model` 不受支持。
+
 ## 协议转换原理
 
 一个 Provider 包的本质是**翻译器**，把厂商私有协议转成网关的统一事件：

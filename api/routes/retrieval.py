@@ -6,8 +6,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 
 from api.dependencies import get_retrieval_executor
 from api.middleware import Principal, authenticated_principal
-from core.models import EmbeddingRequest, EmbeddingResponse, RerankRequest, RerankResponse
-from core.retrieval_executor import RetrievalExecutor
+from core.models import (
+    EmbeddingRequest,
+    EmbeddingResponse,
+    ErrorObject,
+    RerankRequest,
+    RerankResponse,
+)
+from core.retrieval_executor import ModelOperationFailure, RetrievalExecutor
 from core.runtime_state import GatewayDrainingError
 from core.stores import IdempotencyConflict
 
@@ -42,6 +48,19 @@ def validate_headers(
         raise HTTPException(status_code=400, detail="协议版本不兼容")
 
 
+def unknown_model(request_id: str, model: str) -> ModelOperationFailure:
+    return ModelOperationFailure(
+        request_id,
+        ErrorObject(
+            type="model_not_found",
+            code="MODEL_NOT_FOUND",
+            message=f"未知或不可用模型: {model}",
+            retryable=False,
+        ),
+        404,
+    )
+
+
 @router.post("/embeddings", response_model=EmbeddingResponse)
 async def create_embeddings(
     request: EmbeddingRequest,
@@ -59,7 +78,7 @@ async def create_embeddings(
     try:
         return await executor.embeddings(request, context)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=f"未知模型: {request.model}") from exc
+        raise unknown_model(request.request_id, request.model) from exc
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail="相同 request_id 对应不同请求正文") from exc
     except GatewayDrainingError as exc:
@@ -87,7 +106,7 @@ async def create_rerank(
     try:
         return await executor.rerank(request, context)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=f"未知模型: {request.model}") from exc
+        raise unknown_model(request.request_id, request.model) from exc
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail="相同 request_id 对应不同请求正文") from exc
     except GatewayDrainingError as exc:

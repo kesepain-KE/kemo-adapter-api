@@ -23,7 +23,7 @@ class ExampleProtocolMapper:
             raise ValueError(f"未知 provider_options: {sorted(unknown)}")
         # TODO: 完整映射 system/input/tools/generation/reasoning/output/provider_state。
         return {
-            "model": request.model.removeprefix("example/"),
+            "model": request.model.removeprefix("example-"),
             "stream": request.stream,
             # TODO: 映射到厂商可用的最高权限指令层，不能降为普通 user message。
             "highest_priority_system_prompt": gateway_system_prompt,
