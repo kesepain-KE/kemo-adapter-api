@@ -1,0 +1,1 @@
+{"root":["./src/admincontext.tsx","./src/app.tsx","./src/adminapi.ts","./src/data.ts","./src/main.tsx","./src/types.ts","./src/components/layout.tsx","./src/components/ui.tsx","./src/pages/dashboard.tsx","./src/pages/keys.tsx","./src/pages/logs.tsx","./src/pages/models.tsx","./src/pages/providers.tsx","./src/pages/settings.tsx"],"version":"5.9.3"}

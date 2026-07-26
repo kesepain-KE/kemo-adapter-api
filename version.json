@@ -1,0 +1,6 @@
+{
+  "version": "0.3.0",
+  "protocol_version": "1.0",
+  "build": null,
+  "notes": "运行时控制面热更新骨架"
+}

@@ -1,0 +1,11 @@
+# Kemo 网关生产依赖
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pycryptodome>=3.20.0
+httpx>=0.27.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.9
+
+# 开发/测试
+pytest>=8.0.0
