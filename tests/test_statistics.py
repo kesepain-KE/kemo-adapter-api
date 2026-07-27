@@ -70,7 +70,11 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
         )
         assert incomplete is not None
         await store.finish_invocation(
-            incomplete, status="incomplete", error_code="PROVIDER_BAD_RESPONSE"
+            incomplete,
+            status="incomplete",
+            error_code="PROVIDER_BAD_RESPONSE",
+            error_type="provider_error",
+            error_message="上游响应格式无效（已脱敏）",
         )
         await store.record_replay(
             task="llm",
@@ -100,6 +104,17 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
         assert sum(item["calls"] for item in hourly["items"]) == 2
         assert sum(item["successes"] for item in hourly["items"]) == 1
         assert sum(item["total_tokens"] or 0 for item in hourly["items"]) == 120
+        active_hour = next(item for item in hourly["items"] if item["calls"])
+        assert active_hour["input_tokens"] == 100
+        assert active_hour["cached_input_tokens"] == 25
+        assert active_hour["output_tokens"] == 20
+        assert active_hour["cache_hit_rate"] == 0.25
+        assert active_hour["success_rate"] == 0.5
+        empty_hour = next(item for item in hourly["items"] if not item["calls"])
+        assert empty_hour["total_tokens"] == 0
+        assert empty_hour["input_tokens"] == 0
+        assert empty_hour["output_tokens"] == 0
+        assert empty_hour["cached_input_tokens"] == 0
         key_usage = await store.gateway_key_usage()
         assert key_usage["graph-production"]["calls"] == 2
         assert key_usage["graph-production"]["successes"] == 1
@@ -110,10 +125,16 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
         recent = await store.recent_invocations("all", limit=10)
         successful = await store.recent_invocations("success", limit=10)
         failed = await store.recent_invocations("failure", limit=10)
+        selected_day = await store.recent_invocations("all", limit=10, day=completed.day)
         assert len(recent["items"]) == 2
+        assert selected_day["date"] == completed.day
+        assert len(selected_day["items"]) == 2
         assert successful["items"][0]["status"] == "completed"
         assert failed["items"][0]["status"] == "incomplete"
         assert failed["items"][0]["error_code"] == "PROVIDER_BAD_RESPONSE"
+        assert failed["items"][0]["error_type"] == "provider_error"
+        assert failed["items"][0]["error_message"] == "上游响应格式无效（已脱敏）"
+        assert failed["items"][0]["provider_model"] == "embedding-v1"
         assert failed["items"][0]["gateway_key_id"] == "graph-production"
         assert failed["items"][0]["tokens"]["total_tokens"] is None
         assert "request_id" not in failed["items"][0]
@@ -225,3 +246,15 @@ def test_admin_statistics_api_is_protected_and_validates_queries(tmp_path: Path)
             params={"from": "2026-07-26", "to": "2026-07-20"},
         )
         assert invalid_range.status_code == 422
+        invocation_logs = client.get(
+            "/admin/api/statistics/invocations",
+            params={"outcome": "failure", "limit": 10, "date": "2000-01-01"},
+        )
+        assert invocation_logs.status_code == 200
+        assert invocation_logs.json()["outcome"] == "failure"
+        assert invocation_logs.json()["date"] == "2000-01-01"
+        invalid_invocation_date = client.get(
+            "/admin/api/statistics/invocations",
+            params={"date": "not-a-date"},
+        )
+        assert invalid_invocation_date.status_code == 422

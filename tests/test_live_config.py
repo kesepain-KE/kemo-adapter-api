@@ -176,3 +176,28 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
         )
         assert query_existing.status_code == 404
         assert cancel_existing.status_code == 404
+
+
+def test_live_key_model_whitelist_distinguishes_allow_all_and_deny_all(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        root = project(tmp_path)
+        manager = LiveConfigManager(root)
+        missing = await manager.refresh()
+        assert missing.api_keys["live-token"].allowed_models is None
+
+        payload = json.loads((root / "api" / "keys.json").read_text(encoding="utf-8"))
+        payload["keys"]["live-token"]["allowed_models"] = []
+        write_json(root / "api" / "keys.json", payload)
+        deny_all = await manager.refresh()
+        assert deny_all.api_keys["live-token"].allowed_models == frozenset()
+
+        payload["keys"]["live-token"]["allowed_models"] = ["fake-model"]
+        write_json(root / "api" / "keys.json", payload)
+        allow_list = await manager.refresh()
+        assert allow_list.api_keys["live-token"].allowed_models == frozenset(
+            {"fake-model"}
+        )
+
+    asyncio.run(scenario())

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from collections.abc import AsyncIterator
 
 import pytest
@@ -157,6 +158,21 @@ def test_registry_uses_canonical_provider_prefix_without_parsing_hyphens() -> No
 def test_registry_rejects_deprecated_slash_model_names() -> None:
     with pytest.raises(ValueError, match="fake-"):
         ProviderRegistry().register(SlashNamedProvider())
+
+
+def test_discovery_rejects_provider_id_that_differs_from_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_info = SimpleNamespace(name="providers.folder_name", ispkg=True)
+    package = FakeProvider()
+    monkeypatch.setattr("core.registry.pkgutil.iter_modules", lambda *_: [module_info])
+    monkeypatch.setattr(
+        "core.registry.importlib.import_module",
+        lambda *_: SimpleNamespace(create_provider=lambda settings: package),
+    )
+
+    with pytest.raises(ValueError, match="Provider ID 必须与目录名一致"):
+        ProviderRegistry().discover({})
 
 
 def test_non_stream_usage_is_preserved_without_gateway_reinterpretation() -> None:

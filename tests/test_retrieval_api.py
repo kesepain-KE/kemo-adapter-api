@@ -271,6 +271,47 @@ def test_rerank_returns_stable_ids_sorted_scores_and_optional_documents(
     assert provider.rerank_calls == 1
 
 
+def test_model_whitelist_applies_to_embeddings_and_rerank(tmp_path: Path) -> None:
+    settings = Settings(
+        api_keys={
+            "limited-token": PrincipalConfig(
+                "graph",
+                "limited-worker",
+                frozenset({"model:invoke"}),
+                allowed_models=frozenset({"retrieval-embed-v1"}),
+            )
+        }
+    )
+    app = create_app(
+        settings,
+        live_config_root=retrieval_project(tmp_path),
+        discover_providers=False,
+    )
+    app.state.registry.register(FakeRetrievalProvider())
+    embedding_headers = {
+        "Authorization": "Bearer limited-token",
+        "X-Kemo-Protocol-Version": "1.0",
+        "Idempotency-Key": "embed_req_1",
+    }
+    rerank_headers = {
+        "Authorization": "Bearer limited-token",
+        "X-Kemo-Protocol-Version": "1.0",
+        "Idempotency-Key": "rerank_req_1",
+    }
+
+    with TestClient(app) as client:
+        allowed = client.post(
+            "/model/embeddings", headers=embedding_headers, json=embedding_body()
+        )
+        blocked = client.post(
+            "/model/rerank", headers=rerank_headers, json=rerank_body()
+        )
+
+    assert allowed.status_code == 200
+    assert blocked.status_code == 403
+    assert blocked.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
+
+
 def test_capabilities_expose_retrieval_task_contracts(tmp_path: Path) -> None:
     app, _ = retrieval_app(tmp_path)
     headers = {"Authorization": "Bearer model-token"}

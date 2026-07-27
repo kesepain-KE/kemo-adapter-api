@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 
 from api.server import create_app
 from core.config import PrincipalConfig, Settings
+from core.provider_contract import ProviderProbeResult
 from tests.test_live_config import project, write_json
 from tests.test_provider_boundary import FakeProvider
+from tests.test_provider_boundary import request as provider_request
 
 
 ADMIN_HEADERS = {"Authorization": "Bearer admin-token"}
@@ -51,9 +53,17 @@ def no_auth_project(tmp_path: Path) -> Path:
 def test_provider_capabilities_are_available_only_through_admin_scope(
     tmp_path: Path,
 ) -> None:
+    probe_models = []
+
+    class InspectingFakeProvider(FakeProvider):
+        async def probe(self, model, context):
+            del context
+            probe_models.append(model)
+            return ProviderProbeResult(reachable=True, status="completed")
+
     root = admin_project(tmp_path)
     app = create_app(Settings(), live_config_root=root, discover_providers=False)
-    app.state.registry.register(FakeProvider())
+    app.state.registry.register(InspectingFakeProvider())
 
     with TestClient(app) as client:
         response = client.get(
@@ -80,6 +90,7 @@ def test_provider_capabilities_are_available_only_through_admin_scope(
         assert probe.json()["reachable"] is True
         assert probe.json()["status"] == "completed"
         assert probe.json()["latency_ms"] >= 0
+        assert probe_models == ["fake-model"]
 
 
 def test_empty_auth_environment_allows_direct_web_owner_but_not_public_api(
@@ -252,7 +263,11 @@ def test_admin_console_requires_admin_scope_and_redacts_provider_secrets(tmp_pat
             "nested": {"access_token": "also-hidden", "region": "test"},
         },
     )
-    app = create_app(Settings(), live_config_root=root, discover_providers=False)
+    app = create_app(
+        Settings(base_url="https://gateway.example.com"),
+        live_config_root=root,
+        discover_providers=False,
+    )
 
     with TestClient(app) as client:
         assert client.get("/admin/api/console").status_code == 401
@@ -260,6 +275,7 @@ def test_admin_console_requires_admin_scope_and_redacts_provider_secrets(tmp_pat
 
         response = client.get("/admin/api/console", headers=ADMIN_HEADERS)
         assert response.status_code == 200
+        assert response.json()["base_url"] == "https://gateway.example.com"
         assert response.json()["authentication"] == {"required": True}
         assert response.json()["permissions"] == {"can_restart": False}
         assert client.get(
@@ -340,6 +356,85 @@ def test_gateway_keys_are_owner_only_uncached_and_include_real_metadata(tmp_path
     }
     assert items["graph-production"]["last_used_at"] is None
     assert "owner-console" in items
+
+
+def test_owner_can_hot_update_key_model_whitelist_and_it_blocks_llm_calls(
+    tmp_path: Path,
+) -> None:
+    root = admin_project(tmp_path)
+    keys_path = root / "api" / "keys.json"
+    payload = json.loads(keys_path.read_text(encoding="utf-8"))
+    payload["keys"]["caller-token"]["key_id"] = "graph-production"
+    write_json(keys_path, payload)
+    app = create_app(Settings(), live_config_root=root, discover_providers=False)
+    app.state.registry.register(FakeProvider())
+    owner_headers = {"Authorization": "Bearer owner-token"}
+
+    with TestClient(app) as client:
+        listed = client.get("/admin/api/keys", headers=owner_headers)
+        assert listed.status_code == 200
+        assert listed.json()["models"] == [
+            {
+                "id": "fake-model",
+                "provider_id": "fake",
+                "provider_model": "model",
+                "enabled": True,
+            }
+        ]
+        caller = next(
+            item for item in listed.json()["items"] if item["id"] == "graph-production"
+        )
+        assert caller["allowed_models"] is None
+        assert caller["model_policy"] == "allow_all"
+
+        deny = client.put(
+            "/admin/api/keys/graph-production/model-policy",
+            headers=owner_headers,
+            json={
+                "expected_revision": listed.json()["revision"],
+                "allowed_models": [],
+            },
+        )
+        assert deny.status_code == 200
+        assert deny.json()["model_policy"] == "deny_all"
+
+        body = provider_request(stream=False).model_dump(mode="json")
+        blocked = client.post(
+            "/model/responses",
+            headers={
+                **CALLER_HEADERS,
+                "X-Kemo-Protocol-Version": "1.0",
+                "Idempotency-Key": "req_1",
+            },
+            json=body,
+        )
+        assert blocked.status_code == 403
+        assert blocked.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
+
+        allow = client.put(
+            "/admin/api/keys/graph-production/model-policy",
+            headers=owner_headers,
+            json={
+                "expected_revision": deny.json()["revision"],
+                "allowed_models": ["fake-model"],
+            },
+        )
+        assert allow.status_code == 200
+        assert client.get(
+            "/model/capabilities",
+            params={"model": "fake-model"},
+            headers=CALLER_HEADERS,
+        ).status_code == 200
+
+        stale = client.put(
+            "/admin/api/keys/graph-production/model-policy",
+            headers=owner_headers,
+            json={"expected_revision": "stale", "allowed_models": None},
+        )
+        assert stale.status_code == 409
+
+    stored = json.loads(keys_path.read_text(encoding="utf-8"))
+    assert stored["keys"]["caller-token"]["allowed_models"] == ["fake-model"]
 
 
 def test_revision_conflict_does_not_replace_runtime_config(tmp_path: Path) -> None:

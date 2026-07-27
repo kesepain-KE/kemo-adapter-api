@@ -37,6 +37,11 @@ def test_restart_detection_ignores_hot_config_and_tracks_startup_files(
     assert status["required"] is True
     assert status["message"] == "检测到需要重启的变量，请重启"
     assert status["changed_groups"] == ["environment", "backend", "providers"]
+    assert status["changed_files"] == [
+        ".env",
+        "api/server.py",
+        "providers/fake/manifest.json",
+    ]
 
 
 def test_version_check_compares_local_and_remote_versions(tmp_path: Path, monkeypatch) -> None:
