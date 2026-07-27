@@ -258,6 +258,13 @@ The only authoritative template is `template/provider/`. A Provider must at mini
 
 There is no second authoritative reference beyond `template/provider/`. After implementing a provider package, run the contract tests before putting it into service.
 
+Task type and modality are separate concerns. Vision or audio conversation may still use `task=llm`, while
+TTS, ASR, realtime audio, image generation, and image editing must not be disguised as LLM requests. Media
+blocks must be translated from the real Kemo fields: `source.kind`, `source.uri/source.data`, and the
+content-level `mime_type`. Capability declarations and tests must use actual Kemo client serialization and
+verified vendor responses; the label “OpenAI-compatible” is not evidence of multimodal, tool, reasoning, or
+streaming support.
+
 See [ADD_DIY/provider-package.md](ADD_DIY/provider-package.md) for the creation workflow.
 
 ---

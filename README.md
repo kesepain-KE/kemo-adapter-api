@@ -259,6 +259,11 @@ API 密钥、Provider、每日统计、运行时或私有开发目录，更新�
 
 除了 `template/provider/`，没有第二份权威参考。厂商包实现后，建议先通过提供的契约测试再投入使用。
 
+任务类型与模态必须分开理解：视觉或语音对话仍可属于 `task=llm`，但 TTS、ASR、实时音频、
+图片生成/编辑等独立任务不能伪装成 LLM。媒体块必须按 Kemo 的 `source.kind`、
+`source.uri/source.data` 和内容块级 `mime_type` 转换；能力声明与测试必须使用真实 Kemo 客户端
+结构和厂商响应，不能仅靠“OpenAI-compatible”推断。
+
 创建流程见 [ADD_DIY/provider-package.md](ADD_DIY/provider-package.md)。
 
 ---
