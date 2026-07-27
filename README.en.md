@@ -163,6 +163,50 @@ When both a Web token and username/password are configured, the token check runs
 
 ---
 
+## Connect the kemo-agent status extension
+
+kemo-agent `v0.6.0` includes `global_expand/kemo_gateway_status/`. The extension is inactive by default. It reads `GET /status` with a dedicated status token only after explicit user authorization, and it never calls restart, key-management, or Provider-configuration administration APIs.
+
+### 1. Configure a status token on the gateway
+
+Add a new dedicated token to the gateway `.env`:
+
+```dotenv
+STATUS_TOKEN=replace-with-a-dedicated-random-token
+```
+
+Environment variables are read at startup, so restart the gateway after changing this value. It must not match `WEB_TOKEN`, `GATEWAY_API_KEY`, or any model invocation key in `api/keys.json`; otherwise `/status` refuses to start.
+
+### 2. Ask the main agent to activate the extension
+
+Explicitly ask kemo-agent to activate the Kemo gateway status extension and provide the gateway root URL and status token. The main agent performs the equivalent structured call:
+
+```text
+expand_call(
+  scope="global",
+  module="kemo_gateway_status",
+  command="activate",
+  params={
+    "base_url": "http://127.0.0.1:7531",
+    "status_token": "<dedicated STATUS_TOKEN>"
+  }
+)
+```
+
+The extension validates the endpoint and response contract before it saves local configuration or enables prompt injection. It generates a concise status summary, a strict allow-list JSON snapshot, and a `1600×900` PNG chart covering runtime phase, version, Providers and models, success rate, latency, cache hit rate, and token usage.
+
+When the gateway is published behind a reverse proxy, FRP tunnel, or domain, `base_url` must be the exact external root URL reachable from kemo-agent. The status client refuses HTTP redirects so that the token cannot be forwarded to a host other than the configured origin.
+
+### 3. Refresh, inspect, or deactivate
+
+- `refresh` collects a new snapshot immediately and may target a statistics date;
+- `configuration_status` reads local activation state without a network request or token disclosure;
+- `deactivate` removes the local kemo-agent credentials, snapshots, and chart without stopping or modifying the gateway.
+
+See [api.md](api.md#智能体全局感知接口) for the complete status fields and error semantics.
+
+---
+
 ## Hot reload versus restart
 
 | Change | Restart required |

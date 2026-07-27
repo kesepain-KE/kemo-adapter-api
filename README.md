@@ -163,6 +163,50 @@ python start_web.py
 
 ---
 
+## 连接 kemo-agent 状态拓展
+
+kemo-agent `v0.6.0` 起内置 `global_expand/kemo_gateway_status/`。该拓展默认未激活，只在用户明确授权后使用独立状态 Token 读取 `GET /status`，不会调用重启、密钥管理或 Provider 配置等管理接口。
+
+### 1. 在网关配置状态 Token
+
+在网关 `.env` 中设置一个新的独立 Token：
+
+```dotenv
+STATUS_TOKEN=replace-with-a-dedicated-random-token
+```
+
+环境变量只在启动时读取，因此修改后必须重启网关。该值不能与 `WEB_TOKEN`、`GATEWAY_API_KEY` 或 `api/keys.json` 中的任一模型调用密钥相同，否则 `/status` 会拒绝启用。
+
+### 2. 让主智能体激活拓展
+
+向 kemo-agent 明确提出“激活 Kemo 网关状态拓展”，并提供网关根地址与刚才配置的状态 Token。主智能体会通过统一拓展工具执行等价调用：
+
+```text
+expand_call(
+  scope="global",
+  module="kemo_gateway_status",
+  command="activate",
+  params={
+    "base_url": "http://127.0.0.1:7531",
+    "status_token": "<独立 STATUS_TOKEN>"
+  }
+)
+```
+
+拓展会先验证接口和响应合同，成功后才在 kemo-agent 本地保存配置并打开状态注入。它会生成简短状态摘要、严格白名单过滤的 JSON 快照和 `1600×900` PNG 图表，展示运行阶段、版本、Provider/模型、调用成功率、延迟、缓存命中率及 Token 统计。
+
+如果网关位于反向代理、FRP 或域名之后，`base_url` 必须填写 kemo-agent 实际可访问的外部根地址。状态客户端不会自动跟随 HTTP 重定向，避免把 Token 发送到配置地址之外的主机。
+
+### 3. 刷新、检查或停用
+
+- `refresh`：立即重新采集，也可以指定统计日期；
+- `configuration_status`：只查看本地是否已激活，不联网、不返回 Token；
+- `deactivate`：删除 kemo-agent 本地凭据、快照和图表，不会关闭或修改网关。
+
+完整状态字段和错误语义见 [api.md](api.md#智能体全局感知接口)。
+
+---
+
 ## 热更新与重启
 
 | 变更 | 是否需要重启 |

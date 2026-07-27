@@ -62,6 +62,16 @@ Token。接口禁止返回网关密钥原文、Provider 密钥、请求头密钥
 响应 ID、Provider 原始响应或堆栈。响应固定携带 `Cache-Control: no-store`。该路由只支持 GET，
 不存在任何写操作。
 
+### kemo-agent 内置拓展
+
+kemo-agent `v0.6.0` 起可通过内置全局拓展 `kemo_gateway_status` 消费本接口。拓展默认未激活；
+用户明确提供网关根地址和独立 `STATUS_TOKEN` 后，主智能体调用 `activate` 完成首次验证。
+验证成功后，拓展在 kemo-agent 本地保存凭据，并从响应中白名单提取运行、版本、Provider、模型、
+调用与 Token 聚合数据，生成 Markdown 摘要、脱敏 JSON 和 PNG 图表。
+
+客户端不会跟随 HTTP 重定向，反向代理或隧道部署必须直接提供最终可访问的网关根地址。
+`deactivate` 只删除 kemo-agent 本地配置和产物，不改变本接口或网关运行状态。
+
 ## 公开模型命名
 
 所有 LLM、Embedding 和 Rerank 模型统一使用 `<provider_id>-<provider内部模型名>`：例如
