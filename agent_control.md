@@ -1,47 +1,60 @@
-# 智能体操纵网关索引
+# 智能体操纵 Kemo 网关索引
 
-本文件是自动化智能体修改 Kemo 网关时的第一入口。具体操作规程放在 `ADD_DIY/`，本页只定义
-导航、权限边界和完成标准。
+本文件是自动化智能体修改网关时的第一入口。先读取本页，再读取 `ADD_DIY/README.md` 和任务
+对应手册。不得仅凭通用 OpenAI 兼容经验、旧对话或厂商宣传页创建 Provider。
 
 ## 操作索引
 
 | 目标 | 必读文件 | 主要操作范围 |
 | --- | --- | --- |
-| 创建新厂商 | `ADD_DIY/provider-package.md` | `providers/<provider_id>/` |
-| 修改厂商协议、模型或 Usage | `ADD_DIY/provider-package.md` | 对应 Provider 包 |
-| 热更新厂商 API 配置/密钥 | `ADD_DIY/keys-and-secrets.md`、`ADD_DIY/architecture.md` | Provider 的 config/secrets |
-| 热更新网关 API 配置/密钥 | `ADD_DIY/keys-and-secrets.md` | `api/runtime.json` / `api/keys.json` |
-| 热更新最高权限提示词、禁用模型/厂商 | `ADD_DIY/architecture.md` | `core/live_control.json` |
+| 创建新厂商或增加模型 | `ADD_DIY/README.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/verification.md` | `providers/<provider_id>/` |
+| 修改厂商协议、流、工具、Usage、错误或探测 | `ADD_DIY/provider-package.md`、`ADD_DIY/architecture.md` | 对应 Provider 包 |
+| 使用厂商模板 | `template/README.md`、`template/provider/README.md` | 只复制到新 Provider，不覆盖现有实现 |
+| 热更新厂商 API 配置或密钥 | `ADD_DIY/keys-and-secrets.md`、`ADD_DIY/architecture.md` | Provider 的 `config.json` / `secrets.json` |
+| 热更新网关调用密钥或模型白名单 | `ADD_DIY/keys-and-secrets.md` | `api/keys.json` |
+| 热更新 API 启停、最高提示词、禁用模型/厂商 | `ADD_DIY/architecture.md` | `api/runtime.json` / `core/live_control.json` |
 | 修改环境变量 | `ADD_DIY/keys-and-secrets.md` | `.env`，必须重启 |
-| 修改公开 LLM/Embedding/Rerank API | `api.md`、`ADD_DIY/verification.md` | `api/`、`core/models.py` |
-| 接入智能体全局状态感知 | `api.md` | 只读 `GET /status` 与独立 `STATUS_TOKEN` |
-| 修改网关执行与恢复 | `ADD_DIY/architecture.md` | `core/` |
-| 修改管理网页 | `web/README.md` | `web/`，不得污染 `api.md` |
-| 平滑重启网关 | `ADD_DIY/architecture.md` | `restart.py` / Web owner API |
-| 发布前验证 | `ADD_DIY/verification.md` | `tests/`、`version.json` |
+| 修改公开 LLM/Embedding/Rerank API | `api.md`、`ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | `api/`、`core/models.py` |
+| 增加图片、音频、视频等新任务 | `api.md`、Provider 统一协议要求、`ADD_DIY/architecture.md` | 先扩展核心协议，禁止伪装成现有任务 |
+| 接入全局只读状态感知 | `api.md` | `GET /status` 与独立 `STATUS_TOKEN` |
+| 修改执行、恢复或平滑重启 | `ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | `core/`、`restart.py` |
+| 修改管理网页 | `web/README.md` | `web/`，不得写入公开 `api.md` |
+| 发布前验证 | `ADD_DIY/verification.md` | 测试、构建、版本和敏感信息检查 |
 
-## 强制边界
+## Provider 创建的硬约束
+
+1. 新厂商只从 `template/provider/` 复制；`providers/_template` 不存在，也不得重新创建。
+2. 文件夹名、`ProviderPackage.provider_id`、`manifest.json.provider_id` 必须完全一致。
+3. 公开模型名固定为 `<provider_id>-<厂商原始模型名>`。例如厂商 `deepseek`、上游
+   `deepseek-v4-flash` 对外为 `deepseek-deepseek-v4-flash`。
+4. `provider.models`、`MODEL_CAPABILITIES` 与 `manifest.json.models` 的键集合必须一致。
+5. 当前核心任务只有 `llm`、`embedding`、`rerank`；其他任务先扩展公开协议，不能套用错误端点。
+6. 每个厂商通过自己的 `probe.py` 实现真实可达性探测；核心不猜厂商协议。
+7. 未经真实验证的流式、工具、并行工具、推理、结构化输出和多模态能力必须声明为不支持。
+8. `providers/*` 默认不进入 Git。最终报告必须说明新厂商是部署端本地包还是经用户授权后随仓库发布。
+
+## 架构与安全边界
 
 1. 厂商差异必须留在 `providers/<provider_id>/`，核心不得按厂商名称写分支。
-2. 厂商原始 Token/媒体计量必须先在该包的 `usage.py` 中解释，再交给核心聚合。
-3. Provider 包只能输出对应任务的 `ProviderResult`、`ProviderEvent`、`ProviderEmbeddingResult`、
-   `ProviderRerankResult`、`Usage` 和统一错误，不能生成 SSE sequence、event_id 或 HTTP Response。
-4. `.env`、真实 API Key、Bearer Token、签名 URL 和 Provider State 明文不得写入源码、文档、
-   测试快照、日志或 Git。
-5. 智能体不得通过正文 `metadata.user` 决定租户或资源授权，必须使用认证后的 Principal。
-6. `api.md` 只记录网关对外提供的 LLM/Embedding/Rerank/Asset API，不记录 Web 管理端内部接口。
-7. 修改协议、Provider 契约或公开 API 后必须同步测试、`api.md` 和 `version.json`。
-8. 只有 `ADD_DIY/architecture.md` 热插拔清单中列出的配置变化允许无需重启；
-   其他任何改动都必须重启。环境变量永远属于必须重启的启动配置。
+2. 厂商 Token、缓存、推理和媒体计量先在该包 `usage.py` 中解释；核心不得猜测或补零。
+3. Provider 只能输出统一 Provider 对象，不能生成 HTTP Response、SSE 字节、sequence 或
+   event_id，也不能自行执行 kemo-agent 工具。
+4. `.env`、真实 API Key、Bearer Token、签名 URL、Provider State 和原始错误正文不得写入
+   源码、文档、Fixture、日志、终端摘要或 Git。
+5. 租户、主体和资源权限只能来自认证 Principal，不能相信正文 `metadata.user`。
+6. 未知 `provider_options` 必须拒绝；不得透传任意 URL、Header 或密钥。
+7. `api.md` 只记录网关对外 API；Web 管理接口记录在开发目录的 Web 后端 API 文档。
+8. 只有 `ADD_DIY/architecture.md` 热插拔清单中的配置无需重启。环境变量、Python、模型注册、
+   manifest、依赖和网页构建变化都必须重启。
+9. 未获授权不得调用付费厂商接口、创建资源、撤销密钥或扩大 scopes。
 
 ## 标准完成条件
 
-- Python 源码可完整编译；
-- 测试全部通过且没有 skipped；
-- 新厂商通过 Provider 契约测试和自己的 Golden Fixture；
-- 未知 `provider_options` 被拒绝；
-- 错误和 Usage 已脱敏；
-- 没有新增未说明的顶层目录；
-- 变更密钥时不在终端或最终报告中回显密钥值。
+- 没有模板占位符、缓存、抓包或真实密钥残留；
+- 模型命名、manifest、能力和运行时模型集合一致；
+- 普通文本、流式、工具、Usage、错误和 Provider 自有探测均有对应测试；
+- Python 完整编译、全部测试无 skipped、前端生产构建通过、`git diff --check` 通过；
+- 新厂商通过自己的脱敏 Golden Fixture，真实探测仅在用户授权后执行；
+- 最终报告说明真实支持能力、未知能力、是否需要重启、是否随 Git 发布，且不回显任何密钥。
 
-操作细节从 [ADD_DIY/README.md](ADD_DIY/README.md) 开始。
+具体流程从 [ADD_DIY/README.md](ADD_DIY/README.md) 开始。

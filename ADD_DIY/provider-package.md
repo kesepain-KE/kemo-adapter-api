@@ -1,83 +1,134 @@
 # 创建或修改 Provider Package
 
-## 创建流程
+Provider 是厂商差异的唯一归属。网关核心只认识 `core.models` 和
+`core.provider_contract.ProviderPackage`，不得知道具体厂商的请求字段、流事件、Token 规则或
+错误正文。
 
-### 强制前置验证（写任何代码前必须完成）
+## 1. 写代码前的判定
 
-1. **获取用户提供的 API 信息** — API Key、base_url、厂商名称；
-2. **读取操作手册索引** — 读取 `agent_control.md` 确认入口文档；
-3. **辨别用户需求** — 是创建新厂商、修改现有厂商、还是添加模型；
-4. **读取对应操作手册** — 创建新厂商读本文件（`ADD_DIY/provider-package.md`）；
-5. **检查厂商是否可访问** — 用真实 API Key 请求 `GET /v1/models` 或厂商健康端点；
-6. **获得厂商模型列表** — 从步骤 5 的响应中提取所有可用的上游模型名；
-7. **对所有模型进行能力范围测试** — 先辨别 `llm`、`embedding`、`rerank` 任务；LLM 验证流式、工具、思考、多模态和 JSON Output，Embedding 验证 query/document、维度、归一化和批量限制，Rerank 验证候选数、top_n、返回原文和分数方向；
-8. **向用户报告检测到的模型配置** — 展示模型名、能力、定价，等待用户确认；
-9. **经过用户允许后创建厂商目录** — 复制模板并实现代码；
-10. **检查创建是否成功** — 验证目录完整性、语法、基本导入。
+先确认任务属于以下哪一种：
 
-### 实现步骤
+1. 修改现有厂商：读取目标目录全部源码和测试，只做增量修改，禁止重新复制模板覆盖；
+2. 给现有厂商增加模型：确认上游模型名、任务和能力，再同步模型集合、能力与 manifest；
+3. 创建新厂商：复制 `template/provider/` 后完整替换占位符；
+4. 增加核心尚未支持的任务：停止创建 Provider，先向用户说明需要扩展公开协议。
 
-1. 将 `template/provider/` 复制为 `providers/<provider_id>/`；
-2. `provider_id` 使用小写字母、数字和下划线，并保持长期稳定；
-3. 将模板类名和示例模型替换为步骤 7 检测到的真实厂商信息；公开模型名必须使用
-   `<provider_id>-<厂商内部模型名>`，例如 `deepseek-deepseek-v4-flash`；
-4. 按职责实现 `client.py`、`protocol.py`、`streaming.py`、`usage.py`、`errors.py` 和
-   `capabilities.py`；
-5. 在包的 `__init__.py` 中只暴露 `create_provider(settings)`；
-6. 增加厂商 Golden Fixture 和公共 Provider 契约测试；
-7. 重启网关加载新代码。新增 Provider、协议、Usage、模型能力、任何 Python 代码的变化都必须重启。
+当前核心正式支持 `llm`、`embedding`、`rerank`。图片、音频、视频或其他任务不能为了接入而
+伪装成 LLM，也不能在网关核心写厂商专用旁路。
 
-工具调用测试必须覆盖非流式、流式、参数分片、单工具和并行工具。流式适配必须在参数完整后
-发送 `ProviderEventKind.TOOL_COMPLETED`；只把工具调用放进最终响应会导致 kemo-agent 看见
-`requires_action` 却无法执行工具。
+任何真实厂商调用都可能产生费用。除非用户已明确授权目标环境和测试费用，否则只允许读取
+用户提供的公开文档、本地代码和脱敏 Fixture；不得自行尝试密钥、枚举模型或创建云端资源。
 
-## 无需重启的厂商 API 配置
+## 2. 新厂商创建流程
 
-- `config.json`：Endpoint、超时、代理、非敏感默认 Header 等；
-- `secrets.json`：API Key 等敏感配置，必须被 Git 忽略；
-- 配置变化只影响新请求，在途请求继续使用旧 Client 直到完成；
-- 修改 `provider.py`、`protocol.py`、`usage.py` 等任何 Python 文件仍然必须重启。
+1. 确认稳定 `provider_id`。文件夹名、`provider_id` 和 manifest 必须完全一致；
+2. 复制 `template/provider/` 到 `providers/<provider_id>/`，不要使用已删除的
+   `providers/_template`；
+3. 删除复制出的 `__pycache__`、`.pyc`，将必要 `.example` 文件改为真实文件名；
+4. 替换所有 `Example`、`example`、`.invalid`、`vendor_` 和运行路径中的 TODO；
+5. 依据厂商官方协议实现传输、协议、流、Usage、错误、能力和探测；
+6. 使用脱敏真实响应制作 Golden Fixture，启用能力前先通过对应测试；
+7. 按 `verification.md` 完整验证并重启网关；新增目录不会被运行中进程自动发现。
 
-## 文件职责
+不要默认请求 `GET /v1/models`。只有厂商明确提供且用户授权时才能调用模型列表接口；否则使用
+用户指定模型和权威文档。模型价格无法从权威来源确认时标记“未知”，不得猜测。
 
-| 文件 | 职责 |
+## 3. 命名与模型映射
+
+- `provider_id` 使用小写字母、数字、下划线，不能以下划线开头，建议以小写字母开头；
+- 公开模型名固定为 `<provider_id>-<厂商原始模型名>`；
+- 示例：厂商 `deepseek` 的上游 `deepseek-v4-flash` 暴露为
+  `deepseek-deepseek-v4-flash`；
+- 厂商原始模型名允许包含多个连字符。只能移除自身完整的 `<provider_id>-` 前缀一次，不能
+  按任意连字符拆分；
+- `provider.models`、`MODEL_CAPABILITIES`、`manifest.json.models` 必须使用相同的完整网关
+  模型名；斜杠格式 `provider/model` 已废弃。
+
+## 4. 文件职责
+
+| 文件 | 唯一职责 |
 | --- | --- |
-| `provider.py` | 对网关的 Facade，编排本包模块 |
-| `client.py` | 鉴权、HTTP/SDK、超时、连接池、查询和取消 |
-| `protocol.py` | 厂商 DTO、请求映射、非流式响应映射 |
+| `__init__.py` | 只暴露 `create_provider(settings)` |
+| `provider.py` | Provider Facade、模块编排、Client 原子切换 |
+| `client.py` | 厂商鉴权、HTTP/SDK、连接池、超时和取消 |
+| `protocol.py` | Kemo 请求到厂商 DTO、非流式厂商响应到统一结果 |
 | `streaming.py` | 厂商流到无信封 `ProviderEvent` |
-| `usage.py` | 厂商 Token、缓存、推理和媒体计量语义 |
-| `errors.py` | HTTP/SDK 错误、重试和脱敏 |
-| `capabilities.py` | 模型、操作和参数限制 |
-| `manifest.json` | 非敏感静态模型目录 |
-| `config.json` | 无需重启的厂商 API 非敏感配置 |
-| `secrets.json` | 无需重启的厂商 API 密钥，不上传 Git |
+| `usage.py` | 厂商 Token、缓存、推理、图片、音视频计量语义 |
+| `errors.py` | 厂商异常到脱敏 `ErrorObject` |
+| `capabilities.py` | 经过真实验证的模型任务、模态、限制和操作 |
+| `probe.py` | 厂商自己的低成本真实可达性测试 |
+| `manifest.json` | 非敏感静态目录；必须与运行时代码一致，但当前不替代代码注册 |
+| `config.json` | 可热更新的非敏感 API 配置 |
+| `secrets.json` | 可热更新的厂商密钥，Git 忽略 |
+| `requirements.txt` | 可选厂商依赖；部署端必须显式安装，不会自动安装 |
 
-## 禁止事项
+## 5. Provider Facade 契约
 
-- 不得从 `api` 导入代码；
-- 不得在核心添加厂商专用字段或厂商名称分支；
-- 不得透传任意 Header、Endpoint 或 API Key；
-- 不得用 0 表示厂商没有返回的 Usage；
-- 不得自行执行 kemo-agent 工具；
-- 不得把厂商原始错误体和密钥写入统一错误。
-- 不得向 `ProviderException` 传字符串；必须传入本厂商完成脱敏的 `ErrorObject`。
-- 不得从请求 `extensions` 读取最高权限系统提示词；只使用核心传入的
-  `RequestContext.gateway_system_prompt`。
+所有 Provider 必须实现：
 
-Provider Package 的权威接口是 `core/provider_contract.py`，可复制模板但不得复制并修改这份契约。
+- `provider_id` 和非空 `models`；
+- `capabilities(model)`；
+- `probe(model, context)`，或明确保留默认 `PROBE_UNSUPPORTED`；
+- 对应任务执行方法：LLM 使用 `execute/stream`，Embedding 使用 `embed`，Rerank 使用
+  `rerank`；
+- `reload_config(settings)` 和 `close()`。
 
-模型归属由 Registry 在注册时精确保存。厂商内部模型名允许包含多个连字符，核心、管理端和
-Provider 都不得按任意连字符切分并猜测 Provider；Provider 映射上游名称时只能移除自身完整的
-`<provider_id>-` 前缀。斜杠形式的 `provider_id/model` 是废弃格式，注册时会被拒绝。
+`reload_config()` 必须先完整构造新 Client，验证通过后再一次性替换引用。构造失败不能破坏旧
+Client；旧 Client 要允许在途请求排空，不能因轮换 Key 主动关闭正在执行的流。
 
-## kemo-graph 模型契约
+Provider 只能返回 `ProviderResult`、`ProviderEvent`、`ProviderEmbeddingResult`、
+`ProviderRerankResult`、`ProviderProbeResult`、`Usage` 和统一错误。不得返回 FastAPI/HTTP
+对象，不得生成 SSE 字节、sequence 或 event_id。
 
-- 每个模型必须通过 `ModelCapabilities.task` 明确声明 `llm`、`embedding` 或 `rerank`。
-- 纯 Embedding/Rerank 厂商无需实现 LLM `execute()` / `stream()`。
-- Embedding 实现 `ProviderPackage.embed()`，只返回 `ProviderEmbeddingResult`；每个结果的 `index`
-  必须指向原请求位置，并提供稳定 `vector_space_id`。不得静默改变维度、顺序或归一化策略。
-- Rerank 实现 `ProviderPackage.rerank()`，只返回 `ProviderRerankResult`；结果必须使用原请求
-  document index，分数必须满足“越高越相关”，但不得伪造跨模型统一分值。
-- 两类任务的 Token、计费单位、截断和批处理规则仍由厂商目录的 `usage.py` / `protocol.py`
-  解释，核心只校验统一契约。
+## 6. 能力声明
+
+能力声明采用保守原则：没有真实测试证据就声明不支持。尤其不能因为厂商网页写着“兼容
+OpenAI”就默认支持工具、并行工具、推理、JSON Schema、图片或音频。
+
+- LLM：验证非流式、流式、最大输出、停止原因、工具、并行工具、推理和结构化输出；
+- Embedding：验证 query/document、维度、批量限制、截断和归一化；
+- Rerank：验证候选上限、`top_n`、原始 index、分数方向和返回文档行为；
+- `metadata.upstream_model` 必须是厂商真实模型名；
+- `extensions.probe` 应说明是否支持、探测方式和是否可能计费。
+
+## 7. 工具调用与多轮
+
+Provider 只翻译工具，不执行工具。必须覆盖：
+
+1. 非流式单工具和并行工具；
+2. 流式名称/参数跨 chunk 拼接；
+3. 每个调用具有稳定且独立的 `item_id`、`call_id`；
+4. 完整参数到齐后恰好发送一次 `TOOL_COMPLETED`；
+5. 最终 `ProviderResult.output` 保留全部 `tool_call`，终态为 `requires_action`；
+6. 工具结果通过原始 `call_id` 回传，不能混入另一调用；
+7. 非法 JSON 保留有限长度的 `arguments_raw` 和脱敏解析错误，不能静默丢失；
+8. 厂商要求回放 reasoning/provider state 时由该 Provider 自己保存和恢复，不能污染核心。
+
+## 8. Usage 与错误
+
+`usage.py` 是唯一允许理解厂商计量的地方。必须确定输入、缓存输入、输出、推理和 total 的包含
+关系；流式字段是累计值还是增量值；图片、音频、视频按 Token、秒、张还是像素计费。缺失值
+保持 `None`，不能填 `0`，不能用字符数冒充精确 Token。
+
+`errors.py` 至少区分鉴权、限流、超时、厂商不可用、用户参数错误和厂商响应格式错误。只保留
+脱敏 request id、HTTP 状态、retry-after 和有限异常类型；不得返回厂商响应正文、Headers、
+密钥或签名 URL。`ProviderException` 必须接收 `ErrorObject`，不能传字符串。
+
+## 9. Provider 自有探测
+
+管理端统一调用 `ProviderPackage.probe()`。每个厂商的 `probe.py` 决定最小真实输入、输出额度、
+异步轮询、超时和取消。网关只计时并统一返回，不猜测任务协议。
+
+探测应覆盖真实鉴权、模型路由和最小执行，隔离业务最高权限系统提示词，并尽量降低费用。
+探测属于管理操作，不进入正常业务调用统计。真实厂商错误仍通过该包的 `errors.py` 脱敏。
+
+## 10. 配置与重启
+
+- `config.json`：Base URL、超时、代理、非敏感默认 Header；
+- `secrets.json`：API Key 等敏感值；
+- 两者修改可热更新，只影响新请求；
+- Provider Python、manifest、依赖、模型注册和目录结构变化必须重启；
+- 厂商依赖不会因存在 `requirements.txt` 自动安装，部署前必须显式安装并记录版本范围。
+
+Provider 权威接口是 `core/provider_contract.py`。模板用于复制结构，绝不能复制一份核心契约到
+厂商目录后自行修改。最终完成条件以 [verification.md](verification.md) 为准。

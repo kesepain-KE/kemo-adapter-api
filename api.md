@@ -73,12 +73,83 @@ Provider 内部模型名可以继续包含连字符；网关通过注册表保�
 
 | 方法与路径 | 用途 | 当前骨架 |
 | --- | --- | --- |
+| `GET /model/models` | 获取当前密钥真正可调用的 Kemo 模型目录 | 已提供 |
+| `GET /model/models/{model}/capabilities` | 获取指定模型的真实能力声明 | 已提供 |
+| `GET /v1/models` | 常见智能体框架兼容的模型发现入口 | 已提供 |
 | `POST /model/responses` | 创建非流式或 SSE 响应 | 已提供 |
 | `GET /model/responses/{response_id}` | 查询运行中或终态响应 | 已提供 |
 | `POST /model/responses/{response_id}/cancel` | 幂等取消响应 | 已提供 |
-| `GET /model/capabilities?model={model}` | 查询真实模型能力 | 已提供 |
+| `GET /model/capabilities?model={model}` | 查询真实模型能力（旧式兼容路径） | 已提供 |
 | `POST /model/embeddings` | 为 kemo-graph 批量生成查询或文档向量 | 已提供 |
 | `POST /model/rerank` | 为 kemo-graph 对候选文档重排序 | 已提供 |
+
+### 当前密钥的模型发现
+
+智能体接入网关后应先请求 Kemo 原生目录：
+
+```http
+GET /model/models
+Authorization: Bearer <gateway-key>
+```
+
+可使用 `task=llm|embedding|rerank` 过滤任务类型。返回结果是“当前密钥视角”而不是注册表原始
+全量数据，会同时应用：
+
+- 当前密钥的 `allowed_models` 白名单；`null` 表示允许全部，空数组表示全部禁止；
+- Provider 和模型的全局启停状态；
+- `model:invoke`、`embedding:invoke`、`rerank:invoke` 或 `owner` scope；
+- Provider 的真实 capabilities 声明。
+
+响应示例：
+
+```json
+{
+  "protocol_version": "1.0",
+  "object": "kemo.model_list",
+  "count": 1,
+  "data": [
+    {
+      "id": "deepseek-deepseek-v4-flash",
+      "object": "kemo.model",
+      "provider_id": "deepseek",
+      "provider_model": "deepseek-v4-flash",
+      "task": "llm",
+      "capabilities_available": true,
+      "capabilities_url": "/model/models/deepseek-deepseek-v4-flash/capabilities"
+    }
+  ]
+}
+```
+
+如果某个 Provider 的能力声明暂时异常，持有 `model:invoke`/`owner` 的通用调用方仍可在未指定
+`task` 时看到该模型，但其 `task` 为 `unknown` 且 `capabilities_available=false`；任务专用密钥不会
+看到任务未知的模型。单个 Provider 异常不会使整个目录请求失败。目录与能力响应均携带
+`Cache-Control: no-store` 和 `Vary: Authorization`，不同密钥的结果禁止共用缓存。
+
+只支持常见模型列表协议的客户端可请求：
+
+```http
+GET /v1/models
+Authorization: Bearer <gateway-key>
+```
+
+它返回标准的 `object=list` 与 `data[].id/object/created/owned_by` 形状，并应用与 Kemo 原生目录
+完全相同的密钥白名单、全局启停和 scope 过滤。网关不提供语义不明确的 `/api/models`、
+`/models` 等额外别名。
+
+### 模型能力声明
+
+推荐使用路径式接口：
+
+```http
+GET /model/models/deepseek-deepseek-v4-flash/capabilities
+Authorization: Bearer <gateway-key>
+```
+
+旧客户端可以继续使用 `GET /model/capabilities?model=...`，两者响应完全一致。能力查询同样要求
+模型位于当前密钥白名单内，并检查声明任务对应的 scope。响应包含 `task`、输入/输出模态、
+流式、推理档位、工具调用、结构化输出，以及 Embedding/Rerank 的任务专属约束；不会返回
+Provider 密钥、网关密钥、请求头或其他私有配置。
 
 `POST /model/responses` 的正文使用 Kemo Provider Request。`stream=false` 返回完整
 `KemoResponse`；`stream=true` 返回 `text/event-stream`，第一个事件为 `response.created`，且每个

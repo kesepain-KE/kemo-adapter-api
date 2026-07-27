@@ -6,18 +6,19 @@
 Kemo Agent
     │ Kemo HTTP / SSE
     ▼
-api ──► core.executor ──► core.ProviderPackage contract
+api ──► core.executor ──► core.provider_contract.ProviderPackage
                                 ▲
                                 │ 仅统一对象
                     providers/<provider_id>/provider.py
                        │       │       │       │
-                    client  protocol  usage  errors/streaming
+                    client  protocol  usage  errors/streaming/probe
                        │
                        ▼
                     厂商 API
 ```
 
 Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不得反向导入某个具体厂商。
+管理端模型测试同样遵循此边界：核心调用 `package.probe()`，真实测试协议保留在厂商目录。
 
 ## 热插拔清单（无需重启）
 
@@ -57,6 +58,23 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 | 协议版本 | `X-Kemo-Protocol-Version` 硬校验为 `"1.0"` | `routes/responses.py`、`routes/retrieval.py` |
 
 **环境变量永远属于必须重启的启动配置**，不得把环境变量误报为已热加载。
+
+`providers/*` 默认被 Git 忽略，是部署端加载区；复制新 Provider 后必须在完成报告中明确它是否
+会随仓库发布。除非用户授权，不得为了推送某个厂商而扩大 `.gitignore` 的跟踪范围。
+
+## Provider 探测边界
+
+```text
+POST /admin/api/models/{model}/probe
+  → 管理鉴权 / Registry / Drain / 活动执行计数
+  → ProviderPackage.probe(model, context)
+  → providers/<id>/probe.py 的真实低成本调用
+  → ProviderProbeResult
+  → 统一可达性响应
+```
+
+探测不注入业务最高权限系统提示词，也不进入普通业务调用统计。未实现探测器必须明确返回
+`PROBE_UNSUPPORTED`；核心不得把未知任务默认当成 LLM、Embedding 或 Rerank。
 
 ## Usage 边界
 
