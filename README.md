@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.6.0-blue" alt="Gateway version 0.6.0"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.6.1-blue" alt="Gateway version 0.6.1"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -232,6 +232,17 @@ python restart.py --status
 ```
 
 重启模块会先进入 Drain，等待在途请求结束。管理控制台也提供二次确认、耗时反馈和状态轮询。
+
+### 项目自更新
+
+```powershell
+python update.py --check
+python update.py --apply
+```
+
+执行更新前会在 `.backup/` 创建冷备份；备份失败时不会拉取代码。远端提交如果触碰 `.env`、
+API 密钥、Provider、每日统计、运行时或私有开发目录，更新器会拒绝整次更新，避免覆盖部署端数据。
+前端发生变化时会复用 `setup.py` 的 Windows/Linux 一站式工具链自动安装依赖并重新构建。
 
 ---
 

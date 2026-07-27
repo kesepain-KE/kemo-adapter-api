@@ -1,6 +1,6 @@
 {
-  "version": "0.6.0",
+  "version": "0.6.1",
   "protocol_version": "1.0",
   "build": null,
-  "notes": "新增 Provider 自有可达性探测与可执行模板验证，完善 Agent DIY、模型目录与密钥白名单、DeepSeek 工具调用和多轮适配、Web 管理能力与一站式自动部署"
+  "notes": "强化自更新数据保护：备份失败立即中止，受保护路径变更拒绝拉取，前端更新复用 Windows/Linux 一站式工具链"
 }

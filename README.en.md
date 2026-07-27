@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.6.0-blue" alt="Gateway version 0.6.0"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.6.1-blue" alt="Gateway version 0.6.1"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -233,6 +233,15 @@ python restart.py --status
 ```
 
 The restart module drains in-flight requests before restarting. The web console also provides confirmation, progress feedback, and status polling.
+
+### Self-update
+
+```powershell
+python update.py --check
+python update.py --apply
+```
+
+The updater creates a cold backup under `.backup/` before pulling and stops if that backup fails. It rejects the entire update when a remote commit touches `.env`, API keys, Providers, daily statistics, runtime state, or the private developer directory, preventing deployment data from being overwritten. Front-end changes reuse the cross-platform `setup.py` toolchain to install locked dependencies and rebuild automatically on Windows or Linux.
 
 ---
 
