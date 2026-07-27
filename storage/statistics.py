@@ -127,6 +127,8 @@ class StatisticsStore:
         status: str,
         usage: Usage | None = None,
         error_code: str | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
         provider_response_id: str | None = None,
     ) -> None:
         if handle is None:
@@ -141,6 +143,8 @@ class StatisticsStore:
                     status,
                     usage,
                     error_code,
+                    error_type,
+                    error_message,
                     provider_response_id,
                     latency_ms,
                 )
@@ -209,15 +213,17 @@ class StatisticsStore:
             return await asyncio.to_thread(self._gateway_key_usage_sync)
 
     async def recent_invocations(
-        self, outcome: str = "all", *, limit: int = 50
+        self, outcome: str = "all", *, limit: int = 50, day: str | None = None
     ) -> dict[str, object]:
-        """Return a secret-safe recent operational log across all daily databases."""
+        """Return a secret-safe operational log across one day or all daily databases."""
         if outcome not in {"all", "success", "failure"}:
             raise ValueError("outcome must be all, success or failure")
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
+        if day is not None:
+            self._path_for_day(day)
         async with self._lock:
-            return await asyncio.to_thread(self._recent_invocations_sync, outcome, limit)
+            return await asyncio.to_thread(self._recent_invocations_sync, outcome, limit, day)
 
     def _path_for_day(self, day: str) -> Path:
         parsed = date.fromisoformat(day)
@@ -257,6 +263,8 @@ class StatisticsStore:
                     finished_at TEXT,
                     status TEXT NOT NULL,
                     error_code TEXT,
+                    error_type TEXT,
+                    error_message TEXT,
                     latency_ms REAL,
                     input_tokens INTEGER,
                     cached_input_tokens INTEGER,
@@ -308,6 +316,15 @@ class StatisticsStore:
                 PRAGMA user_version=1;
                 """
             )
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(invocations)")
+            }
+            if "error_type" not in columns:
+                connection.execute("ALTER TABLE invocations ADD COLUMN error_type TEXT")
+            if "error_message" not in columns:
+                connection.execute("ALTER TABLE invocations ADD COLUMN error_message TEXT")
+            connection.execute("PRAGMA user_version=2")
         self._initialized_paths.add(path)
 
     def _ensure_database(self, path: Path) -> None:
@@ -374,6 +391,8 @@ class StatisticsStore:
         status: str,
         usage: Usage | None,
         error_code: str | None,
+        error_type: str | None,
+        error_message: str | None,
         provider_response_id: str | None,
         latency_ms: float,
     ) -> None:
@@ -386,6 +405,7 @@ class StatisticsStore:
                 return
             connection.execute(
                 """UPDATE invocations SET finished_at=?, status=?, error_code=?,
+                    error_type=?, error_message=?,
                     provider_response_id=?, latency_ms=?, input_tokens=?,
                     cached_input_tokens=?, output_tokens=?, reasoning_tokens=?,
                     visible_output_tokens=?, total_tokens=?, usage_mode=?, usage_exact=?,
@@ -395,6 +415,8 @@ class StatisticsStore:
                     finished_at,
                     status,
                     error_code,
+                    str(error_type or "")[:160] or None,
+                    str(error_message or "")[:2000] or None,
                     provider_response_id,
                     latency_ms,
                     *(normalized[field] for field in TOKEN_FIELDS),
@@ -589,8 +611,20 @@ class StatisticsStore:
                 "label": f"{hour:02d}:00",
                 "calls": 0,
                 "successes": 0,
+                "terminal_calls": 0,
+                "success_rate": None,
+                "input_tokens": 0,
+                "input_token_samples": 0,
+                "cached_input_tokens": 0,
+                "cached_input_token_samples": 0,
+                "output_tokens": 0,
+                "output_token_samples": 0,
                 "total_tokens": 0,
                 "token_samples": 0,
+                "cache_eligible_input_tokens": 0,
+                "cache_eligible_cached_tokens": 0,
+                "cache_eligible_samples": 0,
+                "cache_hit_rate": None,
             }
             for hour in range(24)
         ]
@@ -598,7 +632,9 @@ class StatisticsStore:
         if path.exists():
             with self._connect(path) as connection:
                 rows = connection.execute(
-                    "SELECT started_at, status, total_tokens FROM invocations WHERE day=?",
+                    """SELECT started_at, status, input_tokens, cached_input_tokens,
+                              output_tokens, total_tokens, usage_exact, usage_exact_fields
+                         FROM invocations WHERE day=?""",
                     (day,),
                 ).fetchall()
             for row in rows:
@@ -611,14 +647,70 @@ class StatisticsStore:
                     continue
                 bucket = buckets[hour]
                 bucket["calls"] = int(bucket["calls"]) + 1
-                if row["status"] == "completed":
+                if row["status"] in {"completed", "requires_action"}:
                     bucket["successes"] = int(bucket["successes"]) + 1
-                if row["total_tokens"] is not None:
-                    bucket["total_tokens"] = int(bucket["total_tokens"]) + int(row["total_tokens"])
-                    bucket["token_samples"] = int(bucket["token_samples"]) + 1
+                if row["status"] in {
+                    "completed",
+                    "requires_action",
+                    "failed",
+                    "incomplete",
+                    "cancelled",
+                }:
+                    bucket["terminal_calls"] = int(bucket["terminal_calls"]) + 1
+                for field, sample_field in (
+                    ("input_tokens", "input_token_samples"),
+                    ("cached_input_tokens", "cached_input_token_samples"),
+                    ("output_tokens", "output_token_samples"),
+                    ("total_tokens", "token_samples"),
+                ):
+                    if row[field] is not None:
+                        bucket[field] = int(bucket[field]) + int(row[field])
+                        bucket[sample_field] = int(bucket[sample_field]) + 1
+                try:
+                    exact_fields = set(json.loads(row["usage_exact_fields"] or "[]"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    exact_fields = set()
+                cache_eligible = bool(row["usage_exact"]) or {
+                    "input_tokens",
+                    "cached_input_tokens",
+                }.issubset(exact_fields)
+                if (
+                    cache_eligible
+                    and row["input_tokens"] is not None
+                    and row["cached_input_tokens"] is not None
+                ):
+                    bucket["cache_eligible_input_tokens"] = int(
+                        bucket["cache_eligible_input_tokens"]
+                    ) + int(row["input_tokens"])
+                    bucket["cache_eligible_cached_tokens"] = int(
+                        bucket["cache_eligible_cached_tokens"]
+                    ) + int(row["cached_input_tokens"])
+                    bucket["cache_eligible_samples"] = int(
+                        bucket["cache_eligible_samples"]
+                    ) + 1
         for bucket in buckets:
-            if not bucket["token_samples"]:
-                bucket["total_tokens"] = None
+            terminal_calls = int(bucket.pop("terminal_calls"))
+            bucket["success_rate"] = (
+                int(bucket["successes"]) / terminal_calls if terminal_calls else None
+            )
+            eligible_input = int(bucket.pop("cache_eligible_input_tokens"))
+            eligible_cached = int(bucket.pop("cache_eligible_cached_tokens"))
+            bucket["cache_hit_rate"] = (
+                eligible_cached / eligible_input
+                if int(bucket["cache_eligible_samples"]) and eligible_input > 0
+                else None
+            )
+            # A bucket without calls is a real zero. A bucket with calls but no
+            # accounting sample stays null so the UI can label it as unmeasured.
+            if bucket["calls"]:
+                for field, sample_field in (
+                    ("input_tokens", "input_token_samples"),
+                    ("cached_input_tokens", "cached_input_token_samples"),
+                    ("output_tokens", "output_token_samples"),
+                    ("total_tokens", "token_samples"),
+                ):
+                    if not bucket[sample_field]:
+                        bucket[field] = None
         return {"date": day, "timezone": self.timezone_name, "items": buckets}
 
     def _rankings_sync(self, day: str, dimension: str, limit: int) -> dict[str, object]:
@@ -704,7 +796,9 @@ class StatisticsStore:
                 current["total_tokens"] = None
         return aggregated
 
-    def _recent_invocations_sync(self, outcome: str, limit: int) -> dict[str, object]:
+    def _recent_invocations_sync(
+        self, outcome: str, limit: int, day: str | None = None
+    ) -> dict[str, object]:
         filters = {
             "all": ("", ()),
             "success": (" AND status IN ('completed','requires_action')", ()),
@@ -712,14 +806,32 @@ class StatisticsStore:
         }
         predicate, parameters = filters[outcome]
         collected: list[dict[str, object]] = []
-        for path in sorted(self.daily_root.glob("*/*/*.sqlite3"), reverse=True):
+        paths = (
+            [self._path_for_day(day)]
+            if day is not None
+            else sorted(self.daily_root.glob("*/*/*.sqlite3"), reverse=True)
+        )
+        for path in paths:
             uri = f"file:{path.as_posix()}?mode=ro"
             try:
                 with sqlite3.connect(uri, uri=True, timeout=10) as connection:
                     connection.row_factory = sqlite3.Row
+                    columns = {
+                        str(row[1])
+                        for row in connection.execute("PRAGMA table_info(invocations)")
+                    }
+                    error_type_column = (
+                        "error_type" if "error_type" in columns else "NULL AS error_type"
+                    )
+                    error_message_column = (
+                        "error_message"
+                        if "error_message" in columns
+                        else "NULL AS error_message"
+                    )
                     rows = connection.execute(
                         f"""SELECT started_at, finished_at, task, provider_id, model,
-                                   gateway_key_id, status, error_code, latency_ms,
+                                   gateway_key_id, status, error_code,
+                                   {error_type_column}, {error_message_column}, latency_ms,
                                    input_tokens, cached_input_tokens, output_tokens,
                                    reasoning_tokens, visible_output_tokens, total_tokens,
                                    usage_mode, usage_exact
@@ -737,9 +849,16 @@ class StatisticsStore:
                     "task": row["task"],
                     "provider_id": row["provider_id"],
                     "model": row["model"],
+                    "provider_model": (
+                        str(row["model"])[len(str(row["provider_id"])) + 1:]
+                        if str(row["model"]).startswith(f"{row['provider_id']}-")
+                        else row["model"]
+                    ),
                     "gateway_key_id": row["gateway_key_id"],
                     "status": row["status"],
                     "error_code": row["error_code"],
+                    "error_type": row["error_type"],
+                    "error_message": row["error_message"],
                     "latency_ms": row["latency_ms"],
                     "tokens": {field: row[field] for field in TOKEN_FIELDS},
                     "usage": {
@@ -750,7 +869,7 @@ class StatisticsStore:
                 for row in rows
             )
         collected.sort(key=lambda item: str(item["started_at"]), reverse=True)
-        return {"outcome": outcome, "items": collected[:limit]}
+        return {"outcome": outcome, "date": day, "items": collected[:limit]}
 
     def _mark_success(self) -> None:
         self._healthy = True

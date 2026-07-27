@@ -5,7 +5,8 @@
       "created_at": "2026-07-27T10:30:00+08:00",
       "tenant_id": "tenant-1",
       "subject_id": "kemo-agent",
-      "scopes": ["model:invoke", "embedding:invoke", "rerank:invoke", "asset:read", "asset:write"]
+      "scopes": ["model:invoke", "embedding:invoke", "rerank:invoke", "asset:read", "asset:write"],
+      "allowed_models": null
     }
   }
 }

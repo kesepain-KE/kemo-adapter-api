@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core.config import PrincipalConfig, safe_key_id
+from core.config import PrincipalConfig, parse_allowed_models, safe_key_id
 
 
 MAX_CONFIG_BYTES = 1024 * 1024
@@ -134,6 +134,7 @@ class LiveConfigManager:
                 subject_id=str(value["subject_id"]),
                 scopes=frozenset(value.get("scopes", ["model:invoke"])),
                 key_id=safe_key_id(token, value.get("key_id")),
+                allowed_models=parse_allowed_models(value.get("allowed_models")),
             )
 
         provider_settings: dict[str, dict[str, Any]] = {}

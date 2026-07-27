@@ -16,6 +16,47 @@ class Principal:
     subject_id: str
     scopes: frozenset[str]
     key_id: str | None = None
+    allowed_models: frozenset[str] | None = None
+
+
+def ensure_model_allowed(principal: Principal, model: str) -> None:
+    """Apply the API key's model whitelist; None means allow every model."""
+    if principal.allowed_models is not None and model not in principal.allowed_models:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "MODEL_NOT_ALLOWED",
+                "message": f"当前 API 密钥未获准调用模型: {model}",
+            },
+        )
+
+
+def can_access_model_task(principal: Principal, task: str) -> bool:
+    """Return whether the principal may discover or invoke a model task."""
+    if principal.scopes.intersection({"owner", "model:invoke"}):
+        return True
+    if task == "embedding":
+        return "embedding:invoke" in principal.scopes
+    if task == "rerank":
+        return "rerank:invoke" in principal.scopes
+    return False
+
+
+def ensure_model_task_allowed(principal: Principal, task: str) -> None:
+    if can_access_model_task(principal, task):
+        return
+    required_scope = {
+        "llm": "model:invoke",
+        "embedding": "embedding:invoke",
+        "rerank": "rerank:invoke",
+    }.get(task, "model:invoke")
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "MODEL_TASK_NOT_ALLOWED",
+            "message": f"当前 API 密钥缺少 {required_scope} 权限",
+        },
+    )
 
 
 async def authenticated_principal(
@@ -103,5 +144,6 @@ async def _resolve_principal(
                 config.subject_id,
                 config.scopes,
                 safe_key_id(candidate, config.key_id),
+                config.allowed_models,
             )
     raise HTTPException(status_code=401, detail="Bearer Token 无效")

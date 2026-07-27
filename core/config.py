@@ -15,6 +15,8 @@ class PrincipalConfig:
     subject_id: str
     scopes: frozenset[str] = frozenset({"model:invoke", "asset:read", "asset:write"})
     key_id: str | None = None
+    # None means all models are allowed; an empty set means deny all.
+    allowed_models: frozenset[str] | None = None
 
 
 def safe_key_id(token: str, configured: object = None) -> str:
@@ -28,6 +30,7 @@ def safe_key_id(token: str, configured: object = None) -> str:
 class Settings:
     host: str = "127.0.0.1"
     port: int = 7531
+    base_url: str = ""
     protocol_version: str = "1.0"
     api_keys: dict[str, PrincipalConfig] = field(default_factory=dict)
     provider_settings: dict[str, Any] = field(default_factory=dict)
@@ -48,6 +51,7 @@ class Settings:
                     subject_id=value["subject_id"],
                     scopes=frozenset(value.get("scopes", ["model:invoke"])),
                     key_id=safe_key_id(token, value.get("key_id")),
+                    allowed_models=parse_allowed_models(value.get("allowed_models")),
                 )
         legacy_key = os.getenv("GATEWAY_API_KEY")
         if legacy_key and legacy_key not in api_keys:
@@ -60,6 +64,7 @@ class Settings:
         return cls(
             host=os.getenv("HOST", "127.0.0.1"),
             port=int(os.getenv("PORT", "7531")),
+            base_url=os.getenv("GATEWAY_BASE_URL", "").strip(),
             api_keys=api_keys,
             provider_settings=provider_settings,
             web_username=os.getenv("WEB_USERNAME", ""),
@@ -68,3 +73,13 @@ class Settings:
             status_token=os.getenv("STATUS_TOKEN", ""),
             statistics_timezone=os.getenv("STATISTICS_TIMEZONE", "Asia/Shanghai"),
         )
+
+
+def parse_allowed_models(value: object) -> frozenset[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("allowed_models 必须是数组或 null")
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        raise ValueError("allowed_models 只能包含非空模型名")
+    return frozenset(item.strip() for item in value)
