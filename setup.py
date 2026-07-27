@@ -1,7 +1,7 @@
-"""Kemo 网关首次部署助手。
+"""Kemo 网关部署入口。
 
-默认只检查环境；使用 --init-env 创建本地配置，使用 --install-dependencies 安装 Python 依赖，
-使用 --build-frontend 安装并构建 Web 管理端。
+无参数运行时执行完整部署：安装 Python 依赖、重新构建 Web 管理端、缺失时创建 .env，
+最后检查部署结果。显式参数可只执行指定步骤；--check 只检查且不修改环境。
 脚本永远不会覆盖已有 .env。
 """
 
@@ -113,23 +113,34 @@ def build_frontend() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Kemo 网关首次部署")
-    parser.add_argument("--check", action="store_true", help="检查 Python、依赖和目录")
+    parser.add_argument("--check", action="store_true", help="仅检查 Python、依赖和目录")
     parser.add_argument("--init-env", action="store_true", help="缺失时创建本地 .env")
     parser.add_argument("--install-dependencies", action="store_true", help="安装网关依赖")
-    parser.add_argument("--build-frontend", action="store_true", help="安装并构建 Web 管理端")
+    parser.add_argument("--build-frontend", action="store_true", help="安装并重新构建 Web 管理端")
     args = parser.parse_args()
 
+    requested_action = any(
+        (args.init_env, args.install_dependencies, args.build_frontend)
+    )
+    if args.check and requested_action:
+        parser.error("--check 不能与部署步骤参数同时使用")
+    default_deployment = not args.check and not requested_action
+    install = default_deployment or args.install_dependencies
+    build = default_deployment or args.build_frontend
+    init_env = default_deployment or args.init_env
+
     try:
-        if args.install_dependencies:
+        if default_deployment:
+            print("[KEMO] 开始完整部署：安装依赖、重新构建网页并初始化环境配置")
+        if install:
             install_dependencies()
-        if args.build_frontend:
+        if build:
             build_frontend()
-        if args.init_env:
+        if init_env:
             initialize_env()
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"[ERROR] 首次部署步骤失败: {exc}", file=sys.stderr)
         return 2
-    # 无参数时也执行无副作用检查。
     return 0 if check_environment() else 1
 
 
