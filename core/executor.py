@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import asyncio
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
+from core.capability_validation import validate_llm_request_capabilities
 from core.event_assembler import EventAssembler
 from core.live_config import LiveConfigManager
 from core.models import ErrorObject, KemoRequest, KemoResponse, SSEEvent, Usage
@@ -51,6 +52,8 @@ class GatewayExecutor:
 
     async def prepare(self, request: KemoRequest, context: RequestContext) -> tuple[ExecutionRecord, bool]:
         package = self.registry.resolve(request.model)
+        capabilities = await package.capabilities(request.model)
+        validate_llm_request_capabilities(request, capabilities)
         record = ExecutionRecord(
             tenant_id=context.tenant_id,
             request_id=request.request_id,
