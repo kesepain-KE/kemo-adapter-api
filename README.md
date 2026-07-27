@@ -102,8 +102,11 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 ### 环境要求
 
 - Python 3.11 或更高版本
-- Node.js
-- pnpm
+- 可访问 Python 与前端依赖源的网络
+
+部署模块会自动安装 Python 依赖；未安装 pnpm 时会通过 npm 使用锁定版本。Windows 或 Linux
+缺少 Node.js 时，会从 Node.js 官方发布源下载 LTS、校验 SHA-256，并安装到项目本地的
+`web/frontend/.runtime/`，不需要管理员权限，也不会修改系统级 Node.js。
 
 ### 1. 初始化
 

@@ -102,8 +102,12 @@ Every public model name follows the rule `<provider_id>-<vendor_model_name>`. Fo
 ### Requirements
 
 - Python 3.11 or newer
-- Node.js
-- pnpm
+- Network access to the configured Python and frontend package registries
+
+The deployment module installs Python dependencies automatically and uses the pinned pnpm version through
+npm when pnpm is not installed. When Node.js is unavailable on Windows or Linux, it downloads an LTS
+release from the official Node.js distribution service, verifies its SHA-256 checksum, and installs it
+under `web/frontend/.runtime/` without administrator privileges or system-wide changes.
 
 ### 1. Initialize the project
 
