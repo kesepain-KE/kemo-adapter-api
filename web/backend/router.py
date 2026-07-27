@@ -12,11 +12,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 
 from api.middleware import Principal, control_plane_auth_required, control_plane_principal
 from core.config import safe_key_id
-from core.models import EmbeddingRequest, KemoRequest, RerankRequest
-from core.retrieval_executor import ModelOperationFailure
+from core.provider_contract import ProviderException
 from core.runtime_state import GatewayDrainingError
 from web.backend.schemas import (
     GatewayRuntimeUpdate,
+    KeyModelPolicyUpdate,
     LiveControlUpdate,
     ProviderApiUpdate,
     RestartRequestBody,
@@ -168,6 +168,7 @@ async def console_data(
     return {
         "version": request.app.version,
         "protocol_version": request.app.state.settings.protocol_version,
+        "base_url": request.app.state.settings.base_url,
         "authentication": {"required": control_plane_auth_required(request)},
         "permissions": {"can_restart": "owner" in principal.scopes},
         "revision": snapshot.revision,
@@ -216,6 +217,10 @@ async def gateway_api_keys(
             "token": token,
             "source": "environment",
             "created_at": None,
+            "allowed_models": (
+                sorted(config.allowed_models) if config.allowed_models is not None else None
+            ),
+            "writable": False,
         }
     for token, config in request.app.state.live_config.current.api_keys.items():
         raw = metadata.get(token, {})
@@ -232,6 +237,10 @@ async def gateway_api_keys(
             "token": token,
             "source": "runtime",
             "created_at": created_at if isinstance(created_at, str) and created_at.strip() else None,
+            "allowed_models": (
+                sorted(config.allowed_models) if config.allowed_models is not None else None
+            ),
+            "writable": True,
         }
 
     usage = await request.app.state.statistics.gateway_key_usage()
@@ -250,7 +259,94 @@ async def gateway_api_keys(
             }
         )
     items.sort(key=lambda item: str(item["name"]).lower())
-    return {"items": items}
+    models: list[dict[str, object]] = []
+    registry = request.app.state.registry
+    for provider_id, package in sorted(registry.providers.items()):
+        prefix = f"{provider_id}-"
+        for model in sorted(package.models):
+            try:
+                registry.resolve(model)
+                enabled = True
+            except LookupError:
+                enabled = False
+            models.append(
+                {
+                    "id": model,
+                    "provider_id": provider_id,
+                    "provider_model": model[len(prefix):] if model.startswith(prefix) else model,
+                    "enabled": enabled,
+                }
+            )
+    for item in items:
+        allowed_models = item["allowed_models"]
+        item["model_policy"] = (
+            "allow_all"
+            if allowed_models is None
+            else "deny_all"
+            if not allowed_models
+            else "allow_list"
+        )
+    return {
+        "revision": request.app.state.live_config.current.revision,
+        "items": items,
+        "models": models,
+    }
+
+
+@router.put("/keys/{key_id}/model-policy")
+async def update_key_model_policy(
+    key_id: str,
+    body: KeyModelPolicyUpdate,
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+    config_writer: RuntimeConfigWriter = Depends(writer),
+) -> dict[str, object]:
+    _no_store(response)
+    if body.allowed_models is not None:
+        registered_models = {
+            model
+            for package in request.app.state.registry.providers.values()
+            for model in package.models
+        }
+        unknown = sorted(set(body.allowed_models) - registered_models)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"包含未注册模型: {', '.join(unknown)}",
+            )
+    try:
+        async with config_writer.lock:
+            config_writer.assert_revision(
+                body.expected_revision,
+                request.app.state.live_config.current.revision,
+            )
+            config_writer.update_key_model_policy(
+                key_id,
+                allowed_models=body.allowed_models,
+            )
+            snapshot = await refresh_after_write(request)
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    normalized = (
+        None if body.allowed_models is None else sorted(set(body.allowed_models))
+    )
+    return {
+        "revision": snapshot.revision,
+        "status": "updated",
+        "allowed_models": normalized,
+        "model_policy": (
+            "allow_all"
+            if normalized is None
+            else "deny_all"
+            if not normalized
+            else "allow_list"
+        ),
+    }
 
 
 @router.get("/statistics/daily")
@@ -291,6 +387,26 @@ async def statistics_rankings(
         )
     except ValueError as exc:
         raise invalid_statistics_query(exc) from exc
+
+
+@router.get("/statistics/invocations")
+async def statistics_invocations(
+    request: Request,
+    response: Response,
+    outcome: str = Query(default="all", pattern="^(all|success|failure)$"),
+    limit: int = Query(default=100, ge=1, le=100),
+    day: str | None = Query(default=None, alias="date"),
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    """Return the secret-safe per-call log used by the web console."""
+    _no_store(response)
+    try:
+        result = await request.app.state.statistics.recent_invocations(
+            outcome, limit=limit, day=day
+        )
+    except ValueError as exc:
+        raise invalid_statistics_query(exc) from exc
+    return result
 
 
 @router.get("/statistics/series")
@@ -344,92 +460,34 @@ async def probe_model(
 
     request_id = f"probe_{uuid4().hex}"
     started_ns = time.perf_counter_ns()
-    reachable = False
-    result_status = "failed"
-    error_code: str | None = None
+    context = request.app.state.executor.make_context(
+        tenant_id=principal.tenant_id,
+        subject_id=principal.subject_id,
+        request_id=request_id,
+        gateway_key_id=principal.key_id,
+    )
+    lease = None
     try:
-        if declaration.task == "llm":
-            context = request.app.state.executor.make_context(
-                tenant_id=principal.tenant_id,
-                subject_id=principal.subject_id,
-                request_id=request_id,
-                gateway_key_id=principal.key_id,
-            )
-            result = await request.app.state.executor.execute(
-                KemoRequest(
-                    protocol_version="1.0",
-                    request_id=request_id,
-                    attempt=1,
-                    model=model,
-                    stream=False,
-                    system_prompt="",
-                    generation={"max_output_tokens": 1},
-                    output={"modalities": ["text"]},
-                    tools=[],
-                    input=[
-                        {
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "text", "text": "ping"}],
-                        }
-                    ],
-                    provider_options={},
-                    metadata={"purpose": "admin_reachability_probe"},
-                    extensions={},
-                ),
-                context,
-            )
-            result_status = result.status
-            reachable = result.status not in {"failed", "cancelled"}
-            error_code = result.error.code if result.error else None
-        elif declaration.task == "embedding":
-            assert declaration.embedding is not None
-            context = request.app.state.retrieval_executor.make_context(
-                tenant_id=principal.tenant_id,
-                subject_id=principal.subject_id,
-                request_id=request_id,
-                gateway_key_id=principal.key_id,
-            )
-            await request.app.state.retrieval_executor.embeddings(
-                EmbeddingRequest(
-                    protocol_version="1.0",
-                    request_id=request_id,
-                    model=model,
-                    input_type=declaration.embedding.input_types[0],
-                    inputs=[{"id": "probe", "text": "ping"}],
-                    metadata={"purpose": "admin_reachability_probe"},
-                ),
-                context,
-            )
-            result_status = "completed"
-            reachable = True
-        else:
-            context = request.app.state.retrieval_executor.make_context(
-                tenant_id=principal.tenant_id,
-                subject_id=principal.subject_id,
-                request_id=request_id,
-                gateway_key_id=principal.key_id,
-            )
-            await request.app.state.retrieval_executor.rerank(
-                RerankRequest(
-                    protocol_version="1.0",
-                    request_id=request_id,
-                    model=model,
-                    query="ping",
-                    documents=[{"id": "probe", "text": "ping"}],
-                    top_n=1,
-                    metadata={"purpose": "admin_reachability_probe"},
-                ),
-                context,
-            )
-            result_status = "completed"
-            reachable = True
-    except ModelOperationFailure as exc:
+        lease = await request.app.state.runtime_state.admit_execution()
+        result = await package.probe(model, context)
+        reachable = result.reachable
+        result_status = result.status
+        error_code = result.error.code if result.error else None
+    except ProviderException as exc:
+        reachable = False
+        result_status = "failed"
         error_code = exc.error.code
     except GatewayDrainingError:
+        reachable = False
+        result_status = "failed"
         error_code = "GATEWAY_DRAINING"
     except Exception:
+        reachable = False
+        result_status = "failed"
         error_code = "PROBE_FAILED"
+    finally:
+        if lease is not None:
+            await lease.release()
 
     return {
         "model": model,

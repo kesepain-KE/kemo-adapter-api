@@ -36,6 +36,11 @@ class ProviderApiUpdate(AdminModel):
     api_key: str | None = Field(default=None, min_length=1)
 
 
+class KeyModelPolicyUpdate(AdminModel):
+    expected_revision: str
+    allowed_models: list[str] | None = None
+
+
 class RestartRequestBody(AdminModel):
     reason: str = Field(default="web console restart", min_length=1, max_length=500)
     force: bool = False

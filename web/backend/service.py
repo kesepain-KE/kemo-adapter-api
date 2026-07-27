@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from core.config import safe_key_id
+
 
 PROVIDER_ID = re.compile(r"^[a-z0-9_]+$")
 SENSITIVE_CONFIG_KEY = re.compile(
@@ -51,6 +53,37 @@ class RuntimeConfigWriter:
             self.project_root / "api" / "runtime.json",
             {"gateway_api": {"enabled": enabled}},
         )
+
+    def update_key_model_policy(
+        self, key_id: str, *, allowed_models: list[str] | None
+    ) -> None:
+        path = self.project_root / "api" / "keys.json"
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise LookupError("运行时密钥配置不存在") from exc
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("keys"), dict):
+            raise ValueError("api/keys.json: keys 必须是 object")
+
+        matches: list[dict[str, Any]] = []
+        for token, value in parsed["keys"].items():
+            if not isinstance(token, str) or not isinstance(value, dict):
+                raise ValueError("api/keys.json 包含无效 key")
+            if safe_key_id(token, value.get("key_id")) == key_id:
+                matches.append(value)
+        if not matches:
+            raise LookupError("只能修改 api/keys.json 中的运行时密钥")
+        if len(matches) > 1:
+            raise ValueError("api/keys.json 中存在重复 key_id")
+
+        if allowed_models is None:
+            matches[0]["allowed_models"] = None
+        else:
+            normalized = [model.strip() for model in allowed_models]
+            if any(not model for model in normalized):
+                raise ValueError("allowed_models 不能包含空模型名")
+            matches[0]["allowed_models"] = sorted(set(normalized))
+        self._atomic_json(path, parsed)
 
     def provider_configs(self) -> dict[str, dict[str, Any]]:
         """只返回非密钥配置；secrets.json 永远不进入浏览器。"""

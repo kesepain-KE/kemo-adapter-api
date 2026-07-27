@@ -34,7 +34,7 @@ def _excluded(relative: str) -> bool:
         "core/live_control.json",
     }:
         return True
-    if relative.startswith(("core/runtime/", "storage/")):
+    if relative.startswith(("core/runtime/", "storage/daily/")):
         return True
     if (
         len(parts) >= 3
@@ -51,8 +51,19 @@ class SystemInspector:
     _GROUP_PATTERNS: dict[str, tuple[str, ...]] = {
         "environment": (".env",),
         "startup": ("start_web.py", "restart.py"),
-        "backend": ("api/**/*.py", "core/**/*.py", "web/backend/**/*.py"),
-        "frontend": ("web/frontend/dist/**/*",),
+        "backend": (
+            "api/**/*.py",
+            "core/**/*.py",
+            "storage/**/*.py",
+            "web/backend/**/*.py",
+        ),
+        "frontend": (
+            "web/frontend/src/**/*",
+            "web/frontend/dist/**/*",
+            "web/frontend/index.html",
+            "web/frontend/vite.config.*",
+            "web/frontend/tsconfig*.json",
+        ),
         "providers": ("providers/**/*",),
         "dependencies": (
             "setup.py",
@@ -69,6 +80,7 @@ class SystemInspector:
     def __init__(self, project_root: Path) -> None:
         self.project_root = project_root.resolve()
         self._startup_fingerprints = self._fingerprints()
+        self._startup_file_fingerprints = self._file_fingerprints()
         self._version_cache: dict[str, Any] | None = None
         self._version_cache_until = 0.0
         self._version_cache_lock = threading.Lock()
@@ -101,6 +113,25 @@ class SystemInspector:
             digest.update(b"\0")
         return digest.hexdigest()
 
+    @staticmethod
+    def _fingerprint_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                while chunk := handle.read(128 * 1024):
+                    digest.update(chunk)
+        except OSError:
+            digest.update(b"<unreadable>")
+        return digest.hexdigest()
+
+    def _file_fingerprints(self) -> dict[str, str]:
+        fingerprints: dict[str, str] = {}
+        for patterns in self._GROUP_PATTERNS.values():
+            for path in self._group_files(patterns):
+                relative = path.relative_to(self.project_root).as_posix()
+                fingerprints[relative] = self._fingerprint_file(path)
+        return fingerprints
+
     def _fingerprints(self) -> dict[str, str]:
         return {
             group: self._fingerprint_group(patterns)
@@ -109,12 +140,18 @@ class SystemInspector:
 
     def restart_required(self) -> dict[str, Any]:
         current = self._fingerprints()
+        current_files = self._file_fingerprints()
         changed = [
             group
             for group in self._GROUP_PATTERNS
             if current[group] != self._startup_fingerprints[group]
         ]
         required = bool(changed)
+        changed_files = sorted(
+            relative
+            for relative in set(self._startup_file_fingerprints) | set(current_files)
+            if self._startup_file_fingerprints.get(relative) != current_files.get(relative)
+        )
         return {
             "required": required,
             "message": (
@@ -123,6 +160,7 @@ class SystemInspector:
                 else "当前没有检测到需要重启的改动"
             ),
             "changed_groups": changed,
+            "changed_files": changed_files,
             "checked_at": _utc_now(),
         }
 
