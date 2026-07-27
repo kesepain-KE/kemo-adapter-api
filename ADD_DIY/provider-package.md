@@ -13,8 +13,9 @@ Provider 是厂商差异的唯一归属。网关核心只认识 `core.models` �
 3. 创建新厂商：复制 `template/provider/` 后完整替换占位符；
 4. 增加核心尚未支持的任务：停止创建 Provider，先向用户说明需要扩展公开协议。
 
-当前核心正式支持 `llm`、`embedding`、`rerank`。图片、音频、视频或其他任务不能为了接入而
-伪装成 LLM，也不能在网关核心写厂商专用旁路。
+当前核心正式支持 `llm`、`embedding`、`rerank`。这里必须区分“任务”和“模态”：图片或音频
+可以是 LLM 对话的输入/输出模态；TTS、ASR、实时音频、图片生成/编辑、视频生成则是独立任务。
+独立任务不能为了接入而伪装成 LLM，也不能在网关核心写厂商专用旁路。
 
 任何真实厂商调用都可能产生费用。除非用户已明确授权目标环境和测试费用，否则只允许读取
 用户提供的公开文档、本地代码和脱敏 Fixture；不得自行尝试密钥、枚举模型或创建云端资源。
@@ -104,6 +105,38 @@ Provider 只翻译工具，不执行工具。必须覆盖：
 7. 非法 JSON 保留有限长度的 `arguments_raw` 和脱敏解析错误，不能静默丢失；
 8. 厂商要求回放 reasoning/provider state 时由该 Provider 自己保存和恢复，不能污染核心。
 
+### LLM 多模态内容
+
+只有 `ModelCapabilities.input_modalities` 或 `output_modalities` 明确声明且经过真实验证的模态
+才能进入转换逻辑。Kemo 图片、音频等媒体块采用以下统一来源结构：
+
+```json
+{
+  "type": "image",
+  "mime_type": "image/png",
+  "detail": "auto",
+  "source": {
+    "kind": "inline_base64",
+    "data": "<base64>"
+  }
+}
+```
+
+`source.kind` 当前可能出现：
+
+- `url`、`data_url`、`object_store`：地址放在 `source.uri`；
+- `inline_base64`：编码内容放在 `source.data`；
+- `provider_file_id`：厂商与文件标识分别放在 `source.provider`、`source.file_id`。
+
+Provider 只能转换上游端点真实接受的来源类型。不能把 `object_store` 当成公网 URL，不能把
+其他厂商的 `provider_file_id` 直接透传，也不能自行读取客户端本地路径。`mime_type` 位于媒体
+内容块，不是 `source.media_type`；图片清晰度位于内容块的 `detail`。媒体字段缺失、Base64 为空、
+Data URL 类型不符或来源不受上游支持时，必须抛出脱敏 `VALIDATION_ERROR`，禁止构造空媒体请求。
+
+工具结果中的媒体必须同时满足 `tools.multimodal_results=true` 和厂商真实协议；否则明确拒绝，
+不能只抽取文字后伪装成完整结果。多模态响应应映射回 assistant `message.content[]` 的对应媒体
+块，保留真实 MIME、来源和可验证的 transcript 等字段。
+
 ## 8. Usage 与错误
 
 `usage.py` 是唯一允许理解厂商计量的地方。必须确定输入、缓存输入、输出、推理和 total 的包含
@@ -112,7 +145,9 @@ Provider 只翻译工具，不执行工具。必须覆盖：
 
 `errors.py` 至少区分鉴权、限流、超时、厂商不可用、用户参数错误和厂商响应格式错误。只保留
 脱敏 request id、HTTP 状态、retry-after 和有限异常类型；不得返回厂商响应正文、Headers、
-密钥或签名 URL。`ProviderException` 必须接收 `ErrorObject`，不能传字符串。
+密钥或签名 URL。只能 `raise ProviderException(error_object)`；`ErrorObject` 是数据模型，不是
+异常类，不能直接 `raise`，`ProviderException` 也不能接收字符串。HTTP Client 必须兼容空正文、
+非 JSON 正文以及 `error` 为字符串或对象的响应，不能让解析异常覆盖真实 HTTP 状态。
 
 ## 9. Provider 自有探测
 

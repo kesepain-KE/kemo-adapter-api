@@ -39,6 +39,8 @@ providers/<provider_id>/
 ## 3. 能力与任务
 
 - `ModelCapabilities.task` 与实际端点一致，只能声明核心当前支持的任务；
+- 明确区分任务与模态：LLM 图片/音频输入输出仍是 `task=llm`；TTS、ASR、实时音频、图片
+  生成/编辑等独立任务不得注册为 LLM 或统一发送到 `/chat/completions`；
 - 流式、工具、并行工具、推理、结构化输出和多模态均以真实测试结果声明；
 - 未验证能力必须是 `false` 或不声明，不能按厂商宣传页推断；
 - Embedding 维度、输入类型、批量上限和归一化语义真实；
@@ -55,12 +57,26 @@ providers/<provider_id>/
 - ProviderEvent 不包含 SSE 信封、sequence 或 event_id；
 - 取消、超时和厂商断流能产生统一脱敏错误或取消终态。
 
+声明多模态时还必须覆盖：
+
+- 使用 Kemo 客户端真实结构测试 `source.kind=url|data_url|inline_base64`，字段位于
+  `source.uri/source.data`，MIME 位于内容块 `mime_type`；
+- URL、Data URL、Base64、图片 `detail` 和厂商实际支持的音频格式转换后字段完全正确；
+- 空 Base64、空 URI、不支持的 `object_store/provider_file_id` 和错误 MIME 明确返回
+  `VALIDATION_ERROR`，不能发送空 Data URL；
+- 文本模型拒绝图片/音频，媒体模型拒绝未声明的输入/输出模态；
+- 多模态响应能被真实 Kemo 响应模型反序列化，流式媒体只有一次完整完成事件；
+- 测试 Fixture 不得使用 Provider 自己臆造、但真实 Kemo 客户端不会产生的字段结构。
+
 ## 5. Usage 与错误
 
 - Token、缓存 Token、推理 Token、媒体单位的包含关系来自厂商权威文档或响应验证；
 - 缺失值使用 `None`，不能用 `0` 冒充；累计流 Usage 不重复相加；
 - `measurement.mode`、`exact_fields` 和 `estimated_fields` 与证据一致；
 - 错误映射至少覆盖鉴权、限流、超时、上游 5xx、无效请求和响应格式错误；
+- HTTP 错误测试覆盖空正文、非 JSON、`error` 字符串和 `error` 对象；真实状态不得被 JSON
+  解析错误、`AttributeError` 或 `TypeError` 覆盖；
+- Client 只能抛出 `ProviderException(ErrorObject)`，不能直接抛出 `ErrorObject`；
 - 错误只保留脱敏 request id、状态和有限详情，不包含响应正文、Headers 或密钥。
 
 ## 6. 配置热更新

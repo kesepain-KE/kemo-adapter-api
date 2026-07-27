@@ -15,7 +15,8 @@
 | 热更新 API 启停、最高提示词、禁用模型/厂商 | `ADD_DIY/architecture.md` | `api/runtime.json` / `core/live_control.json` |
 | 修改环境变量 | `ADD_DIY/keys-and-secrets.md` | `.env`，必须重启 |
 | 修改公开 LLM/Embedding/Rerank API | `api.md`、`ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | `api/`、`core/models.py` |
-| 增加图片、音频、视频等新任务 | `api.md`、Provider 统一协议要求、`ADD_DIY/architecture.md` | 先扩展核心协议，禁止伪装成现有任务 |
+| 增加 LLM 图片/音频输入输出模态 | `api.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/verification.md` | 在目标 Provider 内映射 Kemo 媒体块并验证真实厂商协议 |
+| 增加 TTS、ASR、实时音频、图片生成/编辑等新任务 | `api.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | 先扩展核心任务与公开路由，禁止伪装成 LLM |
 | 接入全局只读状态感知 | `api.md` | `GET /status` 与独立 `STATUS_TOKEN` |
 | 修改执行、恢复或平滑重启 | `ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | `core/`、`restart.py` |
 | 修改管理网页 | `web/README.md` | `web/`，不得写入公开 `api.md` |
@@ -28,7 +29,9 @@
 3. 公开模型名固定为 `<provider_id>-<厂商原始模型名>`。例如厂商 `deepseek`、上游
    `deepseek-v4-flash` 对外为 `deepseek-deepseek-v4-flash`。
 4. `provider.models`、`MODEL_CAPABILITIES` 与 `manifest.json.models` 的键集合必须一致。
-5. 当前核心任务只有 `llm`、`embedding`、`rerank`；其他任务先扩展公开协议，不能套用错误端点。
+5. 当前核心任务只有 `llm`、`embedding`、`rerank`。LLM 可以声明经过验证的图片/音频输入输出
+   模态；TTS、ASR、实时音频、图片生成/编辑等独立任务必须先扩展公开协议，不能套用
+   `/model/responses` 或厂商 `/chat/completions`。
 6. 每个厂商通过自己的 `probe.py` 实现真实可达性探测；核心不猜厂商协议。
 7. 未经真实验证的流式、工具、并行工具、推理、结构化输出和多模态能力必须声明为不支持。
 8. `providers/*` 默认不进入 Git。最终报告必须说明新厂商是部署端本地包还是经用户授权后随仓库发布。
@@ -47,6 +50,8 @@
 8. 只有 `ADD_DIY/architecture.md` 热插拔清单中的配置无需重启。环境变量、Python、模型注册、
    manifest、依赖和网页构建变化都必须重启。
 9. 未获授权不得调用付费厂商接口、创建资源、撤销密钥或扩大 scopes。
+10. Kemo 媒体块必须按 `source.kind` 解析；不得自行发明 `source.media_type` 等不存在的字段，也
+    不得在媒体为空或无法解析时向上游发送空 Data URL。
 
 ## 标准完成条件
 

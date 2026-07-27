@@ -165,6 +165,40 @@ Provider 密钥、网关密钥、请求头或其他私有配置。
 `KemoResponse`；`stream=true` 返回 `text/event-stream`，第一个事件为 `response.created`，且每个
 响应只能具有一个统一终态。
 
+### LLM 多模态内容
+
+`task=llm` 与输入/输出模态是两个维度。支持视觉或语音对话的 LLM 仍通过
+`POST /model/responses` 调用，并在 capabilities 中声明 `input_modalities`、
+`output_modalities`。TTS、ASR、实时音频、图片生成/编辑和视频生成属于独立任务；在网关提供
+对应公开任务与路由前，不得注册为 LLM，也不得统一发送到厂商 `/chat/completions`。
+
+内联图片示例：
+
+```json
+{
+  "type": "message",
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "描述这张图片"},
+    {
+      "type": "image",
+      "mime_type": "image/png",
+      "detail": "auto",
+      "source": {
+        "kind": "inline_base64",
+        "data": "<base64>"
+      }
+    }
+  ]
+}
+```
+
+远程图片使用 `source: {"kind": "url", "uri": "https://..."}`；完整 Data URL 使用
+`source: {"kind": "data_url", "uri": "data:image/...;base64,..."}`。音频内容块使用
+`type: audio` 和相同的来源结构，真实 MIME 仍位于内容块 `mime_type`。调用前必须查询模型
+capabilities；Provider 只接受其上游端点真实支持的来源与格式，其他来源返回脱敏
+`VALIDATION_ERROR`。客户端不得提交本地文件路径，Provider 也不得猜测、静默丢弃或发送空媒体。
+
 幂等范围是 `(tenant_id, request_id)`。相同 ID 和相同正文必须复用逻辑响应；相同 ID 和不同
 正文返回 `409 IDEMPOTENCY_CONFLICT`。
 
@@ -321,6 +355,9 @@ capabilities 校验，不能静默降维、截断或改变归一化策略。
 
 网关不得通过公开 API 暴露本地文件路径。生成图片、音频和视频必须返回稳定 `asset_id`、真实
 MIME 和 SHA-256，并通过认证下载接口取得内容。
+
+Asset 接口“待实现”不影响 `/model/responses` 当前通过 URL、Data URL 或内联 Base64 接收
+Provider 已验证的 LLM 媒体内容；它表示网关尚不提供独立上传、持久化、下载和生命周期管理。
 
 ## 统一错误
 
