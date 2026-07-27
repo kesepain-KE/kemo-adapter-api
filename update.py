@@ -137,6 +137,9 @@ def _apply(yes: bool = False) -> int:
     print(f"[KEMO] 正在创建更新前备份...")
     backup_ok, backup_msg = backup.create(PROJECT_ROOT)
     print(f"[KEMO] {backup_msg}")
+    if not backup_ok:
+        print("[ERROR] 更新前备份未完成，已中止更新；远程代码尚未拉取。")
+        return 2
 
     # 2. 暂存本地修改
     has_local = git.has_local_changes(PROJECT_ROOT)
