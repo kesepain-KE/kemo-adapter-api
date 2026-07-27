@@ -108,10 +108,12 @@ Every public model name follows the rule `<provider_id>-<vendor_model_name>`. Fo
 ### 1. Initialize the project
 
 ```powershell
-python setup.py --install-dependencies --build-frontend --init-env
+python setup.py
 ```
 
-This installs Python dependencies, builds the Web console, and creates `.env` from `.env.example` only when `.env` does not already exist.
+Running without arguments performs a complete deployment: it installs Python dependencies, rebuilds the
+Web console, and creates `.env` from `.env.example` only when `.env` does not already exist. Use
+`python setup.py --check` to validate an existing deployment without installing or building anything.
 
 ### 2. Configure a gateway key
 

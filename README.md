@@ -108,10 +108,12 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 ### 1. 初始化
 
 ```powershell
-python setup.py --install-dependencies --build-frontend --init-env
+python setup.py
 ```
 
-安装 Python 依赖、构建管理网页，并在 `.env` 不存在时从 `.env.example` 创建它；不会覆盖现有的 `.env`。
+无参数运行即执行完整部署：安装 Python 依赖、重新构建管理网页，并在 `.env` 不存在时从
+`.env.example` 创建它；不会覆盖现有的 `.env`。只检查现有部署而不安装或构建时，使用
+`python setup.py --check`。
 
 ### 2. 配置调用密钥
 
