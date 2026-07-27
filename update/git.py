@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import NamedTuple
 
@@ -16,11 +17,24 @@ class GitDiff(NamedTuple):
         return bool(self.files)
 
 
-EXCLUDED_PATTERNS = (
+PROTECTED_PATTERNS = (
+    ".env",
     "providers/",
     "api/keys.json",
+    "storage/daily/",
+    "core/runtime/",
+    ".backup/",
+    "开发目录/",
     "*.bak",
+    "*.bak.*",
+    "*.log",
+    "*.pid",
 )
+
+PROTECTED_EXCEPTIONS = frozenset({"providers/__init__.py"})
+
+# 兼容已有调用方；这些路径不只是从差异展示中排除，也会阻止更新执行。
+EXCLUDED_PATTERNS = PROTECTED_PATTERNS
 
 # 按优先级自动尝试的镜像源（空字符串 = 直连，不包装饰）
 _MIRROR_CHAINS = [
@@ -101,8 +115,8 @@ def fetch(project_root: Path) -> tuple[bool, str]:
     return False, f"所有源均失败，最后错误: {last_error[:200]}"
 
 
-def get_remote_diff(project_root: Path) -> GitDiff:
-    """获取 FETCH_HEAD 相比 HEAD 新增/修改的文件列表（排除更新保护路径）。"""
+def get_remote_files(project_root: Path) -> list[str]:
+    """获取 FETCH_HEAD 相比 HEAD 新增、修改或删除的完整文件列表。"""
     r = _git(
         ["diff", "--name-only", "HEAD..FETCH_HEAD"],
         project_root,
@@ -114,11 +128,25 @@ def get_remote_diff(project_root: Path) -> GitDiff:
             project_root,
         )
     if r.returncode != 0:
-        return GitDiff([])
+        return []
 
-    files = [f.replace("\\", "/") for f in r.stdout.strip().split("\n") if f.strip()]
-    filtered = [f for f in files if not _is_excluded(f)]
+    return [
+        f.replace("\\", "/")
+        for f in r.stdout.strip().split("\n")
+        if f.strip()
+    ]
+
+
+def get_remote_diff(project_root: Path) -> GitDiff:
+    """获取可安全更新的远端文件列表。"""
+    filtered = [f for f in get_remote_files(project_root) if not _is_protected(f)]
     return GitDiff(filtered)
+
+
+def get_protected_remote_diff(project_root: Path) -> GitDiff:
+    """获取会触碰本地持久化数据或私有目录的远端变更。"""
+    protected = [f for f in get_remote_files(project_root) if _is_protected(f)]
+    return GitDiff(protected)
 
 
 def has_remote_commits(project_root: Path) -> bool:
@@ -202,13 +230,24 @@ def has_local_changes(project_root: Path) -> bool:
 
 
 def _is_excluded(path: str) -> bool:
-    for pattern in EXCLUDED_PATTERNS:
+    """向后兼容旧名称。"""
+    return _is_protected(path)
+
+
+def _is_protected(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    if normalized in PROTECTED_EXCEPTIONS:
+        return False
+    for pattern in PROTECTED_PATTERNS:
         if pattern.endswith("/"):
-            if path.startswith(pattern) or f"/{pattern}" in path:
+            if normalized.startswith(pattern) or f"/{pattern}" in normalized:
                 return True
-        elif pattern.startswith("*"):
-            if path.endswith(pattern[1:]):
+        elif "*" in pattern:
+            basename = normalized.rsplit("/", 1)[-1]
+            if fnmatch(normalized, pattern) or fnmatch(basename, pattern):
                 return True
-        elif path == pattern or path.endswith(f"/{pattern}"):
+        elif normalized == pattern or normalized.endswith(f"/{pattern}"):
             return True
     return False

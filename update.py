@@ -81,12 +81,21 @@ def _check(local: version.VersionInfo | None = None) -> tuple[int, version.Versi
 
     # 变更文件
     diff = git.get_remote_diff(PROJECT_ROOT)
+    protected_diff = git.get_protected_remote_diff(PROJECT_ROOT)
     if diff.has_changes:
         print(f"[KEMO] 非排除文件变更 ({len(diff.files)} 个):")
         for f in diff.files:
             print(f"      - {f}")
+    elif protected_diff.has_changes:
+        print("[WARN] 远端变更仅涉及本地数据保护路径，不能自动更新。")
     else:
         print("[KEMO] 变更均在排除范围（厂商包/提示词/密钥/备份），无需更新。")
+
+    if protected_diff.has_changes:
+        print(f"[WARN] 受保护路径变更 ({len(protected_diff.files)} 个):")
+        for f in protected_diff.files:
+            print(f"      - {f}")
+        print("[WARN] 为防止覆盖本地数据，--apply 将拒绝本次更新。")
 
     # 版本比对
     cmp = version.compare(local, remote)
@@ -118,6 +127,14 @@ def _apply(yes: bool = False) -> int:
         return code
     if remote is None:
         return 0
+
+    protected_diff = git.get_protected_remote_diff(PROJECT_ROOT)
+    if protected_diff.has_changes:
+        print("[ERROR] 远端提交涉及受保护路径，已拒绝更新：")
+        for f in protected_diff.files:
+            print(f"      - {f}")
+        print("[ERROR] 本地配置、Provider、密钥和统计数据均未改动。")
+        return 4
 
     # 更新确认
     if not yes:
