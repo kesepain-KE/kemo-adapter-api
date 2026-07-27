@@ -10,6 +10,7 @@ from core.provider_contract import (
     ProviderEvent,
     ProviderException,
     ProviderPackage,
+    ProviderProbeResult,
     ProviderResult,
     RequestContext,
 )
@@ -17,6 +18,7 @@ from .capabilities import MODEL_CAPABILITIES
 from .client import ExampleClient
 from .errors import ExampleErrorMapper
 from .protocol import ExampleProtocolMapper
+from .probe import probe_model
 from .streaming import ExampleStreamMapper
 from .usage import ExampleUsageMapper
 
@@ -29,7 +31,11 @@ class ExampleProvider(ProviderPackage):
         self._retired_clients: list[ExampleClient] = []
         self._usage = ExampleUsageMapper()
         self._errors = ExampleErrorMapper()
-        self._protocol = ExampleProtocolMapper(self._usage, self._errors)
+        self._protocol = ExampleProtocolMapper(
+            self._usage,
+            self._errors,
+            provider_id=self.provider_id,
+        )
         self._streaming = ExampleStreamMapper(
             self._usage,
             self._protocol,
@@ -59,7 +65,14 @@ class ExampleProvider(ProviderPackage):
         return frozenset(MODEL_CAPABILITIES)
 
     async def capabilities(self, model: str) -> ModelCapabilities:
-        return MODEL_CAPABILITIES[model]
+        try:
+            return MODEL_CAPABILITIES[model]
+        except KeyError as exc:
+            raise LookupError(f"{self.provider_id} 未知模型: {model}") from exc
+
+    async def probe(self, model: str, context: RequestContext) -> ProviderProbeResult:
+        await self.capabilities(model)
+        return await probe_model(model, context, self.execute)
 
     async def execute(self, request: KemoRequest, context: RequestContext) -> ProviderResult:
         try:

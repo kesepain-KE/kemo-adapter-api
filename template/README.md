@@ -7,9 +7,11 @@
 
 | 目录 | 用途 | 参考实现 |
 |------|------|---------|
-| `provider/` | 创建新的 LLM 厂商 Provider 包 | `providers/deepseek/`（本地测试厂商） |
+| `provider/` | 创建新的厂商 Provider 包（含自有可达性探测器） | 本目录即权威骨架 |
 
 ## 使用方式
 
-复制 `template/provider/` 到 `providers/<provider_id>/`，去掉配置文件的
-`.example` 后缀，再按厂商真实协议完成 TODO。不要在 `providers/` 下维护第二份模板。
+复制 `template/provider/` 到 `providers/<provider_id>/`，删除缓存，按需去掉 `.example` 后缀，
+再根据厂商真实协议和脱敏 Fixture 完成实现。不要在 `providers/` 下维护第二份模板，也不要用
+模板覆盖现有 Provider。完整流程见 `ADD_DIY/provider-package.md` 和
+`ADD_DIY/verification.md`。

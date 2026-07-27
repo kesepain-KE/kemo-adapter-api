@@ -28,9 +28,12 @@ class ExampleProtocolMapper:
         self,
         usage: ExampleUsageMapper,
         errors: ExampleErrorMapper,
+        *,
+        provider_id: str,
     ) -> None:
         self._usage = usage
         self._errors = errors
+        self._model_prefix = f"{provider_id}-"
 
     def to_provider_request(
         self,
@@ -334,12 +337,11 @@ class ExampleProtocolMapper:
         return "completed"
 
     def _resolve_upstream_model(self, model: str) -> str:
-        prefix = "example-"
-        if not model.startswith(prefix) or len(model) == len(prefix):
+        if not model.startswith(self._model_prefix) or len(model) == len(self._model_prefix):
             raise ProviderException(
                 self._errors.validation_error(
-                    "模型名缺少 example- 厂商前缀",
+                    f"模型名缺少 {self._model_prefix} 厂商前缀",
                     details={"model": model},
                 )
             )
-        return model.removeprefix(prefix)
+        return model.removeprefix(self._model_prefix)

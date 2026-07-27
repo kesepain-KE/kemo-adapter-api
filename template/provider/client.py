@@ -15,15 +15,28 @@ class ExampleClient:
         timeout_seconds: float,
         default_headers: Mapping[str, object] | None = None,
     ) -> None:
+        if not api_key.strip():
+            raise ValueError("Provider API Key 不能为空")
+        if not base_url.strip():
+            raise ValueError("Provider Base URL 不能为空")
+        if timeout_seconds <= 0:
+            raise ValueError("Provider timeout_seconds 必须大于 0")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
-        self._default_headers = {
+        default_header_values = {
             str(name): str(value)
             for name, value in (default_headers or {}).items()
             if str(name).strip()
         }
-        # TODO: 建立 Client 时必须用 api_key 覆盖鉴权 Header，禁止配置 Header 遮蔽密钥。
+        protected_headers = {
+            name for name in default_header_values
+            if name.lower() in {"authorization", "proxy-authorization", "x-api-key"}
+        }
+        if protected_headers:
+            raise ValueError("default_headers 不得覆盖厂商鉴权 Header")
+        self._default_headers = default_header_values
+        # TODO: 建立 Client 时由 api_key 生成鉴权 Header；日志和异常不得包含该值。
 
     async def create(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         raise NotImplementedError("发送厂商非流式请求")

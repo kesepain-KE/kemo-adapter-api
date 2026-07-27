@@ -14,7 +14,12 @@
       "operations": {
         "conversation": {"supported": true},
         "streaming": {"supported": true},
-        "function_calling": {"supported": true, "parallel": true}
+        "function_calling": {"supported": false, "parallel": false}
+      },
+      "probe": {
+        "supported": true,
+        "mode": "minimal_inference",
+        "billable": true
       }
     }
   }

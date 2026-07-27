@@ -24,6 +24,14 @@ class ExampleErrorMapper:
 
     def from_exception(self, exc: Exception) -> ErrorObject:
         # TODO: 识别厂商 SDK/HTTP 异常，提取脱敏 request id、retry-after 和 retryable。
+        if isinstance(exc, (KeyError, TypeError, ValueError)):
+            return ErrorObject(
+                type="adapter_contract_error",
+                code="PROVIDER_BAD_RESPONSE",
+                message="Provider returned a response that does not match its adapter contract.",
+                retryable=False,
+                details={"exception_type": type(exc).__name__},
+            )
         return ErrorObject(
             type="provider_error",
             code="PROVIDER_UNAVAILABLE",

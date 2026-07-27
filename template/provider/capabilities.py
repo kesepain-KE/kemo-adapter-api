@@ -13,12 +13,18 @@ MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         output_modalities=["text"],
         streaming=True,
         reasoning=ReasoningCapabilities(supported=False),
-        tools=ToolCapabilities(function_calling=True, parallel_calls=True),
-        structured_output=True,
+        # 只声明已经用真实请求验证过的能力；模板默认不替厂商作乐观推断。
+        tools=ToolCapabilities(function_calling=False, parallel_calls=False),
+        structured_output=False,
         metadata={"source": "provider_package", "upstream_model": "model-name"},
         extensions={
             "limits": {"max_input_tokens": 128000, "max_output_tokens": 8192},
             "operations": {"conversation": {"supported": True}},
+            "probe": {
+                "supported": True,
+                "mode": "minimal_inference",
+                "billable": True,
+            },
         },
     )
 }
