@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from update import frontend as update_frontend
 from update import git as update_git
 from update.git import GitDiff
 
@@ -102,3 +103,34 @@ def test_apply_rejects_remote_changes_to_protected_paths(monkeypatch) -> None:
     monkeypatch.setattr(update_entry.backup, "create", unexpected_backup)
 
     assert update_entry._apply(yes=True) == 4
+
+
+def test_frontend_update_reuses_one_stop_deployment(monkeypatch, tmp_path) -> None:
+    frontend_root = tmp_path / "web" / "frontend"
+    frontend_root.mkdir(parents=True)
+    (frontend_root / "package.json").write_text("{}", encoding="utf-8")
+    setup_script = tmp_path / "setup.py"
+    setup_script.write_text("", encoding="utf-8")
+    calls: list[tuple[list[str], Path, bool, int]] = []
+
+    def run(command, *, cwd, check, timeout):
+        calls.append((command, cwd, check, timeout))
+        output = frontend_root / "dist" / "index.html"
+        output.parent.mkdir(parents=True)
+        output.write_text("built", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(update_frontend.subprocess, "run", run)
+
+    ok, message = update_frontend.build_frontend(tmp_path)
+
+    assert ok is True
+    assert "setup.py" in message
+    assert calls == [
+        (
+            [update_frontend.sys.executable, str(setup_script), "--build-frontend"],
+            tmp_path,
+            False,
+            900,
+        )
+    ]
