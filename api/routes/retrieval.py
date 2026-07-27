@@ -5,7 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from api.dependencies import get_retrieval_executor
-from api.middleware import Principal, authenticated_principal
+from api.middleware import (
+    Principal,
+    authenticated_principal,
+    ensure_model_allowed,
+    ensure_model_task_allowed,
+)
 from core.models import (
     EmbeddingRequest,
     EmbeddingResponse,
@@ -24,16 +29,14 @@ router = APIRouter(prefix="/model", tags=["retrieval"])
 def require_embedding_scope(
     principal: Principal = Depends(authenticated_principal),
 ) -> Principal:
-    if not principal.scopes.intersection({"model:invoke", "embedding:invoke", "owner"}):
-        raise HTTPException(status_code=403, detail="需要 embedding:invoke 权限")
+    ensure_model_task_allowed(principal, "embedding")
     return principal
 
 
 def require_rerank_scope(
     principal: Principal = Depends(authenticated_principal),
 ) -> Principal:
-    if not principal.scopes.intersection({"model:invoke", "rerank:invoke", "owner"}):
-        raise HTTPException(status_code=403, detail="需要 rerank:invoke 权限")
+    ensure_model_task_allowed(principal, "rerank")
     return principal
 
 
@@ -69,6 +72,7 @@ async def create_embeddings(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> EmbeddingResponse:
+    ensure_model_allowed(principal, request.model)
     validate_headers(request.request_id, protocol_version or "", idempotency_key)
     context = executor.make_context(
         tenant_id=principal.tenant_id,
@@ -98,6 +102,7 @@ async def create_rerank(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> RerankResponse:
+    ensure_model_allowed(principal, request.model)
     validate_headers(request.request_id, protocol_version or "", idempotency_key)
     context = executor.make_context(
         tenant_id=principal.tenant_id,

@@ -118,6 +118,35 @@ class ModelCapabilities(StrictModel):
         return self
 
 
+class ModelCatalogItem(StrictModel):
+    id: str
+    object: Literal["kemo.model"] = "kemo.model"
+    provider_id: str
+    provider_model: str
+    task: Literal["llm", "embedding", "rerank", "unknown"]
+    capabilities_available: bool
+    capabilities_url: str
+
+
+class ModelCatalogResponse(StrictModel):
+    protocol_version: Literal["1.0"] = "1.0"
+    object: Literal["kemo.model_list"] = "kemo.model_list"
+    count: int = Field(ge=0)
+    data: list[ModelCatalogItem]
+
+
+class CompatibleModelItem(StrictModel):
+    id: str
+    object: Literal["model"] = "model"
+    created: int = Field(default=0, ge=0)
+    owned_by: str
+
+
+class CompatibleModelList(StrictModel):
+    object: Literal["list"] = "list"
+    data: list[CompatibleModelItem]
+
+
 class EmbeddingInput(StrictModel):
     id: str = Field(min_length=1, max_length=256)
     text: str = Field(min_length=1, max_length=2_000_000)

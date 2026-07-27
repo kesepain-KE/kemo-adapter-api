@@ -29,7 +29,9 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def handle_http_exception(_: Request, exc: HTTPException) -> JSONResponse:
-        code = {
+        detail_code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
+        detail_message = exc.detail.get("message") if isinstance(exc.detail, dict) else None
+        code = detail_code if isinstance(detail_code, str) and detail_code else {
             401: "AUTHENTICATION_ERROR",
             403: "AUTHORIZATION_ERROR",
             404: "RESPONSE_NOT_FOUND",
@@ -42,7 +44,11 @@ def install_exception_handlers(app: FastAPI) -> None:
                 "error": {
                     "type": "gateway_error",
                     "code": code,
-                    "message": str(exc.detail),
+                    "message": (
+                        detail_message
+                        if isinstance(detail_message, str) and detail_message
+                        else str(exc.detail)
+                    ),
                     "retryable": False,
                     "details": {},
                 },

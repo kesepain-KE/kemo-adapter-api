@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from api.dependencies import get_executor
-from api.middleware import Principal, authenticated_principal, control_plane_principal
+from api.middleware import (
+    Principal,
+    authenticated_principal,
+    control_plane_principal,
+    ensure_model_allowed,
+    ensure_model_task_allowed,
+)
 from api.sse import encode_sse
 from core.executor import GatewayExecutor
 from core.models import KemoRequest, KemoResponse
@@ -25,6 +31,8 @@ async def create_response(
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> KemoResponse | StreamingResponse:
+    ensure_model_allowed(principal, request.model)
+    ensure_model_task_allowed(principal, "llm")
     if idempotency_key != request.request_id:
         raise HTTPException(status_code=400, detail="Idempotency-Key 必须等于 request_id")
     if protocol_version != request.protocol_version or request.protocol_version != "1.0":

@@ -63,6 +63,19 @@ class ProviderResult:
     extensions: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class ProviderProbeResult:
+    """厂商包完成真实最小调用后返回的统一可达性结果。"""
+
+    reachable: bool
+    status: str
+    usage: Usage = field(default_factory=Usage)
+    provider_response_id: str | None = None
+    error: ErrorObject | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderEmbedding:
     """厂商向量结果；index 必须对应请求 inputs 的原始位置。"""
@@ -139,6 +152,19 @@ class ProviderPackage(ABC):
     @abstractmethod
     async def capabilities(self, model: str) -> ModelCapabilities:
         """返回该厂商包确认过的真实能力。"""
+
+    async def probe(self, model: str, context: RequestContext) -> ProviderProbeResult:
+        """执行厂商自定义的最小真实调用；未实现时必须明确返回不支持。"""
+        del model, context
+        return ProviderProbeResult(
+            reachable=False,
+            status="unsupported",
+            error=ErrorObject(
+                type="unsupported_operation",
+                code="PROBE_UNSUPPORTED",
+                message=f"Provider {self.provider_id} 尚未实现模型可达性探测器。",
+            ),
+        )
 
     async def execute(self, request: KemoRequest, context: RequestContext) -> ProviderResult:
         """完成一次 LLM 非流式执行；非 LLM 包保持默认实现。"""

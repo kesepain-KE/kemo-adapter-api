@@ -179,6 +179,8 @@ class GatewayExecutor:
                     status=response.status,
                     usage=response.usage,
                     error_code=response.error.code if response.error else None,
+                    error_type=response.error.type if response.error else None,
+                    error_message=response.error.message if response.error else None,
                     provider_response_id=response.provider_response_id,
                 )
             return response
@@ -251,6 +253,16 @@ class GatewayExecutor:
                         response.error.code
                         if response is not None and response.error is not None
                         else "STREAM_TERMINATED" if response is None else None
+                    ),
+                    error_type=(
+                        response.error.type
+                        if response is not None and response.error is not None
+                        else "stream_terminated" if response is None else None
+                    ),
+                    error_message=(
+                        response.error.message
+                        if response is not None and response.error is not None
+                        else "流式响应在终态前终止" if response is None else None
                     ),
                     provider_response_id=record.provider_response_id,
                 )

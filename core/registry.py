@@ -84,6 +84,11 @@ class ProviderRegistry:
             package = factory(package_settings)
             if not isinstance(package, ProviderPackage):
                 raise TypeError(f"{module_info.name}.create_provider 返回值不符合 ProviderPackage")
+            if package.provider_id != short_name:
+                raise ValueError(
+                    f"Provider ID 必须与目录名一致: 目录={short_name}, "
+                    f"provider_id={package.provider_id}"
+                )
             self.register(package)
             self._applied_provider_settings[short_name] = package_settings
 
