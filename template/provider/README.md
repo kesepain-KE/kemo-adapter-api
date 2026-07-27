@@ -22,7 +22,8 @@ Copy-Item -Recurse template/provider providers/deepseek_v2
 中的 `Example`、`example`、`.invalid`、`vendor_`、TODO 和 `NotImplementedError` 必须清除。
 
 文件夹名、`provider_id` 和 manifest 中的 ID 必须一致。当前核心正式支持 `llm`、
-`embedding`、`rerank`；图片、音频、视频等任务必须先扩展核心公开协议，不能伪装成 LLM。
+`embedding`、`rerank`。图片和音频可以是经过验证的 LLM 输入/输出模态；TTS、ASR、实时音频、
+图片生成/编辑、视频生成等独立任务必须先扩展核心公开协议，不能伪装成 LLM。
 
 公开模型名固定为 `<provider_id>-<厂商内部模型名>`，例如
 `deepseek-deepseek-v4-flash`。厂商内部模型名可含更多连字符；协议映射只能移除自身完整的
@@ -58,6 +59,7 @@ Kemo SSE 事件（输出给 kemo-agent）
 | `probe.py` | 厂商自有的最小真实调用与可达性判定 |
 | `client.py` | 厂商鉴权、HTTP/SDK、超时和取消 |
 | `protocol.py` | 厂商 DTO、请求映射和非流式响应映射 |
+| `media.py` | 解析真实 Kemo 媒体来源；由协议层决定厂商支持的来源与转换 |
 | `streaming.py` | 厂商流解析为 `ProviderEvent` |
 | `usage.py` | 厂商计量语义转换为统一 `Usage` |
 | `errors.py` | 厂商错误转换为统一 `ErrorObject` |
@@ -92,6 +94,11 @@ KemoRequest.tools[]          → 厂商 tools[]
 KemoRequest.generation       → 厂商 max_tokens, temperature, ...
 KemoRequest.reasoning        → 厂商 thinking/reasoning_effort 参数
 ```
+
+如果声明 LLM 多模态，必须读取 Kemo 的真实媒体结构：内容块使用 `mime_type`，媒体来源使用
+`source.kind`，并按来源读取 `source.uri` 或 `source.data`。不得读取不存在的
+`source.media_type`，不得把空媒体转换成 `data:<mime>;base64,` 后发给上游。完整结构、来源限制和
+验收用例见 `ADD_DIY/provider-package.md` 与 `ADD_DIY/verification.md`。
 
 ### 2. 出站方向（厂商 API → ProviderResult/ProviderEvent）
 
@@ -139,10 +146,12 @@ HTTP 500 → PROVIDER_UNAVAILABLE (retryable=True)
    `extensions` 接受同名内容，也不得降级为 user message。
 8. 统一协议字段优先；为旧客户端兼容而消费的 `provider_options` 不得再次覆盖统一字段。
 9. 模型测试协议必须封装在本包 `probe.py`，核心只消费 `ProviderProbeResult`。
+10. `ErrorObject` 不能直接抛出；Client 与协议层必须抛出 `ProviderException(ErrorObject)`，并让
+    非 JSON 或形状异常的错误正文保留其真实 HTTP 状态，不能被二次解析异常覆盖。
 
 ## 发布前检查
 
-必须逐项完成 `ADD_DIY/verification.md`。至少确认模型三处键集合一致、能力声明有真实证据、
+必须逐项完成 [ADD_DIY/verification.md](../../ADD_DIY/verification.md)。至少确认模型三处键集合一致、能力声明有真实证据、
 未知选项被拒绝、工具流只有一个终态、Usage 不补零、错误不泄密、Provider 自有探测可用，
 并执行完整后端测试和前端构建。
 

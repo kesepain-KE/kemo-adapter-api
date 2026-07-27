@@ -15,3 +15,6 @@
 再根据厂商真实协议和脱敏 Fixture 完成实现。不要在 `providers/` 下维护第二份模板，也不要用
 模板覆盖现有 Provider。完整流程见 `ADD_DIY/provider-package.md` 和
 `ADD_DIY/verification.md`。
+
+复制模板后不得仅做字符串替换。尤其要重新实现并验证厂商的媒体来源转换、错误正文解析、
+任务端点和能力声明；“OpenAI-compatible”不等于自动支持图片、音频、工具、推理或流式。
