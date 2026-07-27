@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Check, Copy, Eye, EyeOff, KeyRound, LoaderCircle, RefreshCw } from 'lucide-react'
+import { Check, Copy, Eye, EyeOff, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
-import { adminApi, type GatewayApiKey } from '../adminApi'
+import { adminApi, type GatewayApiKey, type GatewayKeyModel } from '../adminApi'
 import { Badge, Card, EmptyState, SectionTitle, Subtabs } from '../components/UI'
 
 const numberFormat = new Intl.NumberFormat('zh-CN')
@@ -30,14 +30,17 @@ function keyIdentity(key: GatewayApiKey): string {
 export default function Keys() {
   const { token } = useAdmin()
   const [keys, setKeys] = useState<GatewayApiKey[]>([])
+  const [models, setModels] = useState<GatewayKeyModel[]>([])
+  const [revision, setRevision] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
   const [copied, setCopied] = useState('')
   const [selectedId, setSelectedId] = useState('')
-  const [detailTab, setDetailTab] = useState<'info' | 'usage'>('info')
+  const [detailTab, setDetailTab] = useState<'info' | 'usage' | 'models'>('info')
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
+  const [policyBusy, setPolicyBusy] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -47,6 +50,8 @@ export default function Keys() {
       .then(result => {
         if (!active) return
         setKeys(result.items)
+        setModels(result.models)
+        setRevision(result.revision)
         setSelectedId(current => result.items.some(key => keyIdentity(key) === current) ? current : (result.items[0] ? keyIdentity(result.items[0]) : ''))
       })
       .catch(reason => {
@@ -81,6 +86,48 @@ export default function Keys() {
   }
 
   const selectedKey = keys.find(key => keyIdentity(key) === selectedId) ?? keys[0]
+  const allowedRegisteredCount = selectedKey?.allowed_models?.filter(
+    id => models.some(model => model.id === id),
+  ).length ?? 0
+
+  const updateModelPolicy = async (allowedModels: string[] | null) => {
+    if (!selectedKey?.id || !selectedKey.writable || policyBusy) return
+    setPolicyBusy(true)
+    setError('')
+    try {
+      const result = await adminApi.updateKeyModelPolicy(
+        token,
+        selectedKey.id,
+        revision,
+        allowedModels,
+      )
+      setRevision(result.revision)
+      setKeys(current => current.map(key => keyIdentity(key) === keyIdentity(selectedKey) ? {
+        ...key,
+        allowed_models: result.allowed_models,
+        model_policy: result.model_policy,
+      } : key))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '模型白名单保存失败')
+    } finally {
+      setPolicyBusy(false)
+    }
+  }
+
+  const toggleModel = (modelId: string) => {
+    if (!selectedKey) return
+    const current = selectedKey.allowed_models
+    if (current === null) {
+      void updateModelPolicy(models.map(model => model.id).filter(id => id !== modelId))
+      return
+    }
+    const registered = new Set(models.map(model => model.id))
+    const currentRegistered = current.filter(id => registered.has(id))
+    const next = currentRegistered.includes(modelId)
+      ? currentRegistered.filter(id => id !== modelId)
+      : [...currentRegistered, modelId]
+    void updateModelPolicy(next)
+  }
 
   return <>
     <SectionTitle title="API 密钥管理" description="查看当前网关密钥、累计真实用量和最后调用时间" action={<button className={`btn provider-refresh ${refreshing ? 'is-refreshing' : ''}`} disabled={loading || refreshing} onClick={() => { setRefreshing(true); setRefreshVersion(value => value + 1) }}><RefreshCw className={refreshing ? 'spin' : ''} size={15}/>刷新</button>}/>
@@ -96,7 +143,7 @@ export default function Keys() {
       </Card>
       <Card className="key-detail-panel">
         <header className="key-detail-head"><div><span>API 密钥</span><h3>{selectedKey.name}</h3><p>当前选中密钥的配置与真实累计调用数据</p></div><Badge tone={selectedKey.source === 'runtime' ? 'primary' : 'muted'}>{selectedKey.source === 'runtime' ? '热配置' : '环境变量'}</Badge></header>
-        <Subtabs items={[{ id: 'info', label: '密钥信息' }, { id: 'usage', label: '调用情况' }]} value={detailTab} onChange={setDetailTab}/>
+        <Subtabs items={[{ id: 'info', label: '密钥信息' }, { id: 'usage', label: '调用情况' }, { id: 'models', label: '模型限制' }]} value={detailTab} onChange={setDetailTab}/>
         {detailTab === 'info' ? <div className="key-detail-info">
           <div className="api-key-secret">
             <span>完整 API 密钥</span>
@@ -107,9 +154,27 @@ export default function Keys() {
             </div>
           </div>
           <div className="key-info-facts"><div><span>密钥来源</span><strong>{selectedKey.source === 'runtime' ? 'api/keys.json · 热加载' : '启动环境变量 · 重启生效'}</strong></div><div><span>创建日期</span><strong>{formatDate(selectedKey.created_at)}</strong></div><div><span>最近一次调用</span><strong>{formatDate(selectedKey.last_used_at)}</strong></div></div>
-        </div> : <div className="key-usage-panel">
+        </div> : detailTab === 'usage' ? <div className="key-usage-panel">
           <div className="key-usage-metrics"><div><span>累计调用</span><strong>{numberFormat.format(selectedKey.usage.calls)}</strong><small>全部日库真实请求</small></div><div><span>成功调用</span><strong>{numberFormat.format(selectedKey.usage.successes)}</strong><small>{selectedKey.usage.calls ? `${((selectedKey.usage.successes / selectedKey.usage.calls) * 100).toFixed(1)}% 成功率` : '尚无调用'}</small></div><div><span>失败及其他</span><strong>{numberFormat.format(Math.max(0, selectedKey.usage.calls - selectedKey.usage.successes))}</strong><small>失败、取消、未完成或在途</small></div><div><span>累计 Token</span><strong>{selectedKey.usage.total_tokens === null ? '—' : numberFormat.format(selectedKey.usage.total_tokens)}</strong><small>{selectedKey.usage.total_tokens === null ? '尚无可靠计量样本' : 'Provider 归一化计量'}</small></div></div>
           <div className="key-usage-summary"><span>最近一次调用</span><strong>{formatDate(selectedKey.last_used_at)}</strong><p>当前接口提供累计真实用量；逐次调用明细和按模型拆分尚未由后端暴露。</p></div>
+        </div> : <div className="key-model-policy">
+          <header className="key-model-policy-head">
+            <div><span>模型调用白名单</span><strong>{selectedKey.allowed_models === null ? '全部模型允许' : allowedRegisteredCount ? `允许 ${allowedRegisteredCount} 个模型` : '全部模型禁止'}</strong><p>设置即时影响此密钥发起的后续请求；白名单使用网关对外完整模型名。</p></div>
+            <div className="key-model-policy-actions">
+              <button className={`btn ${selectedKey.allowed_models === null ? 'primary' : ''}`} disabled={policyBusy || !selectedKey.writable} onClick={() => void updateModelPolicy(null)}><ShieldCheck size={14}/>全部允许</button>
+              <button className={`btn ${selectedKey.allowed_models?.length === 0 ? 'danger' : ''}`} disabled={policyBusy || !selectedKey.writable} onClick={() => void updateModelPolicy([])}><ShieldOff size={14}/>全部禁止</button>
+            </div>
+          </header>
+          {!selectedKey.writable && <div className="key-model-policy-notice">环境变量密钥为启动配置，不能在网页端热修改。请将密钥迁移到 api/keys.json 后设置白名单。</div>}
+          {policyBusy && <div className="key-model-policy-saving"><LoaderCircle className="spin" size={14}/>正在保存并热加载…</div>}
+          <div className="key-model-list">{models.map(model => {
+            const allowed = selectedKey.allowed_models === null || selectedKey.allowed_models.includes(model.id)
+            return <div className={`key-model-row ${allowed ? 'allowed' : 'denied'}`} key={model.id}>
+              <div className="key-model-copy"><strong>{model.id}</strong><span>{model.provider_id} · 原始模型名 {model.provider_model}</span></div>
+              <div className="key-model-state"><Badge tone={model.enabled ? 'success' : 'muted'}>{model.enabled ? '全局可用' : '全局不可用'}</Badge><button className={`toggle ${allowed ? 'on' : ''}`} disabled={policyBusy || !selectedKey.writable} onClick={() => toggleModel(model.id)} aria-label={`${allowed ? '禁止' : '允许'} ${model.id}`}><i/></button><b>{allowed ? '允许' : '禁止'}</b></div>
+            </div>
+          })}</div>
+          {!models.length && <div className="key-model-policy-empty">当前没有已注册模型。</div>}
         </div>}
       </Card>
     </div>}

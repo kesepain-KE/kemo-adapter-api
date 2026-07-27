@@ -5,13 +5,14 @@ import { adminApi, type WebAuthMethods } from './adminApi'
 import { Sidebar, Topbar } from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Keys from './pages/Keys'
+import CallLogs from './pages/CallLogs'
 import Logs from './pages/Logs'
 import Models from './pages/Models'
 import Providers from './pages/Providers'
 import Settings from './pages/Settings'
 import type { PageId } from './types'
 
-const PAGE_IDS: readonly PageId[] = ['dashboard', 'providers', 'models', 'keys', 'logs', 'settings']
+const PAGE_IDS: readonly PageId[] = ['dashboard', 'providers', 'models', 'keys', 'logs', 'call-logs', 'settings']
 
 function pageFromLocation(): PageId {
   const segments = window.location.pathname.split('/').filter(Boolean)
@@ -154,7 +155,7 @@ function Console() {
 
   if (booting && !data) return <main className="login-screen"><LoaderCircle className="spin" size={28}/><p>正在恢复管理会话…</p></main>
   if (!data) return <Login/>
-  const pages = { dashboard: <Dashboard/>, providers: <Providers onSettings={() => navigatePage('settings')}/>, models: <Models/>, keys: <Keys/>, logs: <Logs/>, settings: <Settings/> }
+  const pages = { dashboard: <Dashboard/>, providers: <Providers onSettings={() => navigatePage('settings')}/>, models: <Models/>, keys: <Keys/>, logs: <Logs/>, 'call-logs': <CallLogs/>, settings: <Settings/> }
   return <div className="app"><Sidebar page={page} onPage={navigatePage}/><Topbar page={page}>{pages[page]}</Topbar></div>
 }
 

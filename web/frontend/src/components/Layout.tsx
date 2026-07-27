@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { Activity, Boxes, ChartNoAxesCombined, KeyRound, LayoutDashboard, LogOut, Settings, Sparkles } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Activity, Boxes, ChartNoAxesCombined, ClipboardList, KeyRound, LayoutDashboard, LogOut, Settings, Sparkles } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import type { PageId } from '../types'
 
@@ -9,8 +9,25 @@ const nav: { id: PageId; label: string; icon: typeof Activity }[] = [
   { id: 'models', label: '模型', icon: Sparkles },
   { id: 'keys', label: 'API 密钥', icon: KeyRound },
   { id: 'logs', label: '统计日志', icon: ChartNoAxesCombined },
+  { id: 'call-logs', label: '调用日志', icon: ClipboardList },
   { id: 'settings', label: '系统设置', icon: Settings },
 ]
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('clipboard unavailable')
+}
 
 export function Sidebar({ page, onPage }: { page: PageId; onPage: (page: PageId) => void }) {
   return <aside className="sidebar">
@@ -22,18 +39,29 @@ export function Sidebar({ page, onPage }: { page: PageId; onPage: (page: PageId)
 }
 
 export function Topbar({ page, children }: { page: PageId; children: ReactNode }) {
-  const { data, restart, disconnect, error, clearError } = useAdmin()
+  const { data, disconnect, error, clearError } = useAdmin()
+  const [baseUrlCopied, setBaseUrlCopied] = useState(false)
   const titles: Record<PageId, [string, string]> = {
     dashboard: ['Kemo Gateway 控制台', '网关实例、Provider、模型和运行时配置的真实状态'],
     providers: ['Provider 控制中心', '已加载厂商包、模型路由和 API 配置'],
     models: ['模型与启停', '根据 Provider 注册结果控制新请求可用模型'],
     keys: ['API 密钥', '查看网关密钥、累计用量和最近调用时间'],
     logs: ['统计与日志', '每日真实调用、Token、缓存命中率与调用排行'],
+    'call-logs': ['调用日志', '逐次查看模型路由、Token 计量和脱敏后的失败原因'],
     settings: ['系统设置', '热配置、Provider API 配置和 owner 平滑重启'],
   }
-  const phase = restart?.gateway.phase ?? data.runtime.phase
+  const copyBaseUrl = async () => {
+    if (!data.base_url) return
+    try {
+      await copyText(data.base_url)
+      setBaseUrlCopied(true)
+      window.setTimeout(() => setBaseUrlCopied(false), 1600)
+    } catch {
+      setBaseUrlCopied(false)
+    }
+  }
   return <main className="main">
-    <header className="topbar"><div><h1><b>Kemo</b> {titles[page][0].replace('Kemo ', '')}</h1><p>{titles[page][1]}</p></div><div className="top-actions"><span className={`online phase-${phase}`}><i/>{phase}</span><span className="top-chip">Kemo 协议版本号 {data.protocol_version}</span><span className="top-chip">网关主版本 {data.version}</span>{data.authentication.required && <button className="btn" onClick={disconnect}><LogOut size={15}/>退出</button>}</div></header>
+    <header className="topbar"><div><h1><b>Kemo</b> {titles[page][0].replace('Kemo ', '')}</h1><p>{titles[page][1]}</p></div><div className="top-actions"><button className={`gateway-base-url ${baseUrlCopied ? 'copied' : ''}`} disabled={!data.base_url} title={data.base_url || '请在 .env 中配置 GATEWAY_BASE_URL'} onClick={() => void copyBaseUrl()}><span>{baseUrlCopied ? 'Base URL 已复制' : data.base_url || 'Base URL 未配置'}</span></button><span className="top-chip">Kemo 协议版本号 {data.protocol_version}</span><span className="top-chip">网关主版本 {data.version}</span>{data.authentication.required && <button className="btn" onClick={disconnect}><LogOut size={15}/>退出</button>}</div></header>
     {error && <div className="global-alert" role="alert"><span>{error}</span><button onClick={clearError}>×</button></div>}
     {children}
   </main>

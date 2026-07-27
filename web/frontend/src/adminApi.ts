@@ -7,6 +7,7 @@ export interface AdminProvider {
 export interface AdminConsoleData {
   version: string
   protocol_version: string
+  base_url: string
   authentication: {
     required: boolean
   }
@@ -57,6 +58,7 @@ export interface RestartRequiredStatus {
   required: boolean
   message: string
   changed_groups: Array<'environment' | 'startup' | 'backend' | 'frontend' | 'providers' | 'dependencies' | 'version'>
+  changed_files: string[]
   checked_at: string
 }
 
@@ -112,8 +114,17 @@ export interface HourlyStatistics {
     label: string
     calls: number
     successes: number
+    success_rate: number | null
+    input_tokens: number | null
+    input_token_samples: number
+    cached_input_tokens: number | null
+    cached_input_token_samples: number
+    output_tokens: number | null
+    output_token_samples: number
     total_tokens: number | null
     token_samples: number
+    cache_hit_rate: number | null
+    cache_eligible_samples: number
   }>
 }
 
@@ -128,6 +139,34 @@ export interface StatisticsRanking {
   date: string
   dimension: 'provider' | 'model' | 'gateway_key'
   items: Array<StatisticsMetrics & { id: string }>
+}
+
+export type InvocationOutcome = 'all' | 'success' | 'failure'
+
+export interface InvocationLogItem {
+  started_at: string
+  finished_at: string | null
+  task: string
+  provider_id: string
+  model: string
+  provider_model: string
+  gateway_key_id: string | null
+  status: 'running' | 'completed' | 'requires_action' | 'failed' | 'incomplete' | 'cancelled'
+  error_code: string | null
+  error_type: string | null
+  error_message: string | null
+  latency_ms: number | null
+  tokens: Record<'input_tokens' | 'cached_input_tokens' | 'output_tokens' | 'reasoning_tokens' | 'visible_output_tokens' | 'total_tokens', number | null>
+  usage: {
+    mode: string | null
+    exact: boolean | null
+  }
+}
+
+export interface InvocationLogs {
+  outcome: InvocationOutcome
+  date: string | null
+  items: InvocationLogItem[]
 }
 
 export interface ModelCapabilityDeclaration {
@@ -177,6 +216,9 @@ export interface GatewayApiKey {
   source: 'runtime' | 'environment'
   created_at: string | null
   last_used_at: string | null
+  allowed_models: string[] | null
+  model_policy: 'allow_all' | 'allow_list' | 'deny_all'
+  writable: boolean
   usage: {
     calls: number
     successes: number
@@ -184,8 +226,22 @@ export interface GatewayApiKey {
   }
 }
 
+export interface GatewayKeyModel {
+  id: string
+  provider_id: string
+  provider_model: string
+  enabled: boolean
+}
+
 export interface GatewayApiKeys {
+  revision: string
   items: GatewayApiKey[]
+  models: GatewayKeyModel[]
+}
+
+export interface KeyModelPolicyResult extends UpdateResult {
+  allowed_models: string[] | null
+  model_policy: GatewayApiKey['model_policy']
 }
 
 export interface WebAuthMethods {
@@ -220,8 +276,9 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
   if (!response.ok) {
     let message = `管理 API 请求失败 (${response.status})`
     try {
-      const body = await response.json() as { detail?: string }
+      const body = await response.json() as { detail?: string; error?: { message?: string } }
       if (body.detail) message = body.detail
+      else if (body.error?.message) message = body.error.message
     } catch {
       // 非 JSON 错误页仅使用状态码，避免把响应正文显示到管理页。
     }
@@ -243,6 +300,18 @@ export const adminApi = {
     }),
   console: (token: string) => request<AdminConsoleData>('/console', token),
   gatewayApiKeys: (token: string) => request<GatewayApiKeys>('/keys', token),
+  updateKeyModelPolicy: (
+    token: string,
+    keyId: string,
+    expectedRevision: string,
+    allowedModels: string[] | null,
+  ) => request<KeyModelPolicyResult>(`/keys/${encodeURIComponent(keyId)}/model-policy`, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      expected_revision: expectedRevision,
+      allowed_models: allowedModels,
+    }),
+  }),
   gateway: (token: string, expectedRevision: string, enabled: boolean) =>
     request<UpdateResult>('/runtime/gateway', token, {
       method: 'PUT',
@@ -299,6 +368,11 @@ export const adminApi = {
     `/statistics/rankings?${date ? `date=${encodeURIComponent(date)}&` : ''}dimension=${dimension}`,
     token,
   ),
+  invocationLogs: (token: string, outcome: InvocationOutcome = 'all', limit = 100, date?: string) =>
+    request<InvocationLogs>(
+      `/statistics/invocations?outcome=${outcome}&limit=${limit}${date ? `&date=${encodeURIComponent(date)}` : ''}`,
+      token,
+    ),
   providerCapabilities: (token: string, providerId: string) =>
     request<ProviderCapabilities>(`/providers/${encodeURIComponent(providerId)}/capabilities`, token),
   probeModel: (token: string, model: string) =>

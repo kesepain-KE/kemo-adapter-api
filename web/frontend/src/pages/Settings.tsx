@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Check, Plus, Power, RefreshCw, RotateCw, Save, Trash2, Undo2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Check, CheckCircle2, Clock3, Plus, Power, RefreshCw, RotateCw, Save, Trash2, TriangleAlert, Undo2, XCircle } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import { adminApi, type RestartRequiredStatus, type VersionCheck } from '../adminApi'
 import { Badge, Card, CardHeader, EmptyState, SectionTitle, Subtabs } from '../components/UI'
 
 type Tab = 'runtime' | 'providers' | 'startup' | 'version'
+type RestartUiPhase = 'idle' | 'running' | 'succeeded' | 'failed'
 type HeaderDraft = { id: string; name: string; value: string }
 type ProviderDraft = {
   baseUrl: string
@@ -43,6 +45,23 @@ const restartGroupLabels: Record<string, string> = {
   version: '版本文件',
 }
 
+function restartFileDescription(path: string): string {
+  if (path === '.env') return '环境变量文件（仅展示路径，不展示任何变量值）'
+  if (path === 'start_web.py' || path === 'restart.py') return '启动或平滑重启入口'
+  if (path.startsWith('providers/')) return 'Provider 代码、清单或静态资源'
+  if (path.startsWith('web/frontend/')) return '网页源代码、构建产物或前端配置'
+  if (path.startsWith('web/backend/')) return 'Web 管理后端'
+  if (path.startsWith('storage/')) return '调用统计存储后端'
+  if (path.startsWith('api/') || path.startsWith('core/')) return '网关后端运行代码'
+  if (path === 'version.json') return '网关版本声明'
+  return '启动时加载的项目文件'
+}
+
+function formatRestartDuration(milliseconds: number): string {
+  const seconds = milliseconds / 1000
+  return seconds < 10 ? `${seconds.toFixed(1)} 秒` : `${Math.round(seconds)} 秒`
+}
+
 export default function Settings() {
   const { token, data, restart, isOwner, saveControl, saveProvider, requestRestart } = useAdmin()
   const [tab, setTab] = useState<Tab>('runtime')
@@ -56,6 +75,13 @@ export default function Settings() {
   const [busy, setBusy] = useState('')
   const [saved, setSaved] = useState('')
   const [error, setError] = useState('')
+  const [restartUiPhase, setRestartUiPhase] = useState<RestartUiPhase>('idle')
+  const [restartRequestId, setRestartRequestId] = useState<string | null>(null)
+  const [restartStartedAt, setRestartStartedAt] = useState<number | null>(null)
+  const [restartElapsedMs, setRestartElapsedMs] = useState(0)
+  const [lastRestartDurationMs, setLastRestartDurationMs] = useState<number | null>(null)
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
+  const restartConfirmButtonRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     setPrompt(data.highest_priority_system_prompt)
@@ -86,6 +112,50 @@ export default function Settings() {
       setRestartCheckBusy(false)
     }
   }, [token])
+
+  useEffect(() => {
+    if (restartUiPhase !== 'running' || restartStartedAt === null) return
+    const updateElapsed = () => setRestartElapsedMs(Date.now() - restartStartedAt)
+    updateElapsed()
+    const timer = window.setInterval(updateElapsed, 250)
+    return () => window.clearInterval(timer)
+  }, [restartStartedAt, restartUiPhase])
+
+  useEffect(() => {
+    if (
+      restartUiPhase !== 'running'
+      || restartStartedAt === null
+      || restartRequestId === null
+      || restart?.restart.request_id !== restartRequestId
+    ) return
+    if (restart.restart.phase === 'succeeded') {
+      const duration = Math.max(0, Date.now() - restartStartedAt)
+      setRestartElapsedMs(duration)
+      setLastRestartDurationMs(duration)
+      setRestartUiPhase('succeeded')
+      void loadRestartRequired()
+    } else if (restart.restart.phase === 'failed') {
+      setRestartElapsedMs(Math.max(0, Date.now() - restartStartedAt))
+      setRestartUiPhase('failed')
+      setError(restart.restart.message || '网关重启失败')
+    }
+  }, [loadRestartRequired, restart, restartRequestId, restartStartedAt, restartUiPhase])
+
+  useEffect(() => {
+    if (!['succeeded', 'failed'].includes(restartUiPhase)) return
+    const timer = window.setTimeout(() => setRestartUiPhase('idle'), 8000)
+    return () => window.clearTimeout(timer)
+  }, [restartUiPhase])
+
+  useEffect(() => {
+    if (!restartConfirmOpen) return
+    restartConfirmButtonRef.current?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setRestartConfirmOpen(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [restartConfirmOpen])
 
   const loadVersionCheck = useCallback(async () => {
     setVersionBusy(true)
@@ -165,11 +235,19 @@ export default function Settings() {
   }
 
   const startRestart = async () => {
+    const startedAt = Date.now()
     setBusy('restart'); setError('')
+    setRestartStartedAt(startedAt)
+    setRestartElapsedMs(0)
+    setRestartRequestId(null)
+    setRestartUiPhase('running')
     try {
-      await requestRestart('manual web restart', false)
-      flashSaved('重启请求已提交')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '无法提交重启') }
+      setRestartRequestId(await requestRestart('manual web restart', false))
+    } catch (reason) {
+      setRestartElapsedMs(Date.now() - startedAt)
+      setRestartUiPhase('failed')
+      setError(reason instanceof Error ? reason.message : '无法提交重启')
+    }
     finally { setBusy('') }
   }
 
@@ -228,10 +306,19 @@ export default function Settings() {
         </div>
         <button className="btn" disabled={restartCheckBusy} onClick={() => void loadRestartRequired()}><RefreshCw size={14} className={restartCheckBusy ? 'spin' : ''}/>重新检测</button>
       </Card>
-      <Card className="restart-action-card">
-        <div><h3>重启网关</h3><p>{restart && !restartAvailable ? `当前重启阶段：${restartPhase}` : '等待当前请求完成后平滑重启。'}</p></div>
-        {isOwner ? <button className="button" disabled={busy === 'restart' || !restartAvailable} onClick={() => void startRestart()}><RotateCw size={15}/>重启</button> : <button className="button" disabled><Power size={15}/>需要 owner 权限</button>}
+      <Card className={`restart-action-card restart-ui-${restartUiPhase}`}>
+        <div className="restart-action-copy">
+          <h3>{restartUiPhase === 'running' ? '正在重启网关' : restartUiPhase === 'succeeded' ? '网关已重新启动' : '重启网关'}</h3>
+          {restartUiPhase === 'running' ? <p>当前阶段：{restartRequestId ? restartPhase : '正在提交'}，正在等待新实例通过健康检查。</p> : lastRestartDurationMs !== null ? <p className="restart-duration-result"><Clock3 size={13}/>本次重启耗时 <b>{formatRestartDuration(lastRestartDurationMs)}</b></p> : <p>{restart && !restartAvailable ? `当前重启阶段：${restartPhase}` : '等待当前请求完成后平滑重启。'}</p>}
+        </div>
+        {isOwner ? restartUiPhase === 'running' ? <span className="restart-progress-bubble"><RotateCw className="spin" size={15}/>重启中 · {Math.floor(restartElapsedMs / 1000)} 秒</span> : restartUiPhase === 'succeeded' ? <span className="restart-success-bubble"><CheckCircle2 size={16}/>重启成功</span> : restartUiPhase === 'failed' ? <span className="restart-failed-bubble"><XCircle size={16}/>重启失败</span> : <button className="button restart-trigger-button" aria-haspopup="dialog" disabled={busy === 'restart' || !restartAvailable} onClick={() => setRestartConfirmOpen(true)}><RotateCw size={15}/>重启</button> : <button className="button" disabled><Power size={15}/>需要 owner 权限</button>}
       </Card>
+      {restartRequired?.required && <Card className="restart-change-details">
+        <CardHeader title="需要重启的变更明细" description="以下项目相对当前进程启动时发生了变化；只展示路径，不展示文件内容或敏感值" action={<Badge tone="warning">{restartRequired.changed_files?.length ?? restartRequired.changed_groups.length} 项</Badge>}/>
+        <div className="restart-change-list">
+          {restartRequired.changed_files?.length ? restartRequired.changed_files.map(path => <div key={path}><code>{path}</code><span>{restartFileDescription(path)}</span></div>) : restartRequired.changed_groups.map(group => <div key={group}><code>{restartGroupLabels[group] ?? group}</code><span>该类别中的启动文件已发生变化</span></div>)}
+        </div>
+      </Card>}
     </div>}
 
     {tab === 'version' && <div className="version-panel">
@@ -240,9 +327,23 @@ export default function Settings() {
         <div className="version-actions">{versionCheck && <Badge tone={versionTone}>{versionCheck.status === 'update_available' ? '需要更新' : versionCheck.status === 'unavailable' ? '检测失败' : '无需更新'}</Badge>}<button className="btn" disabled={versionBusy} onClick={() => void loadVersionCheck()}><RefreshCw size={14} className={versionBusy ? 'spin' : ''}/>{versionCheck ? '重新检测' : '开始检测'}</button></div>
       </Card>
       <div className="two-grid version-compare-grid">
-        <Card><CardHeader title="本地版本" description="根目录 version.json"/><strong className="version-number">{versionCheck?.local?.version ?? '—'}</strong><div className="version-details"><span>协议版本 <b>{versionCheck?.local?.protocol_version ?? '—'}</b></span><p>{versionCheck?.local?.notes || '暂无版本说明'}</p></div></Card>
-        <Card><CardHeader title="远程版本" description="kesepain-KE/kemo-adapter-api · main"/><strong className="version-number">{versionCheck?.remote?.version ?? '—'}</strong><div className="version-details"><span>协议版本 <b>{versionCheck?.remote?.protocol_version ?? '—'}</b></span><p>{versionCheck?.remote?.notes || (versionCheck?.status === 'unavailable' ? '远程版本暂时不可用' : '暂无版本说明')}</p></div></Card>
+        <Card><CardHeader title="本地版本" description="根目录 version.json"/><div className="version-number-row"><strong className="version-number">{versionCheck?.local?.version ?? '—'}</strong><span className="version-protocol"><small>协议</small><b>{versionCheck?.local?.protocol_version ?? '—'}</b></span></div></Card>
+        <Card><CardHeader title="远程版本" description="kesepain-KE/kemo-adapter-api · main"/><div className="version-number-row"><strong className="version-number">{versionCheck?.remote?.version ?? '—'}</strong><span className="version-protocol"><small>协议</small><b>{versionCheck?.remote?.protocol_version ?? '—'}</b></span></div></Card>
       </div>
     </div>}
+    {restartConfirmOpen && createPortal(<div className="restart-confirm-overlay" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget) setRestartConfirmOpen(false) }}>
+      <section className="restart-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="restart-confirm-title" aria-describedby="restart-confirm-description">
+        <span className="restart-confirm-icon"><TriangleAlert size={24}/></span>
+        <div className="restart-confirm-copy">
+          <span>高影响操作</span>
+          <h3 id="restart-confirm-title">确认重启网关？</h3>
+          <p id="restart-confirm-description">重启期间新请求可能短暂不可用；系统会等待当前请求完成，并在新实例通过健康检查后恢复服务。</p>
+        </div>
+        <div className="restart-confirm-actions">
+          <button className="btn" onClick={() => setRestartConfirmOpen(false)}>取消</button>
+          <button ref={restartConfirmButtonRef} className="button restart-confirm-button" onClick={() => { setRestartConfirmOpen(false); void startRestart() }}><RotateCw size={15}/>确认重启</button>
+        </div>
+      </section>
+    </div>, document.body)}
   </>
 }

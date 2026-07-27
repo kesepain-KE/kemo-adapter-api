@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, CalendarDays, DatabaseZap, RefreshCw } from 'lucide-react'
+import { AlertTriangle, DatabaseZap, RefreshCw } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import {
   adminApi,
@@ -7,14 +7,9 @@ import {
   type StatisticsRanking,
 } from '../adminApi'
 import { Badge, Card, CardHeader, EmptyState, SectionTitle, Subtabs } from '../components/UI'
+import DatePicker, { localDate } from '../components/DatePicker'
 
 type Dimension = 'provider' | 'model' | 'gateway_key'
-
-function localDate(): string {
-  const now = new Date()
-  const offset = now.getTimezoneOffset() * 60_000
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10)
-}
 
 function integer(value: number | null): string {
   return value === null ? '—' : new Intl.NumberFormat('zh-CN').format(value)
@@ -73,7 +68,7 @@ export default function Logs() {
     <SectionTitle
       title="统计与日志"
       description="每日真实 Provider 调用汇总；日期边界由网关统计时区决定"
-      action={<div className="stats-toolbar"><label><CalendarDays size={15}/><input type="date" value={date} onChange={event => setDate(event.target.value)}/></label><button className="btn primary" onClick={() => void load()} disabled={loading}><RefreshCw size={14}/>{loading ? '读取中' : '刷新'}</button></div>}
+      action={<div className="stats-toolbar"><DatePicker value={date} onChange={setDate}/><button className="btn primary" onClick={() => void load()} disabled={loading}><RefreshCw size={14}/>{loading ? '读取中' : '刷新'}</button></div>}
     />
 
     {error && <div className="alert"><AlertTriangle size={18}/><span>{error}</span></div>}

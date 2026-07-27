@@ -1,4 +1,4 @@
-export type PageId = 'dashboard' | 'providers' | 'models' | 'keys' | 'logs' | 'settings'
+export type PageId = 'dashboard' | 'providers' | 'models' | 'keys' | 'logs' | 'call-logs' | 'settings'
 
 export type ProviderStatus = 'healthy' | 'warning' | 'disabled' | 'unconfigured'
 
