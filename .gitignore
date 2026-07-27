@@ -23,6 +23,7 @@ providers/*
 # 前端构建产物（克隆后自行构建）
 web/frontend/node_modules/
 web/frontend/dist/
+web/frontend/.runtime/
 *.tsbuildinfo
 
 # Python / test caches
