@@ -1,14 +1,7 @@
-"""Kemo 网关更新系统入口。
+"""Kemo 网关交互式更新入口。
 
-用法：
-  python update.py --check                  只检查远端状态
-  python update.py --apply                  交互式安全更新
-  python update.py --apply --yes            跳过普通更新确认
-  python update.py --repair                 显式修复已跟踪源码
-  python update.py --repair --yes           跳过修复确认
-  python update.py --status                 查看本地与远端状态
-  python update.py --list-backups           列出冷备份
-  python update.py --restore-backup latest  从最新冷备份恢复
+普通用户只需运行 ``python update.py``，然后按屏幕提示输入数字。
+命令行参数仅保留给自动化部署和高级维护，不是日常更新的必需操作。
 """
 
 from __future__ import annotations
@@ -29,21 +22,118 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 def _confirm(prompt: str, default: bool = False) -> bool:
-    """交互式询问用户确认。default=True 时默认为 y。"""
-    hint = "Y/n" if default else "y/N"
+    """用数字或常见 yes/no 输入完成二次确认。"""
+    default_label = "是" if default else "否"
     while True:
         try:
-            raw = input(f"{prompt} [{hint}] ")
+            raw = input(
+                f"{prompt}（输入 1=是，2=否，直接回车={default_label}）: "
+            )
         except (EOFError, KeyboardInterrupt):
             print()
             return default
         if not raw:
             return default
-        if raw.lower() in ("y", "yes"):
+        if raw.strip().lower() in ("1", "y", "yes", "是"):
             return True
-        if raw.lower() in ("n", "no"):
+        if raw.strip().lower() in ("0", "2", "n", "no", "否"):
             return False
-        print("请输入 y 或 n。")
+        print("[提示] 请输入 1 或 2。")
+
+
+def _read_choice(
+    prompt: str,
+    *,
+    valid: set[str],
+    default: str | None = None,
+) -> str:
+    """Read one menu choice without ever turning EOF into a mutation."""
+    while True:
+        default_hint = f"，直接回车={default}" if default is not None else ""
+        try:
+            raw = input(f"{prompt}{default_hint}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return "0" if "0" in valid else (default or next(iter(valid)))
+        choice = raw or default
+        if choice in valid:
+            return choice
+        print(f"[提示] 请输入：{' / '.join(sorted(valid))}")
+
+
+def _pause() -> None:
+    try:
+        input("\n按回车键返回主菜单...")
+    except (EOFError, KeyboardInterrupt):
+        print()
+
+
+def _print_menu() -> None:
+    local = version.read_local(PROJECT_ROOT)
+    print("\n" + "=" * 58)
+    print("                 Kemo 网关更新工具")
+    print("=" * 58)
+    print(f"当前版本：{local.version}    Kemo 协议：{local.protocol_version}")
+    print("\n  1. 检查并安装更新（推荐）")
+    print("  2. 只检查更新，不修改文件")
+    print("  3. 查看或恢复更新前备份")
+    print("  4. 修复网关源码（高级操作）")
+    print("  0. 退出")
+
+
+def _interactive_backups() -> int:
+    backups = backup.list_backups(PROJECT_ROOT)
+    print("\n[KEMO] 更新前备份")
+    if not backups:
+        print("[KEMO] 当前没有可恢复的备份。")
+        return 0
+
+    print(f"[KEMO] 找到 {len(backups)} 份备份：")
+    for index, backup_id in enumerate(backups, start=1):
+        label = "（最新）" if index == 1 else ""
+        print(f"  {index}. {backup_id} {label}")
+    print("  0. 返回主菜单")
+
+    valid = {str(index) for index in range(len(backups) + 1)}
+    choice = _read_choice("请选择要恢复的备份", valid=valid)
+    if choice == "0":
+        return 0
+    return _restore_backup(backups[int(choice) - 1])
+
+
+def _interactive_menu() -> int:
+    """Beginner-facing entry point used when no command suffix is supplied."""
+    while True:
+        _print_menu()
+        choice = _read_choice(
+            "请选择操作",
+            valid={"0", "1", "2", "3", "4"},
+            default="1",
+        )
+        if choice == "0":
+            print("[KEMO] 已退出，未修改任何文件。")
+            return 0
+        if choice == "1":
+            return _apply(yes=False)
+        if choice == "2":
+            result = _check_cmd()
+            _pause()
+            if result != 0:
+                print("[提示] 检查没有完成，可以稍后重试。")
+            continue
+        if choice == "3":
+            result = _interactive_backups()
+            _pause()
+            if result != 0:
+                print("[提示] 备份恢复没有完成，请检查上面的错误说明。")
+            continue
+
+        print("\n[WARN] 修复会重新对齐 Git 已跟踪的网关源码。")
+        print("[WARN] 只有源码损坏或普通更新明确提示无法更新时才使用。")
+        if not _confirm("是否进入源码修复流程？", default=False):
+            print("[KEMO] 已取消修复。")
+            continue
+        return _repair(yes=False)
 
 
 def _check(
@@ -379,7 +469,7 @@ def _list_backups() -> int:
     print(f"[KEMO] 可用备份 ({len(backups)} 个):")
     for backup_id in backups:
         print(f"      .backup/{backup_id}/")
-    print("\n[KEMO] 恢复方式: python update.py --restore-backup <时间戳>")
+    print("\n[KEMO] 普通用户请运行 python update.py，然后选择“查看或恢复备份”。")
     return 0
 
 
@@ -398,7 +488,9 @@ def _restore_backup(backup_id: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Kemo 网关安全更新系统")
+    parser = argparse.ArgumentParser(
+        description="Kemo 网关安全更新系统；不带参数时进入交互菜单"
+    )
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--check", action="store_true", help="只检查远端状态")
     actions.add_argument("--apply", action="store_true", help="执行安全快进更新")
@@ -421,7 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    effective_argv = sys.argv[1:] if argv is None else argv
+    args = parser.parse_args(effective_argv)
+    if not effective_argv:
+        return _interactive_menu()
     if args.yes and not (args.apply or args.repair):
         parser.error("--yes 只能与 --apply 或 --repair 一起使用")
     if args.check:

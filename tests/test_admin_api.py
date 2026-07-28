@@ -101,6 +101,7 @@ def test_empty_auth_environment_allows_direct_web_owner_but_not_public_api(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("WEB_USERNAME", "")
     monkeypatch.setenv("WEB_PASSWORD", "")
+    monkeypatch.setenv("WEB_TOKEN", "")
     app = create_app(
         Settings.from_env(), live_config_root=root, discover_providers=False
     )

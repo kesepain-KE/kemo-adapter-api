@@ -241,18 +241,17 @@ python restart.py --status
 ### 项目自更新
 
 ```powershell
-python update.py --check
-python update.py --apply
-python update.py --status
+python update.py
 ```
 
+运行后输入数字即可检查并安装更新、只检查、查看/恢复备份或修复源码，不需要记忆命令参数。
 普通更新只接受安全快进：本地领先或与远端分叉时不会覆盖本地提交；无新提交时也不会隐式重置源码。
 更新前会锁定已检查的精确远端提交并创建 `.backup/` 冷备份，备份失败时不会改变 Git HEAD。
 远端提交如果触碰 `.env`、API 密钥、Provider、统计、Asset、运行时或私有开发目录，更新器会拒绝整次更新。
 前端变化时会复用 `setup.py` 的 Windows/Linux 一站式工具链重新构建。
 
-只有在明确需要修复 Git 已跟踪源码时才使用 `python update.py --repair`。修复前会创建 Git 恢复引用；
-`--yes` 仅跳过确认，不能把普通更新升级为修复。可用 `--list-backups` 和 `--restore-backup <时间戳>` 管理冷备份。
+“修复网关源码”只应在源码损坏或普通更新明确提示无法更新时选择。修复前会创建 Git 恢复引用，
+且与普通更新一样不会覆盖部署端的环境变量、密钥、Provider 和统计数据。
 
 ---
 

@@ -242,14 +242,13 @@ The restart module drains in-flight requests before restarting. The web console 
 ### Self-update
 
 ```powershell
-python update.py --check
-python update.py --apply
-python update.py --status
+python update.py
 ```
 
+Enter a menu number to check and install updates, inspect status, restore a backup, or repair tracked source. No command suffix is required.
 Normal updates are verified fast-forwards only. Local-ahead or diverged histories are never overwritten, and an up-to-date checkout never implies a source reset. The updater pins the exact inspected remote commit and creates a cold backup under `.backup/` before changing Git HEAD. It rejects the entire operation when a remote commit touches `.env`, API keys, Providers, statistics, Assets, runtime state, or the private developer directory. Front-end changes reuse the cross-platform `setup.py` toolchain to rebuild on Windows or Linux.
 
-Use `python update.py --repair` only for an explicit repair of Git-tracked source. A Git recovery reference is created before reset; `--yes` skips confirmation only and never turns a normal update into repair. Cold backups can be inspected with `--list-backups` and restored with `--restore-backup <timestamp>`.
+Choose source repair only when tracked source is damaged or the normal updater explicitly cannot continue. Repair creates a Git recovery reference first and preserves deployment environment variables, keys, Providers, and statistics.
 
 ---
 
