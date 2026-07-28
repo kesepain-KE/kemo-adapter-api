@@ -453,6 +453,116 @@ def test_gateway_keys_are_owner_only_uncached_and_include_real_metadata(tmp_path
     assert "owner-console" in items
 
 
+def test_owner_can_reveal_one_gateway_key_without_exposing_it_in_the_list(
+    tmp_path: Path,
+) -> None:
+    root = admin_project(tmp_path)
+    keys_path = root / "api" / "keys.json"
+    payload = json.loads(keys_path.read_text(encoding="utf-8"))
+    payload["keys"]["caller-token"]["key_id"] = "graph-production"
+    write_json(keys_path, payload)
+    settings = Settings(
+        api_keys={
+            "startup-secret": PrincipalConfig(
+                "admin",
+                "startup-owner",
+                frozenset({"owner"}),
+                key_id="startup-key",
+            )
+        }
+    )
+    app = create_app(settings, live_config_root=root, discover_providers=False)
+
+    with TestClient(app) as client:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        listed = client.get("/admin/api/keys", headers=owner_headers)
+        runtime = client.post(
+            "/admin/api/keys/graph-production/reveal", headers=owner_headers
+        )
+        startup = client.post(
+            "/admin/api/keys/startup-key/reveal", headers=owner_headers
+        )
+        forbidden = client.post(
+            "/admin/api/keys/graph-production/reveal", headers=ADMIN_HEADERS
+        )
+        missing = client.post(
+            "/admin/api/keys/missing/reveal", headers=owner_headers
+        )
+
+    assert listed.status_code == 200
+    assert "caller-token" not in listed.text
+    assert "startup-secret" not in listed.text
+    assert runtime.status_code == 200
+    assert runtime.json() == {"token": "caller-token"}
+    assert runtime.headers["cache-control"] == "no-store, max-age=0"
+    assert startup.status_code == 200
+    assert startup.json() == {"token": "startup-secret"}
+    assert forbidden.status_code == 403
+    assert missing.status_code == 404
+
+
+def test_cookie_authenticated_key_reveal_requires_csrf(tmp_path: Path) -> None:
+    root = admin_project(tmp_path)
+    app = create_app(
+        Settings(web_token="web-control-token"),
+        live_config_root=root,
+        discover_providers=False,
+    )
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/admin/api/auth/token", json={"token": "web-control-token"}
+        )
+        csrf_token = login.json()["csrf_token"]
+        listed = client.get("/admin/api/keys")
+        key_id = next(
+            item["id"]
+            for item in listed.json()["items"]
+            if item["name"] == "owner-console"
+        )
+        assert client.post(f"/admin/api/keys/{key_id}/reveal").status_code == 403
+        revealed = client.post(
+            f"/admin/api/keys/{key_id}/reveal",
+            headers={"X-CSRF-Token": csrf_token, "Origin": "http://testserver"},
+        )
+
+    assert revealed.status_code == 200
+    assert revealed.json() == {"token": "owner-token"}
+    assert revealed.headers["cache-control"] == "no-store, max-age=0"
+
+
+def test_direct_login_key_reveal_ignores_stale_cookie_but_rejects_cross_site(
+    tmp_path: Path,
+) -> None:
+    root = no_auth_project(tmp_path)
+    write_json(
+        root / "api" / "keys.json",
+        {
+            "keys": {
+                "local-model-token": {
+                    "key_id": "local-agent",
+                    "tenant_id": "local",
+                    "subject_id": "agent",
+                    "scopes": ["model:invoke"],
+                }
+            }
+        },
+    )
+    app = create_app(Settings(), live_config_root=root, discover_providers=False)
+
+    with TestClient(app) as client:
+        client.cookies.set("kemo_web_session", "obsolete-session")
+        revealed = client.post("/admin/api/keys/local-agent/reveal")
+        cross_site = client.post(
+            "/admin/api/keys/local-agent/reveal",
+            headers={"Origin": "https://evil.example"},
+        )
+
+    assert revealed.status_code == 200
+    assert revealed.json() == {"token": "local-model-token"}
+    assert cross_site.status_code == 403
+
+
 def test_owner_can_hot_update_key_model_whitelist_and_it_blocks_llm_calls(
     tmp_path: Path,
 ) -> None:
