@@ -317,6 +317,10 @@ export const adminApi = {
   logout: () => request<{ status: 'logged_out' }>('/auth/logout', '', { method: 'POST' }),
   console: (token: string) => request<AdminConsoleData>('/console', token),
   gatewayApiKeys: (token: string) => request<GatewayApiKeys>('/keys', token),
+  revealGatewayApiKey: (token: string, keyId: string) =>
+    request<{ token: string }>(`/keys/${encodeURIComponent(keyId)}/reveal`, token, {
+      method: 'POST',
+    }),
   updateKeyModelPolicy: (
     token: string,
     keyId: string,

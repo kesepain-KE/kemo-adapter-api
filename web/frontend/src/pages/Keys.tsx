@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { KeyRound, LoaderCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, Copy, Eye, EyeOff, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import { adminApi, type GatewayApiKey, type GatewayKeyModel } from '../adminApi'
 import { Badge, Card, EmptyState, SectionTitle, Subtabs } from '../components/UI'
@@ -23,6 +23,27 @@ function keyIdentity(key: GatewayApiKey): string {
   return key.id ?? `${key.source}:${key.name}`
 }
 
+async function copyToClipboard(value: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return
+    }
+  } catch {
+    // HTTP 局域网或浏览器权限策略可能拒绝 Clipboard API，继续使用兼容路径。
+  }
+  const input = document.createElement('textarea')
+  input.value = value
+  input.setAttribute('readonly', '')
+  input.style.position = 'fixed'
+  input.style.opacity = '0'
+  document.body.appendChild(input)
+  input.select()
+  const copied = document.execCommand('copy')
+  input.remove()
+  if (!copied) throw new Error('浏览器拒绝访问剪贴板')
+}
+
 export default function Keys() {
   const { csrfToken: token } = useAdmin()
   const [keys, setKeys] = useState<GatewayApiKey[]>([])
@@ -35,6 +56,12 @@ export default function Keys() {
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [policyBusy, setPolicyBusy] = useState(false)
+  const [copyingKeyId, setCopyingKeyId] = useState('')
+  const [copiedKeyId, setCopiedKeyId] = useState('')
+  const [viewingKeyId, setViewingKeyId] = useState('')
+  const [revealedKeyId, setRevealedKeyId] = useState('')
+  const [revealedToken, setRevealedToken] = useState('')
+  const revealTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     let active = true
@@ -63,6 +90,17 @@ export default function Keys() {
   const allowedRegisteredCount = selectedKey?.allowed_models?.filter(
     id => models.some(model => model.id === id),
   ).length ?? 0
+
+  useEffect(() => {
+    setRevealedKeyId('')
+    setRevealedToken('')
+    if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
+    revealTimerRef.current = null
+  }, [selectedId])
+
+  useEffect(() => () => {
+    if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
+  }, [])
 
   const updateModelPolicy = async (allowedModels: string[] | null) => {
     if (!selectedKey?.id || !selectedKey.writable || policyBusy) return
@@ -103,6 +141,53 @@ export default function Keys() {
     void updateModelPolicy(next)
   }
 
+  const copyKey = async () => {
+    if (!selectedKey?.id || copyingKeyId) return
+    const keyId = selectedKey.id
+    setCopyingKeyId(keyId)
+    setCopiedKeyId('')
+    setError('')
+    try {
+      const result = await adminApi.revealGatewayApiKey(token, keyId)
+      await copyToClipboard(result.token)
+      setCopiedKeyId(keyId)
+      window.setTimeout(() => setCopiedKeyId(current => current === keyId ? '' : current), 1800)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'API 密钥复制失败')
+    } finally {
+      setCopyingKeyId('')
+    }
+  }
+
+  const hideKey = () => {
+    if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
+    revealTimerRef.current = null
+    setRevealedKeyId('')
+    setRevealedToken('')
+  }
+
+  const viewKey = async () => {
+    if (!selectedKey?.id || viewingKeyId || copyingKeyId) return
+    if (revealedKeyId === selectedKey.id) {
+      hideKey()
+      return
+    }
+    const keyId = selectedKey.id
+    setViewingKeyId(keyId)
+    setError('')
+    try {
+      const result = await adminApi.revealGatewayApiKey(token, keyId)
+      setRevealedKeyId(keyId)
+      setRevealedToken(result.token)
+      if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
+      revealTimerRef.current = window.setTimeout(hideKey, 8000)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'API 密钥读取失败')
+    } finally {
+      setViewingKeyId('')
+    }
+  }
+
   return <>
     <SectionTitle title="API 密钥管理" description="查看当前网关密钥、累计真实用量和最后调用时间" action={<button className={`btn provider-refresh ${refreshing ? 'is-refreshing' : ''}`} disabled={loading || refreshing} onClick={() => { setRefreshing(true); setRefreshVersion(value => value + 1) }}><RefreshCw className={refreshing ? 'spin' : ''} size={15}/>刷新</button>}/>
     {error && <div className="global-alert" role="alert"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
@@ -122,9 +207,37 @@ export default function Keys() {
           <div className="api-key-secret">
             <span>API 密钥（安全掩码）</span>
             <div>
-              <code>{selectedKey.masked_token}</code>
+              <code>{revealedKeyId === selectedKey.id ? revealedToken : selectedKey.masked_token}</code>
+              <button
+                className={`key-icon-button ${revealedKeyId === selectedKey.id ? 'revealed' : ''}`}
+                type="button"
+                disabled={!selectedKey.id || Boolean(viewingKeyId) || Boolean(copyingKeyId)}
+                onClick={() => void viewKey()}
+                title={revealedKeyId === selectedKey.id ? '立即隐藏' : '查看完整密钥 8 秒'}
+                aria-label={revealedKeyId === selectedKey.id ? '立即隐藏完整密钥' : `短暂查看 ${selectedKey.name} 的完整密钥`}
+              >
+                {viewingKeyId === selectedKey.id
+                  ? <LoaderCircle className="spin" size={14}/>
+                  : revealedKeyId === selectedKey.id
+                    ? <EyeOff size={14}/>
+                    : <Eye size={14}/>}
+              </button>
+              <button
+                className={`key-icon-button ${copiedKeyId === selectedKey.id ? 'copied' : ''}`}
+                type="button"
+                disabled={!selectedKey.id || Boolean(copyingKeyId) || Boolean(viewingKeyId)}
+                onClick={() => void copyKey()}
+                title={copiedKeyId === selectedKey.id ? '已复制' : '复制完整密钥'}
+                aria-label={copiedKeyId === selectedKey.id ? '完整密钥已复制' : `复制 ${selectedKey.name} 的完整密钥`}
+              >
+                {copyingKeyId === selectedKey.id
+                  ? <LoaderCircle className="spin" size={14}/>
+                  : copiedKeyId === selectedKey.id
+                    ? <Check size={14}/>
+                    : <Copy size={14}/>}
+              </button>
             </div>
-            <small>完整密钥不再返回浏览器；请在创建时保存，或在服务器端安全轮换。</small>
+            <small>可直接复制，或短暂查看 8 秒；离开当前密钥时立即隐藏。</small>
           </div>
           <div className="key-info-facts"><div><span>密钥来源</span><strong>{selectedKey.source === 'runtime' ? 'api/keys.json · 热加载' : '启动环境变量 · 重启生效'}</strong></div><div><span>创建日期</span><strong>{formatDate(selectedKey.created_at)}</strong></div><div><span>最近一次调用</span><strong>{formatDate(selectedKey.last_used_at)}</strong></div></div>
         </div> : detailTab === 'usage' ? <div className="key-usage-panel">
