@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.6.1-blue" alt="Gateway version 0.6.1"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.0-blue" alt="Gateway version 0.7.0"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -60,6 +60,7 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 |------|---------------|
 | 多厂商统一调用 | 上层只面对一套 Kemo 协议，厂商差异由各自的 Provider Package 隔离 |
 | 模型发现与能力查询 | 返回当前密钥实际可调用的模型及其真实能力，不是未经鉴权的全量注册表 |
+| 原生多模态与 Asset | 图片、音频、视频、文件输入及媒体生成统一走严格 Content Block、鉴权 Asset 和 SSE 合同 |
 | Embedding 与 Rerank | 为知识图谱场景提供独立的向量化和重排序协议，契约与 LLM 调用同级 |
 | 密钥白名单控制 | 每个网关调用密钥可单独允许全部、禁止全部或仅允许指定模型 |
 | 运行时热更新 | 厂商配置、调用密钥、系统提示词和 Provider/模型启停可在运行中生效 |
@@ -80,9 +81,13 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 | `GET /model/models` | 获取当前密钥真正可调用的 Kemo 模型目录 |
 | `GET /model/models/{model}/capabilities` | 获取指定模型的真实能力声明 |
 | `GET /v1/models` | 兼容常见客户端的模型发现入口 |
-| `POST /model/responses` | 创建 LLM 非流式或 SSE 流式响应 |
+| `POST /model/responses` | 创建文本或多模态非流式/SSE 响应 |
 | `GET /model/responses/{response_id}` | 查询响应 |
 | `POST /model/responses/{response_id}/cancel` | 取消响应 |
+| `POST /assets` | 流式上传多模态输入 Asset |
+| `GET /assets/{asset_id}` | 查询 Asset 元数据与状态 |
+| `GET /assets/{asset_id}/content` | 鉴权下载并支持 Range |
+| `DELETE /assets/{asset_id}` | 提前删除当前主体的临时 Asset |
 | `POST /model/embeddings` | 批量生成查询或文档向量 |
 | `POST /model/rerank` | 对候选文档重排序 |
 | `GET /status` | 外部智能体只读网关状态快照 |
@@ -238,11 +243,16 @@ python restart.py --status
 ```powershell
 python update.py --check
 python update.py --apply
+python update.py --status
 ```
 
-执行更新前会在 `.backup/` 创建冷备份；备份失败时不会拉取代码。远端提交如果触碰 `.env`、
-API 密钥、Provider、每日统计、运行时或私有开发目录，更新器会拒绝整次更新，避免覆盖部署端数据。
-前端发生变化时会复用 `setup.py` 的 Windows/Linux 一站式工具链自动安装依赖并重新构建。
+普通更新只接受安全快进：本地领先或与远端分叉时不会覆盖本地提交；无新提交时也不会隐式重置源码。
+更新前会锁定已检查的精确远端提交并创建 `.backup/` 冷备份，备份失败时不会改变 Git HEAD。
+远端提交如果触碰 `.env`、API 密钥、Provider、统计、Asset、运行时或私有开发目录，更新器会拒绝整次更新。
+前端变化时会复用 `setup.py` 的 Windows/Linux 一站式工具链重新构建。
+
+只有在明确需要修复 Git 已跟踪源码时才使用 `python update.py --repair`。修复前会创建 Git 恢复引用；
+`--yes` 仅跳过确认，不能把普通更新升级为修复。可用 `--list-backups` 和 `--restore-backup <时间戳>` 管理冷备份。
 
 ---
 
@@ -259,10 +269,11 @@ API 密钥、Provider、每日统计、运行时或私有开发目录，更新�
 
 除了 `template/provider/`，没有第二份权威参考。厂商包实现后，建议先通过提供的契约测试再投入使用。
 
-任务类型与模态必须分开理解：视觉或语音对话仍可属于 `task=llm`，但 TTS、ASR、实时音频、
-图片生成/编辑等独立任务不能伪装成 LLM。媒体块必须按 Kemo 的 `source.kind`、
-`source.uri/source.data` 和内容块级 `mime_type` 转换；能力声明与测试必须使用真实 Kemo 客户端
-结构和厂商响应，不能仅靠“OpenAI-compatible”推断。
+完整 Kemo 模式使用 `POST /model/responses` 统一承载对话、视觉、ASR、TTS、语音转换、图片
+生成/编辑、视频理解和视频生成；`metadata.capability`、输入/输出模态与
+`extensions.operations` 必须同时匹配。大型媒体先进入 `/assets`，Provider 通过
+`RequestContext.assets` 读取输入或登记输出，公开响应只返回 Asset ID、真实 MIME 和 SHA-256，
+不能返回网关本地路径。具体厂商端点、格式和 Token 计量仍完全留在自己的 Provider 目录。
 
 创建流程见 [ADD_DIY/provider-package.md](ADD_DIY/provider-package.md)。
 

@@ -38,11 +38,17 @@ providers/<provider_id>/
 
 ## 3. 能力与任务
 
-- `ModelCapabilities.task` 与实际端点一致，只能声明核心当前支持的任务；
-- 明确区分任务与模态：LLM 图片/音频输入输出仍是 `task=llm`；TTS、ASR、实时音频、图片
-  生成/编辑等独立任务不得注册为 LLM 或统一发送到 `/chat/completions`；
+- `ModelCapabilities.task` 与实际合同一致，只能声明核心当前支持的 `llm|embedding|rerank`；
+- 多模态 Provider 必须逐项声明 `extensions.operations.<name>.supported`，并与输入/输出模态一致；
+  TTS、ASR、图片/视频生成等可使用既有 Kemo 操作，但必须映射到厂商真实端点，不能统一发送到
+  `/chat/completions`；实时会话等合同外任务不得伪装成现有操作；
 - 流式、工具、并行工具、推理、结构化输出和多模态均以真实测试结果声明；
 - 未验证能力必须是 `false` 或不声明，不能按厂商宣传页推断；
+- 每个 LLM 模型在 `capabilities.py` 与 `manifest.json` 的 `reasoning` 声明一致；不支持时
+  `supported=false, efforts=[]`，支持时必须暴露 `minimal|low|medium|high|max` 五个逻辑档位；
+- 五个逻辑档位必须在 `protocol.py` 中逐档映射到厂商真实参数；厂商档位较少或只有开关时
+  显式折叠并通过 `reasoning_policy` 标注；每档均有 Fixture，非法档位会被拒绝，不能直接盲透传
+  `provider_options.reasoning_effort`；
 - Embedding 维度、输入类型、批量上限和归一化语义真实；
 - Rerank 的 index、`top_n`、分数方向和返回原文行为真实；
 - `probe.py` 执行低成本真实调用；未实现时返回 `PROBE_UNSUPPORTED`，不能伪造可达。
@@ -59,13 +65,18 @@ providers/<provider_id>/
 
 声明多模态时还必须覆盖：
 
+- Asset 输入通过 `context.assets.resolve()` 读取且跨 subject 不可见；不得把本地路径写入公开
+  响应或上游提示词；
 - 使用 Kemo 客户端真实结构测试 `source.kind=url|data_url|inline_base64`，字段位于
   `source.uri/source.data`，MIME 位于内容块 `mime_type`；
 - URL、Data URL、Base64、图片 `detail` 和厂商实际支持的音频格式转换后字段完全正确；
 - 空 Base64、空 URI、不支持的 `object_store/provider_file_id` 和错误 MIME 明确返回
   `VALIDATION_ERROR`，不能发送空 Data URL；
 - 文本模型拒绝图片/音频，媒体模型拒绝未声明的输入/输出模态；
-- 多模态响应能被真实 Kemo 响应模型反序列化，流式媒体只有一次完整完成事件；
+- 图片、音频、视频生成结果通过 `context.assets.store_output()` 登记，响应包含
+  `asset_id/mime_type/checksum_sha256` 并能经鉴权接口下载；
+- 多模态响应能被真实 Kemo 响应模型反序列化，流式 `output_media.completed` 只有一次，且
+  Item 与统一终态完全一致；
 - 测试 Fixture 不得使用 Provider 自己臆造、但真实 Kemo 客户端不会产生的字段结构。
 
 ## 5. Usage 与错误

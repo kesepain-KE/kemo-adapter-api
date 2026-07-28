@@ -29,11 +29,12 @@
 
 ## 当前核心边界
 
-- 当前公开任务正式支持 `llm`、`embedding`、`rerank`。图片和音频可以作为 LLM 已验证的
-  输入/输出模态；TTS、ASR、实时音频、图片生成/编辑、视频生成等独立任务在核心任务模型和
-  路由尚未实现前，不得伪装成 LLM，应先报告需要扩展公开协议。
-- Kemo 媒体源使用内容块级 `mime_type`，并通过 `source.kind` 指定 `url`、`data_url`、
-  `inline_base64` 等来源；Provider 必须显式转换或拒绝，不能猜字段、静默丢弃或发送空媒体。
+- 当前公开任务正式支持 `llm`、`embedding`、`rerank`。`POST /model/responses` 的严格 Kemo
+  合同已承载对话、视觉、图片生成/编辑、ASR、TTS、语音转换、视频理解和视频生成；实时双向
+  会话以及合同外的新操作仍需先扩展核心。
+- Kemo 媒体输入统一使用 image/audio/video/file Content Block；小对象可使用受控
+  `source.kind`，大型对象必须先上传 `/assets` 并传 `asset_id`。Provider 通过
+  `RequestContext.assets` 读取输入或登记输出，不能猜字段、静默丢弃、发送空媒体或公开本地路径。
 - 模型可达性由每个厂商包的 `probe.py` 实现。核心不会替未知任务猜测测试协议。
 - 完整网关模型名固定为 `<provider_id>-<厂商原始模型名>`；斜杠格式已废弃。
 - `providers/*` 默认被 Git 忽略，属于部署端热加载内容。需要随仓库发布某个 Provider 时，

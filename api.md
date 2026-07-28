@@ -165,12 +165,31 @@ Provider 密钥、网关密钥、请求头或其他私有配置。
 `KemoResponse`；`stream=true` 返回 `text/event-stream`，第一个事件为 `response.created`，且每个
 响应只能具有一个统一终态。
 
-### LLM 多模态内容
+### 完整多模态内容与操作
 
-`task=llm` 与输入/输出模态是两个维度。支持视觉或语音对话的 LLM 仍通过
-`POST /model/responses` 调用，并在 capabilities 中声明 `input_modalities`、
-`output_modalities`。TTS、ASR、实时音频、图片生成/编辑和视频生成属于独立任务；在网关提供
-对应公开任务与路由前，不得注册为 LLM，也不得统一发送到厂商 `/chat/completions`。
+Kemo 1.0 使用同一个 `POST /model/responses` 承载文本对话、视觉、ASR、TTS、语音转换、图片
+生成/编辑、视频理解和视频生成。目录中的此类模型仍声明 `task=llm`；具体操作由
+`metadata.capability` 指定，并且必须同时满足 `input_modalities`、`output_modalities` 和
+`extensions.operations.<操作>.supported=true`。网关核心不会把专用操作统一塞进厂商
+`/chat/completions`，具体端点和转换由 Provider 自己选择。
+
+| `metadata.capability` | 必需输入 | 必需输出 |
+| --- | --- | --- |
+| `conversation` | 可含 text/image/audio/video/file | text 或 tool_call |
+| `vision` | text + image | text |
+| `image_generation` | text | image |
+| `image_edit` | text + image | image |
+| `audio_transcription` | audio | text |
+| `speech_generation` | text | audio |
+| `speech_to_speech` | audio，可附 text | audio |
+| `video_understanding` | video，可附 text | text |
+| `video_generation` | text，可附参考媒体 | video |
+
+普通文件既可作为 `conversation` 输入，也可作为伴随产物输出；请求文件产物时在
+`output.modalities` 中加入 `file`，并提供可选的 `output.file.filename/mime_type`。当前没有
+独立的 `file_generation` 操作，Provider 不得自行发明公开操作名。
+
+实时双向音频会话不是上述请求/响应合同；未增加独立实时会话协议前不得伪装支持。
 
 内联图片示例：
 
@@ -193,11 +212,17 @@ Provider 密钥、网关密钥、请求头或其他私有配置。
 }
 ```
 
-远程图片使用 `source: {"kind": "url", "uri": "https://..."}`；完整 Data URL 使用
-`source: {"kind": "data_url", "uri": "data:image/...;base64,..."}`。音频内容块使用
-`type: audio` 和相同的来源结构，真实 MIME 仍位于内容块 `mime_type`。调用前必须查询模型
-capabilities；Provider 只接受其上游端点真实支持的来源与格式，其他来源返回脱敏
-`VALIDATION_ERROR`。客户端不得提交本地文件路径，Provider 也不得猜测、静默丢弃或发送空媒体。
+远程媒体使用 `source: {"kind": "url", "uri": "https://..."}`；完整 Data URL 使用
+`source: {"kind": "data_url", "uri": "data:image/...;base64,..."}`。音频、视频和普通文件分别
+使用 `type=audio|video|file`。内联媒体最多 1 MiB，并校验 Base64、Data URL、MIME 与文件头；
+大型媒体必须先上传 `/assets`，再在内容块中使用 `asset_id`。外部 URL 只允许受控 HTTPS，并在
+进入 Provider 前执行 URL、DNS 和 IP SSRF 检查。客户端不得提交本地文件路径。
+
+Provider 生成图片、音频、视频或文件后，必须通过 `RequestContext.assets.store_output()` 登记，
+然后在 assistant MessageItem 中返回 `asset_id`、真实 `mime_type` 和 `checksum_sha256`。流式生成
+先发送一次 `output_media.completed`，其中的完整 Item 必须与随后统一终态中的 Item 完全一致。
+单个 SSE `data` 上限为 1 MiB；媒体正文不得通过自定义大分片绕过 Asset。请求 JSON 本身默认
+上限为 2 MiB，不包含独立上传的 Asset 字节。
 
 幂等范围是 `(tenant_id, request_id)`。相同 ID 和相同正文必须复用逻辑响应；相同 ID 和不同
 正文返回 `409 IDEMPOTENCY_CONFLICT`。
@@ -346,18 +371,22 @@ capabilities 校验，不能静默降维、截断或改变归一化策略。
 
 ## Asset 接口
 
-| 方法与路径 | 用途 | 当前骨架 |
+| 方法与路径 | 用途 | 状态 |
 | --- | --- | --- |
-| `POST /assets` | 流式上传多模态输入 | 待实现 |
-| `GET /assets/{asset_id}` | 查询 Asset 状态和元数据 | 待实现 |
-| `GET /assets/{asset_id}/content` | 鉴权下载，音视频支持 Range | 待实现 |
-| `DELETE /assets/{asset_id}` | 删除当前主体可控的临时 Asset | 待实现 |
+| `POST /assets` | 流式上传多模态输入 | 已提供 |
+| `GET /assets/{asset_id}` | 查询 Asset 状态和元数据 | 已提供 |
+| `GET /assets/{asset_id}/content` | 鉴权下载，支持单段 bytes Range | 已提供 |
+| `DELETE /assets/{asset_id}` | 删除当前主体可控的临时 Asset | 已提供 |
 
-网关不得通过公开 API 暴露本地文件路径。生成图片、音频和视频必须返回稳定 `asset_id`、真实
-MIME 和 SHA-256，并通过认证下载接口取得内容。
+上传使用 `multipart/form-data`，字段 `file` 为媒体字节，`metadata` 为 JSON 字符串；请求必须
+携带 `Authorization`、`X-Kemo-Protocol-Version: 1.0` 和稳定 `Idempotency-Key`，可携带
+`X-Content-SHA256`。相同主体、相同幂等键和相同内容复用同一 Asset；同键不同内容返回
+`409 IDEMPOTENCY_CONFLICT`。
 
-Asset 接口“待实现”不影响 `/model/responses` 当前通过 URL、Data URL 或内联 Base64 接收
-Provider 已验证的 LLM 媒体内容；它表示网关尚不提供独立上传、持久化、下载和生命周期管理。
+Asset 按 tenant + subject 隔离，上传/删除要求 `asset:write`，查询/下载要求 `asset:read`，owner
+可执行两者。跨主体统一按不可见处理，不泄露资源是否存在。内容写入时执行大小、SHA-256、MIME
+和基础魔数校验；默认保留 24 小时，过期或删除后返回 410，后台会回收内容字节。公开响应永远
+不返回网关本地路径。
 
 ## 统一错误
 

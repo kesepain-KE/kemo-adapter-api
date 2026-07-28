@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.6.1-blue" alt="Gateway version 0.6.1"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.0-blue" alt="Gateway version 0.7.0"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -60,6 +60,7 @@ kemo-agent / kemo-graph / other Kemo clients
 |----------|------------------------|
 | Multi-vendor unification | One stable Kemo protocol on top; vendor differences are isolated in dedicated Provider Packages |
 | Model discovery and capability query | Returns the models a key can actually invoke, with real capability declarations |
+| Native multimodal Assets | Image, audio, video, and file input plus generated media use strict Content Blocks, authenticated Assets, and SSE contracts |
 | Embedding and Rerank | Dedicated vectorization and reranking contracts for knowledge graph scenarios |
 | Per-key access control | Every gateway key can allow all, deny all, or allow only selected models |
 | Hot-reload at runtime | Provider settings, gateway keys, system prompts, and provider/model toggles take effect without restart |
@@ -80,9 +81,13 @@ The public surface contains model, retrieval, and read-only status APIs. Adminis
 | `GET /model/models` | List the Kemo models available to the current key |
 | `GET /model/models/{model}/capabilities` | Read the declared capabilities of one model |
 | `GET /v1/models` | Model-discovery compatibility endpoint |
-| `POST /model/responses` | Create a non-streaming or SSE LLM response |
+| `POST /model/responses` | Create a text or multimodal JSON/SSE response |
 | `GET /model/responses/{response_id}` | Retrieve a response |
 | `POST /model/responses/{response_id}/cancel` | Cancel a response |
+| `POST /assets` | Stream-upload a multimodal input Asset |
+| `GET /assets/{asset_id}` | Read Asset metadata and status |
+| `GET /assets/{asset_id}/content` | Authenticated download with Range support |
+| `DELETE /assets/{asset_id}` | Delete a temporary Asset owned by the current subject |
 | `POST /model/embeddings` | Generate query or document embeddings in batches |
 | `POST /model/rerank` | Rerank candidate documents |
 | `GET /status` | Read a gateway status snapshot for an external agent |
@@ -239,9 +244,12 @@ The restart module drains in-flight requests before restarting. The web console 
 ```powershell
 python update.py --check
 python update.py --apply
+python update.py --status
 ```
 
-The updater creates a cold backup under `.backup/` before pulling and stops if that backup fails. It rejects the entire update when a remote commit touches `.env`, API keys, Providers, daily statistics, runtime state, or the private developer directory, preventing deployment data from being overwritten. Front-end changes reuse the cross-platform `setup.py` toolchain to install locked dependencies and rebuild automatically on Windows or Linux.
+Normal updates are verified fast-forwards only. Local-ahead or diverged histories are never overwritten, and an up-to-date checkout never implies a source reset. The updater pins the exact inspected remote commit and creates a cold backup under `.backup/` before changing Git HEAD. It rejects the entire operation when a remote commit touches `.env`, API keys, Providers, statistics, Assets, runtime state, or the private developer directory. Front-end changes reuse the cross-platform `setup.py` toolchain to rebuild on Windows or Linux.
+
+Use `python update.py --repair` only for an explicit repair of Git-tracked source. A Git recovery reference is created before reset; `--yes` skips confirmation only and never turns a normal update into repair. Cold backups can be inspected with `--list-backups` and restored with `--restore-backup <timestamp>`.
 
 ---
 
@@ -258,12 +266,12 @@ The only authoritative template is `template/provider/`. A Provider must at mini
 
 There is no second authoritative reference beyond `template/provider/`. After implementing a provider package, run the contract tests before putting it into service.
 
-Task type and modality are separate concerns. Vision or audio conversation may still use `task=llm`, while
-TTS, ASR, realtime audio, image generation, and image editing must not be disguised as LLM requests. Media
-blocks must be translated from the real Kemo fields: `source.kind`, `source.uri/source.data`, and the
-content-level `mime_type`. Capability declarations and tests must use actual Kemo client serialization and
-verified vendor responses; the label “OpenAI-compatible” is not evidence of multimodal, tool, reasoning, or
-streaming support.
+Full Kemo mode uses `POST /model/responses` for conversation, vision, ASR, TTS, speech conversion, image
+generation/editing, video understanding, and video generation. `metadata.capability`, input/output modalities,
+and `extensions.operations` must all agree. Large media goes through `/assets`; Providers read input or register
+output through `RequestContext.assets`, while public responses expose only an Asset ID, verified MIME type, and
+SHA-256—not a local gateway path. Vendor endpoints, formats, and usage accounting remain entirely inside each
+Provider package.
 
 See [ADD_DIY/provider-package.md](ADD_DIY/provider-package.md) for the creation workflow.
 

@@ -15,8 +15,8 @@
 | 热更新 API 启停、最高提示词、禁用模型/厂商 | `ADD_DIY/architecture.md` | `api/runtime.json` / `core/live_control.json` |
 | 修改环境变量 | `ADD_DIY/keys-and-secrets.md` | `.env`，必须重启 |
 | 修改公开 LLM/Embedding/Rerank API | `api.md`、`ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | `api/`、`core/models.py` |
-| 增加 LLM 图片/音频输入输出模态 | `api.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/verification.md` | 在目标 Provider 内映射 Kemo 媒体块并验证真实厂商协议 |
-| 增加 TTS、ASR、实时音频、图片生成/编辑等新任务 | `api.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | 先扩展核心任务与公开路由，禁止伪装成 LLM |
+| 增加图片/音频/视频/文件或媒体生成能力 | `api.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/verification.md` | 使用既有 Kemo 多模态操作与 Asset 合同，只在目标 Provider 内实现厂商转换 |
+| 增加既有九种操作之外的新任务或实时会话 | `api.md`、`ADD_DIY/provider-package.md`、`ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | 先扩展核心公开协议，禁止用厂商专用旁路伪装支持 |
 | 接入全局只读状态感知 | `api.md` | `GET /status` 与独立 `STATUS_TOKEN` |
 | 修改执行、恢复或平滑重启 | `ADD_DIY/architecture.md`、`ADD_DIY/verification.md` | `core/`、`restart.py` |
 | 修改管理网页 | `web/README.md` | `web/`，不得写入公开 `api.md` |
@@ -29,12 +29,16 @@
 3. 公开模型名固定为 `<provider_id>-<厂商原始模型名>`。例如厂商 `deepseek`、上游
    `deepseek-v4-flash` 对外为 `deepseek-deepseek-v4-flash`。
 4. `provider.models`、`MODEL_CAPABILITIES` 与 `manifest.json.models` 的键集合必须一致。
-5. 当前核心任务只有 `llm`、`embedding`、`rerank`。LLM 可以声明经过验证的图片/音频输入输出
-   模态；TTS、ASR、实时音频、图片生成/编辑等独立任务必须先扩展公开协议，不能套用
-   `/model/responses` 或厂商 `/chat/completions`。
+5. 当前核心任务为 `llm`、`embedding`、`rerank`；Kemo `llm` 响应合同已原生承载 conversation、
+   vision、image_generation、image_edit、audio_transcription、speech_generation、
+   speech_to_speech、video_understanding、video_generation 九种操作。能力声明、输入/输出模态与
+   `extensions.operations` 必须同时成立；实时双向会话等合同外任务仍需先扩展核心。
 6. 每个厂商通过自己的 `probe.py` 实现真实可达性探测；核心不猜厂商协议。
-7. 未经真实验证的流式、工具、并行工具、推理、结构化输出和多模态能力必须声明为不支持。
-8. `providers/*` 默认不进入 Git。最终报告必须说明新厂商是部署端本地包还是经用户授权后随仓库发布。
+7. 每个 LLM 模型必须显式声明推理能力。不支持时使用 `supported=false, efforts=[]`；支持时只列出
+   已经验证并在 `protocol.py` 中映射的 `minimal|low|medium|high|xhigh|max` 档位。只有思考开关而
+   没有强度档位时使用 `supported=true, efforts=[]`，不得臆造或盲透传档位。
+8. 未经真实验证的流式、工具、并行工具、推理、结构化输出和多模态能力必须声明为不支持。
+9. `providers/*` 默认不进入 Git。最终报告必须说明新厂商是部署端本地包还是经用户授权后随仓库发布。
 
 ## 架构与安全边界
 

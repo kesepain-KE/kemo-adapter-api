@@ -11,11 +11,14 @@ Provider 是厂商差异的唯一归属。网关核心只认识 `core.models` �
 1. 修改现有厂商：读取目标目录全部源码和测试，只做增量修改，禁止重新复制模板覆盖；
 2. 给现有厂商增加模型：确认上游模型名、任务和能力，再同步模型集合、能力与 manifest；
 3. 创建新厂商：复制 `template/provider/` 后完整替换占位符；
-4. 增加核心尚未支持的任务：停止创建 Provider，先向用户说明需要扩展公开协议。
+4. 增加现有九种多模态操作之外的新任务或实时会话：停止创建 Provider，先向用户说明需要扩展
+   公开协议。
 
-当前核心正式支持 `llm`、`embedding`、`rerank`。这里必须区分“任务”和“模态”：图片或音频
-可以是 LLM 对话的输入/输出模态；TTS、ASR、实时音频、图片生成/编辑、视频生成则是独立任务。
-独立任务不能为了接入而伪装成 LLM，也不能在网关核心写厂商专用旁路。
+当前核心正式支持 `llm`、`embedding`、`rerank`。Kemo `llm` 合同通过
+`metadata.capability` 区分 conversation、vision、image_generation、image_edit、
+audio_transcription、speech_generation、speech_to_speech、video_understanding 和
+video_generation；这些操作共享 `/model/responses`，但 Provider 必须按厂商真实端点分别转换，
+不能全部硬塞到 `/chat/completions`，也不能在网关核心写厂商专用旁路。
 
 任何真实厂商调用都可能产生费用。除非用户已明确授权目标环境和测试费用，否则只允许读取
 用户提供的公开文档、本地代码和脱敏 Fixture；不得自行尝试密钥、枚举模型或创建云端资源。
@@ -92,6 +95,35 @@ OpenAI”就默认支持工具、并行工具、推理、JSON Schema、图片或
 - `metadata.upstream_model` 必须是厂商真实模型名；
 - `extensions.probe` 应说明是否支持、探测方式和是否可能计费。
 
+### 推理能力与思考档位
+
+每个 LLM 模型都必须在 `capabilities.py` 和 `manifest.json` 中显式声明 `reasoning`，但不强制
+模型支持推理。模板默认值是：
+
+```python
+ReasoningCapabilities(
+    supported=False,
+    efforts=[],
+    summary=False,
+    persisted_state=False,
+)
+```
+
+只有获得厂商文档和真实 Fixture 证明后才能设为 `supported=True`。一旦支持推理，为兼容
+kemo-agent，`efforts` 必须填写 `minimal|low|medium|high|max` 五个 Kemo 逻辑档位；`none`
+表示关闭，不放入能力列表。厂商实际档位较少时允许显式折叠，例如 `minimal→low`、
+`max→high`；只有开关或固定推理时允许五档都映射到厂商默认行为，但必须使用
+`extensions.reasoning_policy.mode=provider_default` 标明，不得伪装成五种真实强度。
+
+在 `protocol.py` 中必须建立 Kemo 档位到厂商真实参数的显式映射，即使两边字符串碰巧相同也要
+逐项写清楚。请求启用推理后，核心会拒绝能力列表之外的档位；旧客户端通过
+`provider_options.reasoning_effort` 传入时，Provider 也必须执行同一检查，不能绕过能力声明。
+统一字段 `KemoRequest.reasoning` 始终优先。
+
+五个 Kemo 逻辑档位都要有脱敏请求 Fixture；还要覆盖一个非法档位并确认返回
+`REASONING_EFFORT_UNSUPPORTED` 或 Provider 的统一 `VALIDATION_ERROR`。厂商响应中的推理正文、
+摘要、可回放状态和 `reasoning_tokens` 分别映射，不能因为支持其中一项就自动声明其余能力。
+
 ## 7. 工具调用与多轮
 
 Provider 只翻译工具，不执行工具。必须覆盖：
@@ -128,6 +160,24 @@ Provider 只翻译工具，不执行工具。必须覆盖：
 - `inline_base64`：编码内容放在 `source.data`；
 - `provider_file_id`：厂商与文件标识分别放在 `source.provider`、`source.file_id`。
 
+大型或持久媒体优先使用：
+
+```json
+{
+  "type": "video",
+  "asset_id": "asset_...",
+  "mime_type": "video/mp4",
+  "checksum_sha256": "..."
+}
+```
+
+Provider 在协议映射时调用 `parse_media_block(..., assets=context.assets)`，得到经过当前 tenant 与
+subject 授权的 `asset_path`；该路径仅供 Provider 进程内部读取，绝不能写入厂商可见文本、响应、
+日志或公开 API。生成媒体必须调用模板 `store_output_media()` 或等价的
+`context.assets.store_output()`，再返回带 `asset_id/mime_type/checksum_sha256` 的 assistant
+MessageItem。流式媒体发送一次 `MEDIA_COMPLETED`，最终 `ProviderResult.output` 必须保留完全相同
+的 Item。
+
 Provider 只能转换上游端点真实接受的来源类型。不能把 `object_store` 当成公网 URL，不能把
 其他厂商的 `provider_file_id` 直接透传，也不能自行读取客户端本地路径。`mime_type` 位于媒体
 内容块，不是 `source.media_type`；图片清晰度位于内容块的 `detail`。媒体字段缺失、Base64 为空、
@@ -135,7 +185,7 @@ Data URL 类型不符或来源不受上游支持时，必须抛出脱敏 `VALIDA
 
 工具结果中的媒体必须同时满足 `tools.multimodal_results=true` 和厂商真实协议；否则明确拒绝，
 不能只抽取文字后伪装成完整结果。多模态响应应映射回 assistant `message.content[]` 的对应媒体
-块，保留真实 MIME、来源和可验证的 transcript 等字段。
+块，保留真实 MIME、Asset、checksum 和可验证的 transcript 等字段。
 
 ## 8. Usage 与错误
 
