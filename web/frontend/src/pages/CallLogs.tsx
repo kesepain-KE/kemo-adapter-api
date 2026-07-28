@@ -16,8 +16,10 @@ import {
   adminApi,
   type InvocationLogItem,
   type InvocationOutcome,
+  type HourlyStatistics,
 } from '../adminApi'
 import DatePicker, { localDate } from '../components/DatePicker'
+import HourPicker from '../components/HourPicker'
 import { Badge, Card, EmptyState, SectionTitle, Subtabs } from '../components/UI'
 
 const numberFormat = new Intl.NumberFormat('zh-CN')
@@ -98,58 +100,93 @@ function InvocationCard({ item }: { item: InvocationLogItem }) {
 export default function CallLogs() {
   const { token } = useAdmin()
   const [date, setDate] = useState(localDate)
+  const [hour, setHour] = useState<number | null>(null)
   const [outcome, setOutcome] = useState<InvocationOutcome>('all')
   const [items, setItems] = useState<InvocationLogItem[]>([])
-  const [page, setPage] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageCount, setPageCount] = useState(1)
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [hourly, setHourly] = useState<HourlyStatistics['items']>()
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const result = await adminApi.invocationLogs(token, outcome, 100, date)
-      setItems(result.items)
+      const result = await adminApi.invocationLogs(
+        token,
+        outcome,
+        page,
+        PAGE_SIZE,
+        date || undefined,
+        hour,
+      )
+      const databasePaginated = typeof result.total === 'number' && typeof result.pages === 'number'
+      const nextTotal = databasePaginated ? result.total! : result.items.length
+      const nextPageCount = databasePaginated
+        ? result.pages!
+        : Math.max(1, Math.ceil(result.items.length / PAGE_SIZE))
+      setItems(databasePaginated
+        ? result.items
+        : result.items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE))
+      setTotal(nextTotal)
+      setPageCount(nextPageCount)
+      if (page > nextPageCount) setPage(nextPageCount)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '调用日志读取失败')
     } finally {
       setLoading(false)
     }
-  }, [date, outcome, token])
+  }, [date, hour, outcome, page, token])
 
   useEffect(() => { void load() }, [load])
-
   useEffect(() => {
-    const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
-    setPage((current) => Math.min(current, pageCount - 1))
-  }, [items.length])
+    if (!date) {
+      setHourly(undefined)
+      return
+    }
+    let active = true
+    void adminApi.hourlyStatistics(token, date)
+      .then(result => { if (active) setHourly(result.items) })
+      .catch(() => { if (active) setHourly(undefined) })
+    return () => { active = false }
+  }, [date, token])
 
-  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
-  const pageItems = items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
-  const firstItem = items.length === 0 ? 0 : page * PAGE_SIZE + 1
-  const lastItem = Math.min((page + 1) * PAGE_SIZE, items.length)
+  const firstItem = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
+  const lastItem = Math.min(page * PAGE_SIZE, total)
 
   const changeOutcome = (nextOutcome: InvocationOutcome) => {
     setOutcome(nextOutcome)
-    setPage(0)
+    setPage(1)
   }
 
   const changeDate = (nextDate: string) => {
     setDate(nextDate)
-    setPage(0)
+    if (!nextDate) setHour(null)
+    setPage(1)
+  }
+
+  const changeHour = (nextHour: number | null) => {
+    setHour(nextHour)
+    setPage(1)
   }
 
   return <>
     <SectionTitle
       title="调用日志"
       description="所选日期内的真实模型调用；失败信息经过 Provider 和网关脱敏"
-      action={<div className="stats-toolbar call-log-toolbar"><button className="btn primary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? 'spin' : ''} size={14}/>{loading ? '读取中' : '刷新'}</button><DatePicker value={date} onChange={changeDate}/></div>}
+      action={<div className="stats-toolbar call-log-toolbar">
+        <button className="btn primary" disabled={loading} onClick={() => void load()}><RefreshCw className={loading ? 'spin' : ''} size={14}/>{loading ? '读取中' : '刷新'}</button>
+        <DatePicker value={date} onChange={changeDate}/>
+      <HourPicker value={hour} onChange={changeHour} statistics={hourly}/>
+      </div>}
     />
     {error && <div className="alert"><AlertTriangle size={18}/><span>{error}</span></div>}
 
     <Card className="invocation-log-shell">
       <header className="invocation-log-toolbar">
-        <div><span>调用日志行列</span><strong>{loading ? '正在同步' : `${items.length} 条记录`}</strong></div>
+        <div><span>调用日志行列</span><strong>{loading ? '正在同步' : `${numberFormat.format(total)} 条记录`}</strong></div>
         <Subtabs<InvocationOutcome>
           items={[{ id: 'all', label: '全部调用' }, { id: 'success', label: '成功' }, { id: 'failure', label: '失败' }]}
           value={outcome}
@@ -158,13 +195,13 @@ export default function CallLogs() {
       </header>
 
       {loading ? <div className="invocation-loading"><LoaderCircle className="spin"/><span>正在读取调用日志…</span></div> : items.length ? <>
-        <div className="invocation-list">{pageItems.map((item, index) => <InvocationCard key={`${item.started_at}:${item.model}:${page * PAGE_SIZE + index}`} item={item}/>)}</div>
+        <div className="invocation-list">{items.map((item, index) => <InvocationCard key={`${item.started_at}:${item.model}:${(page - 1) * PAGE_SIZE + index}`} item={item}/>)}</div>
         <footer className="invocation-pagination">
-          <span>显示 {firstItem}–{lastItem} / {items.length} 条</span>
+          <span>显示 {firstItem}–{lastItem} / {numberFormat.format(total)} 条</span>
           <div>
-            <button className="btn" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} aria-label="上一页"><ChevronLeft size={14}/>上一页</button>
-            <strong>第 {page + 1} / {pageCount} 页</strong>
-            <button className="btn" disabled={page >= pageCount - 1} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))} aria-label="下一页">下一页<ChevronRight size={14}/></button>
+            <button className="btn" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))} aria-label="上一页"><ChevronLeft size={14}/>上一页</button>
+            <strong>第 {page} / {pageCount} 页</strong>
+            <button className="btn" disabled={page >= pageCount} onClick={() => setPage((current) => Math.min(pageCount, current + 1))} aria-label="下一页">下一页<ChevronRight size={14}/></button>
           </div>
         </footer>
       </> : <EmptyState title="暂无调用日志" description="产生真实 Provider 调用后，这里会显示对应记录。"/>}

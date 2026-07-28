@@ -394,18 +394,31 @@ async def statistics_invocations(
     request: Request,
     response: Response,
     outcome: str = Query(default="all", pattern="^(all|success|failure)$"),
-    limit: int = Query(default=100, ge=1, le=100),
     day: str | None = Query(default=None, alias="date"),
+    hour: int | None = Query(default=None, ge=0, le=23),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    legacy_limit: int | None = Query(default=None, alias="limit", ge=1, le=1000),
     _: Principal = Depends(require_admin),
 ) -> dict[str, object]:
-    """Return the secret-safe per-call log used by the web console."""
+    """Return a database-backed page of secret-safe invocation logs."""
     _no_store(response)
+    effective_page = 1 if legacy_limit is not None else page
+    effective_page_size = legacy_limit or page_size
     try:
         result = await request.app.state.statistics.recent_invocations(
-            outcome, limit=limit, day=day
+            outcome,
+            limit=effective_page_size,
+            day=day,
+            hour=hour,
+            offset=(effective_page - 1) * effective_page_size,
         )
     except ValueError as exc:
         raise invalid_statistics_query(exc) from exc
+    total = int(result.get("total", 0))
+    result["page"] = effective_page
+    result["page_size"] = effective_page_size
+    result["pages"] = max(1, (total + effective_page_size - 1) // effective_page_size)
     return result
 
 

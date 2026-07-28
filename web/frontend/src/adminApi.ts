@@ -114,6 +114,7 @@ export interface HourlyStatistics {
     label: string
     calls: number
     successes: number
+    failures: number
     success_rate: number | null
     input_tokens: number | null
     input_token_samples: number
@@ -166,6 +167,11 @@ export interface InvocationLogItem {
 export interface InvocationLogs {
   outcome: InvocationOutcome
   date: string | null
+  hour?: number | null
+  page?: number
+  page_size?: number
+  pages?: number
+  total?: number
   items: InvocationLogItem[]
 }
 
@@ -368,11 +374,23 @@ export const adminApi = {
     `/statistics/rankings?${date ? `date=${encodeURIComponent(date)}&` : ''}dimension=${dimension}`,
     token,
   ),
-  invocationLogs: (token: string, outcome: InvocationOutcome = 'all', limit = 100, date?: string) =>
-    request<InvocationLogs>(
-      `/statistics/invocations?outcome=${outcome}&limit=${limit}${date ? `&date=${encodeURIComponent(date)}` : ''}`,
-      token,
-    ),
+  invocationLogs: (
+    token: string,
+    outcome: InvocationOutcome = 'all',
+    page = 1,
+    pageSize = 20,
+    date?: string,
+    hour?: number | null,
+  ) => {
+    const params = new URLSearchParams({
+      outcome,
+      page: String(page),
+      page_size: String(pageSize),
+    })
+    if (date) params.set('date', date)
+    if (hour !== undefined && hour !== null) params.set('hour', String(hour))
+    return request<InvocationLogs>(`/statistics/invocations?${params.toString()}`, token)
+  },
   providerCapabilities: (token: string, providerId: string) =>
     request<ProviderCapabilities>(`/providers/${encodeURIComponent(providerId)}/capabilities`, token),
   probeModel: (token: string, model: string) =>
