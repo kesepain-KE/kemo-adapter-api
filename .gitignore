@@ -38,3 +38,4 @@ htmlcov/
 *.pid
 core/runtime/
 storage/daily/
+storage/assets/
