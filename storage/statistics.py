@@ -769,12 +769,51 @@ class StatisticsStore:
     def _series_sync(self, start: str, end: str) -> dict[str, object]:
         start_date = date.fromisoformat(start)
         end_date = date.fromisoformat(end)
-        items = []
+        items: list[dict[str, object]] = []
+        aggregate_fields = (
+            "calls",
+            "successes",
+            "failures",
+            "cancellations",
+            "incompletes",
+            "running",
+            "replay_count",
+            "latency_sum_ms",
+            "latency_samples",
+            *(field for token_field in TOKEN_FIELDS for field in (
+                f"{token_field}_sum",
+                f"{token_field}_samples",
+            )),
+            "cache_eligible_input_tokens_sum",
+            "cache_eligible_cached_tokens_sum",
+            "cache_eligible_samples",
+        )
+        aggregate: dict[str, int | float] = {field: 0 for field in aggregate_fields}
+        has_metrics = False
         current = start_date
         while current <= end_date:
-            items.append(self._daily_sync(current.isoformat()))
+            day = current.isoformat()
+            row = self._read_rollup(day, "all", "all")
+            items.append(
+                {
+                    "date": day,
+                    "timezone": self.timezone_name,
+                    **self._row_metrics(row),
+                    "storage": self.health(),
+                }
+            )
+            if row is not None and row["calls"] is not None:
+                has_metrics = True
+                for field in aggregate_fields:
+                    aggregate[field] += row[field] or 0
             current = date.fromordinal(current.toordinal() + 1)
-        return {"from": start, "to": end, "timezone": self.timezone_name, "items": items}
+        return {
+            "from": start,
+            "to": end,
+            "timezone": self.timezone_name,
+            "summary": self._row_metrics(aggregate if has_metrics else None),
+            "items": items,
+        }
 
     def _gateway_key_usage_sync(self) -> dict[str, dict[str, object]]:
         aggregated: dict[str, dict[str, object]] = {}
