@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ _TERMINAL_EVENT_TYPES = {
     ProviderEventKind.FAILED: "response.failed",
     ProviderEventKind.CANCELLED: "response.cancelled",
 }
+_MAX_EVENT_DATA_BYTES = 1024 * 1024
 
 
 def _now() -> str:
@@ -26,14 +28,14 @@ class EventAssembler:
 
     @staticmethod
     def created(*, request_id: str, response_id: str, sequence: int = 0) -> SSEEvent:
-        return SSEEvent(
+        return _ensure_event_size(SSEEvent(
             type="response.created",
             event_id=f"evt_{uuid4().hex}",
             sequence=sequence,
             request_id=request_id,
             response_id=response_id,
             timestamp=_now(),
-        )
+        ))
 
     @staticmethod
     def assemble(
@@ -47,7 +49,7 @@ class EventAssembler:
         event_type = _TERMINAL_EVENT_TYPES.get(provider_event.kind, provider_event.kind.value)
         if provider_event.kind in _TERMINAL_EVENT_TYPES and terminal_response is None:
             raise ValueError("Provider 终态事件必须先由核心组装完整 KemoResponse")
-        return SSEEvent(
+        return _ensure_event_size(SSEEvent(
             type=event_type,
             event_id=f"evt_{uuid4().hex}",
             sequence=sequence,
@@ -64,4 +66,15 @@ class EventAssembler:
             response=terminal_response,
             error=provider_event.error,
             data=provider_event.data,
-        )
+        ))
+
+
+def _ensure_event_size(event: SSEEvent) -> SSEEvent:
+    payload = json.dumps(
+        event.model_dump(mode="json", exclude_none=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(payload) > _MAX_EVENT_DATA_BYTES:
+        raise ValueError("SSE 单事件 data 超过 1 MiB；大型媒体必须使用 Asset")
+    return event

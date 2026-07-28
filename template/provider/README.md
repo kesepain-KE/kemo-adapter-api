@@ -22,8 +22,8 @@ Copy-Item -Recurse template/provider providers/deepseek_v2
 中的 `Example`、`example`、`.invalid`、`vendor_`、TODO 和 `NotImplementedError` 必须清除。
 
 文件夹名、`provider_id` 和 manifest 中的 ID 必须一致。当前核心正式支持 `llm`、
-`embedding`、`rerank`。图片和音频可以是经过验证的 LLM 输入/输出模态；TTS、ASR、实时音频、
-图片生成/编辑、视频生成等独立任务必须先扩展核心公开协议，不能伪装成 LLM。
+`embedding`、`rerank`，其中 Kemo `llm` 合同已承载 conversation、vision、图片生成/编辑、ASR、
+TTS、语音转换、视频理解和视频生成九种操作。实时会话或合同外任务仍必须先扩展核心公开协议。
 
 公开模型名固定为 `<provider_id>-<厂商内部模型名>`，例如
 `deepseek-deepseek-v4-flash`。厂商内部模型名可含更多连字符；协议映射只能移除自身完整的
@@ -78,8 +78,8 @@ Kemo SSE 事件（输出给 kemo-agent）
 每个 Provider 必须通过 `provider.py` 的 `probe()` 调用本目录 `probe.py`，不得要求网关核心
 猜测厂商协议。探测应覆盖鉴权、模型路由和一次最小真实执行，并返回统一
 `ProviderProbeResult`。LLM 模板默认要求只回复 `OK`；Embedding 和 Rerank 必须替换为各自
-真实且低成本的测试输入。未来图片、音频和异步任务只有在核心协议正式支持后才能增加对应
-探测。未实现时保留核心默认的
+真实且低成本的测试输入。图片、音频、视频等模型应使用本厂商真正支持的最小媒体和端点，
+不能继续复用文本探测。未实现时保留核心默认的
 `PROBE_UNSUPPORTED`，禁止伪造可达。
 
 探测属于管理操作，不注入业务最高权限系统提示词，也不进入正常业务调用统计；厂商仍可能
@@ -95,10 +95,28 @@ KemoRequest.generation       → 厂商 max_tokens, temperature, ...
 KemoRequest.reasoning        → 厂商 thinking/reasoning_effort 参数
 ```
 
+每个 LLM 模型必须在 `capabilities.py` 与 `manifest.json` 中显式填写 `reasoning`，但不要求所有
+模型都支持思考。默认使用 `supported=False, efforts=[]`。一旦声明支持推理，为兼容
+kemo-agent，`efforts` 必须暴露 `minimal|low|medium|high|max` 五个 Kemo 逻辑档位。
+厂商只有三档、两档或开关时，可以把多个逻辑档位折叠到同一真实值或厂商默认值，但必须在
+`extensions.reasoning_effort_map` 与 `extensions.reasoning_policy` 中公开；不能把不存在的值
+原样发送给上游。`none` 表示关闭，不属于能力档位；厂商的 `xhigh` 可作为 Kemo `max` 的
+上游映射值。
+
+必须在本文件夹的 `protocol.py` 中逐档映射到厂商真实字段和值，不能直接假定名称相同。
+`KemoRequest.reasoning` 优先；兼容旧客户端的 `provider_options.reasoning_effort` 也必须经过同一
+能力列表检查。五个逻辑档位和至少一个非法档位都要加入脱敏 Fixture。
+
 如果声明 LLM 多模态，必须读取 Kemo 的真实媒体结构：内容块使用 `mime_type`，媒体来源使用
 `source.kind`，并按来源读取 `source.uri` 或 `source.data`。不得读取不存在的
 `source.media_type`，不得把空媒体转换成 `data:<mime>;base64,` 后发给上游。完整结构、来源限制和
 验收用例见 `ADD_DIY/provider-package.md` 与 `ADD_DIY/verification.md`。
+
+大型输入通过 `asset_id` 引用。调用 `parse_media_block(..., assets=context.assets)` 后，只能在
+Provider 内部读取返回的 `asset_path`，不得把本地路径放入上游提示词、日志或公开响应。生成的
+图片、音频、视频和文件必须先调用 `store_output_media()` 或
+`context.assets.store_output()`，再返回包含 `asset_id`、真实 `mime_type` 和
+`checksum_sha256` 的 assistant MessageItem。
 
 ### 2. 出站方向（厂商 API → ProviderResult/ProviderEvent）
 
@@ -111,6 +129,7 @@ KemoRequest.reasoning        → 厂商 thinking/reasoning_effort 参数
 厂商 SSE delta               → ProviderEvent(TEXT_DELTA / REASONING...)
 厂商工具参数 delta            → ProviderEvent(TOOL_ARGUMENTS_DELTA)
 完整工具调用                  → ProviderEvent(TOOL_COMPLETED)
+媒体 Asset 完成                → ProviderEvent(MEDIA_COMPLETED)
 厂商 finish_reason           → ProviderEvent(COMPLETED / FAILED)
 ```
 
@@ -123,6 +142,9 @@ KemoRequest.reasoning        → 厂商 thinking/reasoning_effort 参数
    `requires_action`；
 4. Provider 只翻译工具调用，绝不能自行执行工具；
 5. 参数 JSON 无效时保留有限长度的 `arguments_raw` 和脱敏 `parse_error`，不能静默丢失。
+
+媒体流还必须满足：`MEDIA_COMPLETED.item` 是完整 assistant MessageItem，同一 Item 只完成一次，
+并原样保留在最终 `ProviderResult.output`；大型媒体只通过 Asset 下载，不通过 SSE 传正文。
 
 ### 3. 错误映射
 

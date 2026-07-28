@@ -30,8 +30,10 @@ async def probe_model(
         tools=[],
         input=[
             {
+                "id": "msg_probe_user",
                 "type": "message",
                 "role": "user",
+                "status": "completed",
                 "content": [{"type": "text", "text": "只回复 OK"}],
             }
         ],

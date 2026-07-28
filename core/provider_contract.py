@@ -10,9 +10,11 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 from core.models import (
+    AssetDescriptor,
     EmbeddingRequest,
     ErrorObject,
     KemoRequest,
@@ -20,6 +22,30 @@ from core.models import (
     RerankRequest,
     Usage,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedAsset:
+    """Provider 可读取的已鉴权本地 Asset；不得写入公开响应。"""
+
+    descriptor: AssetDescriptor
+    path: Path
+
+
+class AssetAccess(Protocol):
+    """绑定单个租户与主体的 Provider Asset 能力。"""
+
+    def resolve(self, asset_id: str) -> ResolvedAsset: ...
+
+    async def store_output(
+        self,
+        *,
+        filename: str,
+        mime_type: str,
+        content: bytes | AsyncIterator[bytes],
+        metadata: Mapping[str, Any] | None = None,
+        checksum_sha256: str | None = None,
+    ) -> AssetDescriptor: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,11 +58,13 @@ class RequestContext:
     gateway_system_prompt: str = ""
     live_config_revision: str = "empty"
     gateway_key_id: str | None = None
+    assets: AssetAccess | None = None
 
 
 class ProviderEventKind(StrEnum):
     ITEM_ADDED = "output_item.added"
     TEXT_DELTA = "output_text.delta"
+    AUDIO_DELTA = "output_audio.delta"
     REASONING_SUMMARY_DELTA = "reasoning.summary.delta"
     REASONING_CONTENT_DELTA = "reasoning.content.delta"
     TOOL_ARGUMENTS_DELTA = "tool_call.arguments.delta"

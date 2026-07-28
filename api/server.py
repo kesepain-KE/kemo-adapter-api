@@ -13,7 +13,15 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.errors import install_exception_handlers
-from api.routes import capabilities_router, responses_router, retrieval_router, status_router
+from api.request_limits import RequestBodyLimitMiddleware
+from api.routes import (
+    assets_router,
+    capabilities_router,
+    responses_router,
+    retrieval_router,
+    status_router,
+)
+from core.assets import AssetLimits, AssetStore
 from core.config import Settings
 from core.executor import GatewayExecutor
 from core.live_config import LiveConfigManager
@@ -48,6 +56,7 @@ def create_app(
     *,
     live_config_root: Path | None = None,
     statistics_root: Path | None = None,
+    asset_root: Path | None = None,
     discover_providers: bool = True,
 ) -> FastAPI:
     load_dotenv()
@@ -60,11 +69,22 @@ def create_app(
         statistics_root or live_config.project_root / "storage",
         timezone_name=resolved_settings.statistics_timezone,
     )
+    assets = AssetStore(
+        asset_root or live_config.project_root / "storage" / "assets",
+        limits=AssetLimits(
+            image_bytes=resolved_settings.asset_image_max_bytes,
+            audio_bytes=resolved_settings.asset_audio_max_bytes,
+            video_bytes=resolved_settings.asset_video_max_bytes,
+            file_bytes=resolved_settings.asset_file_max_bytes,
+            retention_hours=resolved_settings.asset_retention_hours,
+        ),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         snapshot = await live_config.refresh()
         await statistics.initialize()
+        await assets.initialize()
         if discover_providers:
             registry.discover(
                 resolved_settings.provider_settings, snapshot.provider_settings
@@ -75,9 +95,17 @@ def create_app(
         yield
         await restart_service.stop_watcher()
         await runtime_state.mark_stopping()
+        await assets.close()
         await registry.close()
 
     app = FastAPI(title="Kemo Provider Gateway", version=_project_version(), lifespan=lifespan)
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=resolved_settings.request_json_max_bytes,
+        paths=frozenset(
+            {"/model/responses", "/model/embeddings", "/model/rerank"}
+        ),
+    )
     app.state.settings = resolved_settings
     app.state.registry = registry
     app.state.live_config = live_config
@@ -87,6 +115,7 @@ def create_app(
     app.state.uvicorn_server = None
     app.state.runtime_config_writer = RuntimeConfigWriter(live_config.project_root)
     app.state.statistics = statistics
+    app.state.assets = assets
     app.state.web_auth = WebAuthService()
     app.state.executor = GatewayExecutor(
         registry,
@@ -94,11 +123,13 @@ def create_app(
         live_config,
         runtime_state,
         statistics,
+        assets,
     )
     app.state.retrieval_executor = RetrievalExecutor(
         registry, live_config, runtime_state, statistics
     )
     app.include_router(responses_router)
+    app.include_router(assets_router)
     app.include_router(retrieval_router)
     app.include_router(capabilities_router)
     app.include_router(status_router)

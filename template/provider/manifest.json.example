@@ -7,14 +7,32 @@
       "upstream_model": "model-name",
       "input_modalities": ["text"],
       "output_modalities": ["text"],
+      "streaming": true,
+      "reasoning": {
+        "supported": false,
+        "efforts": [],
+        "summary": false,
+        "persisted_state": false
+      },
+      "tools": {
+        "function_calling": false,
+        "parallel_calls": false,
+        "multimodal_results": false
+      },
       "limits": {
         "max_input_tokens": 128000,
         "max_output_tokens": 8192
       },
       "operations": {
         "conversation": {"supported": true},
-        "streaming": {"supported": true},
-        "function_calling": {"supported": false, "parallel": false}
+        "vision": {"supported": false},
+        "image_generation": {"supported": false},
+        "image_edit": {"supported": false},
+        "audio_transcription": {"supported": false},
+        "speech_generation": {"supported": false},
+        "speech_to_speech": {"supported": false},
+        "video_understanding": {"supported": false},
+        "video_generation": {"supported": false}
       },
       "probe": {
         "supported": true,

@@ -53,6 +53,8 @@ async def create_response(
     )
     try:
         if request.stream:
+            await executor.validate_request(request, context)
+
             async def body():
                 async for event in executor.stream(
                     request,

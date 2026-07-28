@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from core.assets import AssetStore
 from core.executor import GatewayExecutor
 from core.registry import ProviderRegistry
 from core.retrieval_executor import RetrievalExecutor
@@ -17,3 +18,7 @@ def get_executor(request: Request) -> GatewayExecutor:
 
 def get_retrieval_executor(request: Request) -> RetrievalExecutor:
     return request.app.state.retrieval_executor
+
+
+def get_asset_store(request: Request) -> AssetStore:
+    return request.app.state.assets

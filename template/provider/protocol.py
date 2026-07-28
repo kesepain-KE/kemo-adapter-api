@@ -9,6 +9,7 @@ from typing import Any
 from core.models import KemoRequest
 from core.provider_contract import ProviderException, ProviderResult
 
+from .capabilities import MODEL_CAPABILITIES
 from .errors import ExampleErrorMapper
 from .usage import ExampleUsageMapper
 
@@ -75,21 +76,75 @@ class ExampleProtocolMapper:
         if request.tools:
             body["tools"] = self._convert_tools(request.tools)
 
-        reasoning = request.reasoning
-        if reasoning is None and options.get("reasoning_effort") is not None:
-            # 仅作为旧客户端回退；统一 reasoning 一旦存在就必须优先。
-            reasoning = {
-                "enabled": str(options["reasoning_effort"]).lower() != "none",
-                "effort": str(options["reasoning_effort"]).lower(),
-            }
+        reasoning = self._resolve_reasoning(request, options)
         if reasoning is not None:
-            # TODO: 映射成该厂商真实的 thinking/reasoning DTO。
-            body["reasoning"] = dict(reasoning)
+            # TODO: 通过显式档位映射转换成该厂商真实的 thinking/reasoning DTO；
+            # 禁止假定厂商档位名称与 Kemo 档位相同。
+            body["reasoning"] = reasoning
 
         for key in PASSTHROUGH_PROVIDER_OPTIONS:
             if key in options:
                 body[key] = options[key]
         return body
+
+    def _resolve_reasoning(
+        self,
+        request: KemoRequest,
+        options: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Normalize reasoning and enforce this model's declared effort list."""
+        if request.reasoning is not None:
+            # 统一字段始终优先，并保留 `return` 的公开协议别名。
+            reasoning = request.reasoning.model_dump(
+                by_alias=True,
+                exclude_none=True,
+            )
+        elif options.get("reasoning_effort") is not None:
+            # 仅作为旧客户端回退；新客户端必须使用 KemoRequest.reasoning。
+            effort = str(options["reasoning_effort"]).strip().lower()
+            reasoning = {
+                "enabled": effort != "none",
+                "effort": effort,
+            }
+        else:
+            return None
+
+        declaration = MODEL_CAPABILITIES.get(request.model)
+        if declaration is None:
+            raise ProviderException(
+                self._errors.validation_error(
+                    f"模型没有能力声明: {request.model}",
+                    details={"model": request.model},
+                )
+            )
+
+        enabled = bool(reasoning.get("enabled", False))
+        effort = str(reasoning.get("effort") or "none").strip().lower()
+        if enabled and not declaration.reasoning.supported:
+            raise ProviderException(
+                self._errors.validation_error(
+                    "该模型未声明支持推理模式",
+                    details={"model": request.model},
+                )
+            )
+        if (
+            enabled
+            and effort != "none"
+            and effort not in declaration.reasoning.efforts
+        ):
+            raise ProviderException(
+                self._errors.validation_error(
+                    f"模型不支持推理档位: {effort}",
+                    details={
+                        "model": request.model,
+                        "effort": effort,
+                        "supported_efforts": sorted(
+                            declaration.reasoning.efforts
+                        ),
+                    },
+                )
+            )
+        return reasoning
 
     def from_provider_response(self, raw: Mapping[str, Any]) -> ProviderResult:
         """示例非流式映射；复制后按厂商真实响应字段修改。"""

@@ -132,7 +132,15 @@ def request(*, stream: bool, system_prompt: str = "system") -> KemoRequest:
         generation={},
         output={"modalities": ["text"]},
         tools=[],
-        input=[],
+        input=[
+            {
+                "id": "msg_user_1",
+                "type": "message",
+                "role": "user",
+                "status": "completed",
+                "content": [{"type": "text", "text": "hello"}],
+            }
+        ],
         provider_options={},
         metadata={},
         extensions={},

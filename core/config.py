@@ -39,6 +39,12 @@ class Settings:
     web_token: str = ""
     status_token: str = ""
     statistics_timezone: str = "Asia/Shanghai"
+    request_json_max_bytes: int = 2 * 1024 * 1024
+    asset_retention_hours: int = 24
+    asset_image_max_bytes: int = 20 * 1024 * 1024
+    asset_audio_max_bytes: int = 100 * 1024 * 1024
+    asset_video_max_bytes: int = 1024 * 1024 * 1024
+    asset_file_max_bytes: int = 100 * 1024 * 1024
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -72,6 +78,22 @@ class Settings:
             web_token=os.getenv("WEB_TOKEN", ""),
             status_token=os.getenv("STATUS_TOKEN", ""),
             statistics_timezone=os.getenv("STATISTICS_TIMEZONE", "Asia/Shanghai"),
+            request_json_max_bytes=_positive_int_env(
+                "REQUEST_JSON_MAX_BYTES", 2 * 1024 * 1024
+            ),
+            asset_retention_hours=_positive_int_env("DEFAULT_ASSET_TTL_HOURS", 24),
+            asset_image_max_bytes=_positive_int_env(
+                "ASSET_IMAGE_MAX_BYTES", 20 * 1024 * 1024
+            ),
+            asset_audio_max_bytes=_positive_int_env(
+                "ASSET_AUDIO_MAX_BYTES", 100 * 1024 * 1024
+            ),
+            asset_video_max_bytes=_positive_int_env(
+                "ASSET_VIDEO_MAX_BYTES", 1024 * 1024 * 1024
+            ),
+            asset_file_max_bytes=_positive_int_env(
+                "ASSET_FILE_MAX_BYTES", 100 * 1024 * 1024
+            ),
         )
 
 
@@ -83,3 +105,13 @@ def parse_allowed_models(value: object) -> frozenset[str] | None:
     if any(not isinstance(item, str) or not item.strip() for item in value):
         raise ValueError("allowed_models 只能包含非空模型名")
     return frozenset(item.strip() for item in value)
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    value = int(raw)
+    if value <= 0:
+        raise ValueError(f"{name} 必须为正整数")
+    return value

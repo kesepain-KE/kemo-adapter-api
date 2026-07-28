@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from core.models import AssetDescriptor
+from core.provider_contract import AssetAccess, RequestContext
 
 
 SUPPORTED_SOURCE_KINDS = frozenset(
@@ -36,6 +40,9 @@ class ParsedMediaSource:
     data: str | None = None
     provider: str | None = None
     file_id: str | None = None
+    asset_id: str | None = None
+    asset_path: Path | None = None
+    checksum_sha256: str | None = None
     detail: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -57,6 +64,7 @@ def parse_media_block(
     *,
     expected_type: str,
     location: str,
+    assets: AssetAccess | None = None,
 ) -> ParsedMediaSource:
     """解析真实 Kemo 媒体块，但不替厂商决定其支持哪些来源。"""
     media_type = str(block.get("type") or "").strip()
@@ -67,11 +75,56 @@ def parse_media_block(
             details={"content_type": media_type or None},
         )
 
+    mime_type = str(block.get("mime_type") or "").strip() or None
+    if (
+        expected_type != "file"
+        and mime_type is not None
+        and not mime_type.startswith(f"{expected_type}/")
+    ):
+        raise MediaSourceError(
+            "媒体 MIME 与内容类型不一致",
+            location=f"{location}.mime_type",
+            details={"content_type": expected_type, "mime_type": mime_type},
+        )
+
+    asset_id = str(block.get("asset_id") or "").strip() or None
+    if asset_id is not None:
+        if assets is None:
+            raise MediaSourceError(
+                "当前 Provider 执行上下文没有 Asset 访问能力",
+                location=f"{location}.asset_id",
+                details={"asset_id": asset_id},
+            )
+        resolved = assets.resolve(asset_id)
+        descriptor = resolved.descriptor
+        if (
+            expected_type != "file"
+            and not descriptor.mime_type.startswith(f"{expected_type}/")
+        ):
+            raise MediaSourceError(
+                "Asset MIME 与媒体内容类型不一致",
+                location=f"{location}.asset_id",
+                details={"asset_id": asset_id},
+            )
+        return ParsedMediaSource(
+            media_type=media_type,
+            mime_type=descriptor.mime_type,
+            kind="asset",
+            asset_id=asset_id,
+            asset_path=resolved.path,
+            checksum_sha256=descriptor.checksum_sha256,
+            detail=(
+                str(block.get("detail"))
+                if block.get("detail") in {"auto", "low", "high"}
+                else None
+            ),
+        )
+
     source = block.get("source")
     if not isinstance(source, Mapping):
         raise MediaSourceError(
-            "媒体 source 必须是对象",
-            location=f"{location}.source",
+            "媒体至少需要 asset_id 或 source",
+            location=location,
         )
 
     kind = str(source.get("kind") or "").strip()
@@ -83,14 +136,6 @@ def parse_media_block(
                 "source_kind": kind or None,
                 "supported_source_kinds": sorted(SUPPORTED_SOURCE_KINDS),
             },
-        )
-
-    mime_type = str(block.get("mime_type") or "").strip() or None
-    if mime_type is not None and not mime_type.startswith(f"{expected_type}/"):
-        raise MediaSourceError(
-            "媒体 MIME 与内容类型不一致",
-            location=f"{location}.mime_type",
-            details={"content_type": expected_type, "mime_type": mime_type},
         )
 
     uri: str | None = None
@@ -105,12 +150,23 @@ def parse_media_block(
                 location=f"{location}.source.uri",
                 details={"source_kind": kind},
             )
-        if kind == "data_url" and not uri.startswith(f"data:{expected_type}/"):
-            raise MediaSourceError(
-                "Data URL 类型与媒体内容不一致",
-                location=f"{location}.source.uri",
-                details={"source_kind": kind, "content_type": expected_type},
-            )
+        if kind == "data_url":
+            header = uri.partition(",")[0]
+            source_mime = header[5:].split(";", 1)[0].strip().casefold()
+            if (
+                not header.startswith("data:")
+                or not header.casefold().endswith(";base64")
+                or (
+                    expected_type != "file"
+                    and not source_mime.startswith(f"{expected_type}/")
+                )
+                or (mime_type is not None and source_mime != mime_type.casefold())
+            ):
+                raise MediaSourceError(
+                    "Data URL 类型与媒体内容不一致",
+                    location=f"{location}.source.uri",
+                    details={"source_kind": kind, "content_type": expected_type},
+                )
     elif kind == "inline_base64":
         data = str(source.get("data") or "").strip() or None
         if data is None:
@@ -149,3 +205,43 @@ def parse_media_block(
         detail=detail,
         metadata=dict(metadata) if isinstance(metadata, Mapping) else {},
     )
+
+
+async def store_output_media(
+    context: RequestContext,
+    *,
+    media_type: str,
+    filename: str,
+    mime_type: str,
+    content: bytes | AsyncIterator[bytes],
+    metadata: Mapping[str, Any] | None = None,
+    checksum_sha256: str | None = None,
+    fields: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], AssetDescriptor]:
+    """把厂商媒体落入网关 Asset，再构造可公开返回的 Content Block。"""
+    if media_type not in {"image", "audio", "video", "file"}:
+        raise ValueError("media_type 必须是 image/audio/video/file")
+    if context.assets is None:
+        raise MediaSourceError(
+            "当前 Provider 执行上下文没有 Asset 输出能力",
+            location="output",
+        )
+    values = {"request_id": context.request_id, **dict(metadata or {})}
+    descriptor = await context.assets.store_output(
+        filename=filename,
+        mime_type=mime_type,
+        content=content,
+        metadata=values,
+        checksum_sha256=checksum_sha256,
+    )
+    block: dict[str, Any] = {
+        "type": media_type,
+        "asset_id": descriptor.id,
+        "mime_type": descriptor.mime_type,
+        "checksum_sha256": descriptor.checksum_sha256,
+    }
+    protected = set(block)
+    for key, value in dict(fields or {}).items():
+        if key not in protected:
+            block[key] = value
+    return block, descriptor
