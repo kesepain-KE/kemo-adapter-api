@@ -465,6 +465,88 @@ def test_update_cli_exposes_repair_and_backup_restore_but_not_git_rollback() -> 
         update_entry.main(["--yes"])
 
 
+def test_no_argument_entry_opens_beginner_menu_and_defaults_to_update(
+    monkeypatch,
+) -> None:
+    update_entry = _load_update_entry()
+    calls: list[bool] = []
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    monkeypatch.setattr(
+        update_entry,
+        "_apply",
+        lambda yes=False: calls.append(yes) or 7,
+    )
+
+    assert update_entry.main([]) == 7
+    assert calls == [False]
+
+
+def test_beginner_menu_can_check_without_mutating_and_return_to_menu(
+    monkeypatch,
+) -> None:
+    update_entry = _load_update_entry()
+    answers = iter(["2", "", "0"])
+    checks: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(
+        update_entry,
+        "_check_cmd",
+        lambda: checks.append("check") or 0,
+    )
+
+    assert update_entry.main([]) == 0
+    assert checks == ["check"]
+
+
+def test_beginner_menu_restores_backup_by_number(monkeypatch) -> None:
+    update_entry = _load_update_entry()
+    answers = iter(["3", "2", "", "0"])
+    restored: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(
+        update_entry.backup,
+        "list_backups",
+        lambda _root: ["20260728-130000", "20260728-120000"],
+    )
+    monkeypatch.setattr(
+        update_entry,
+        "_restore_backup",
+        lambda backup_id: restored.append(backup_id) or 0,
+    )
+
+    assert update_entry.main([]) == 0
+    assert restored == ["20260728-120000"]
+
+
+def test_beginner_menu_eof_exits_without_starting_update(monkeypatch) -> None:
+    update_entry = _load_update_entry()
+
+    def eof(_prompt: str) -> str:
+        raise EOFError
+
+    def unexpected_update(*_args, **_kwargs):
+        raise AssertionError("无输入终端不得默认执行更新")
+
+    monkeypatch.setattr("builtins.input", eof)
+    monkeypatch.setattr(update_entry, "_apply", unexpected_update)
+
+    assert update_entry.main([]) == 0
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [("1", True), ("是", True), ("2", False), ("否", False)],
+)
+def test_confirm_accepts_beginner_friendly_numeric_input(
+    monkeypatch,
+    answer: str,
+    expected: bool,
+) -> None:
+    update_entry = _load_update_entry()
+    monkeypatch.setattr("builtins.input", lambda _prompt: answer)
+    assert update_entry._confirm("继续？") is expected
+
+
 def test_frontend_update_reuses_one_stop_deployment(monkeypatch, tmp_path) -> None:
     frontend_root = tmp_path / "web" / "frontend"
     frontend_root.mkdir(parents=True)
