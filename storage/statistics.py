@@ -12,7 +12,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -213,17 +213,34 @@ class StatisticsStore:
             return await asyncio.to_thread(self._gateway_key_usage_sync)
 
     async def recent_invocations(
-        self, outcome: str = "all", *, limit: int = 50, day: str | None = None
+        self,
+        outcome: str = "all",
+        *,
+        limit: int = 50,
+        day: str | None = None,
+        hour: int | None = None,
+        offset: int = 0,
     ) -> dict[str, object]:
-        """Return a secret-safe operational log across one day or all daily databases."""
+        """Return one page from the unbounded secret-safe invocation history."""
         if outcome not in {"all", "success", "failure"}:
             raise ValueError("outcome must be all, success or failure")
-        if not 1 <= limit <= 100:
-            raise ValueError("limit must be between 1 and 100")
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
+        if hour is not None and not 0 <= hour <= 23:
+            raise ValueError("hour must be between 0 and 23")
         if day is not None:
             self._path_for_day(day)
         async with self._lock:
-            return await asyncio.to_thread(self._recent_invocations_sync, outcome, limit, day)
+            return await asyncio.to_thread(
+                self._recent_invocations_sync,
+                outcome,
+                limit,
+                day,
+                hour,
+                offset,
+            )
 
     def _path_for_day(self, day: str) -> Path:
         parsed = date.fromisoformat(day)
@@ -281,6 +298,8 @@ class StatisticsStore:
                     ON invocations(day, status);
                 CREATE INDEX IF NOT EXISTS idx_invocations_request
                     ON invocations(tenant_id, task, request_id);
+                CREATE INDEX IF NOT EXISTS idx_invocations_started_at
+                    ON invocations(started_at DESC);
 
                 CREATE TABLE IF NOT EXISTS daily_rollups (
                     day TEXT NOT NULL,
@@ -541,7 +560,6 @@ class StatisticsStore:
     def _row_metrics(self, row: sqlite3.Row | None) -> dict[str, object]:
         if row is None or row["calls"] is None:
             return self._empty_metrics()
-        calls = int(row["calls"])
         terminal = int(row["successes"]) + int(row["failures"]) + int(row["cancellations"])
         metrics = {
             key: int(row[key])
@@ -611,6 +629,7 @@ class StatisticsStore:
                 "label": f"{hour:02d}:00",
                 "calls": 0,
                 "successes": 0,
+                "failures": 0,
                 "terminal_calls": 0,
                 "success_rate": None,
                 "input_tokens": 0,
@@ -649,6 +668,8 @@ class StatisticsStore:
                 bucket["calls"] = int(bucket["calls"]) + 1
                 if row["status"] in {"completed", "requires_action"}:
                     bucket["successes"] = int(bucket["successes"]) + 1
+                elif row["status"] in {"failed", "incomplete"}:
+                    bucket["failures"] = int(bucket["failures"]) + 1
                 if row["status"] in {
                     "completed",
                     "requires_action",
@@ -764,7 +785,7 @@ class StatisticsStore:
                 rows = connection.execute(
                     """SELECT gateway_key_id,
                               COUNT(*) AS calls,
-                              SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS successes,
+                              SUM(CASE WHEN status IN ('completed','requires_action') THEN 1 ELSE 0 END) AS successes,
                               SUM(CASE WHEN total_tokens IS NOT NULL THEN total_tokens ELSE 0 END) AS total_tokens,
                               SUM(CASE WHEN total_tokens IS NOT NULL THEN 1 ELSE 0 END) AS token_samples,
                               MAX(started_at) AS last_used_at
@@ -797,7 +818,12 @@ class StatisticsStore:
         return aggregated
 
     def _recent_invocations_sync(
-        self, outcome: str, limit: int, day: str | None = None
+        self,
+        outcome: str,
+        limit: int,
+        day: str | None = None,
+        hour: int | None = None,
+        offset: int = 0,
     ) -> dict[str, object]:
         filters = {
             "all": ("", ()),
@@ -806,12 +832,29 @@ class StatisticsStore:
         }
         predicate, parameters = filters[outcome]
         collected: list[dict[str, object]] = []
+        total = 0
         paths = (
             [self._path_for_day(day)]
             if day is not None
             else sorted(self.daily_root.glob("*/*/*.sqlite3"), reverse=True)
         )
         for path in paths:
+            time_predicate = ""
+            time_parameters: tuple[object, ...] = ()
+            if hour is not None:
+                path_day = day or path.stem
+                selected_day = date.fromisoformat(path_day)
+                local_start = datetime(
+                    selected_day.year,
+                    selected_day.month,
+                    selected_day.day,
+                    hour,
+                    tzinfo=self.timezone,
+                )
+                utc_start = local_start.astimezone(timezone.utc)
+                utc_end = (local_start + timedelta(hours=1)).astimezone(timezone.utc)
+                time_predicate = " AND started_at >= ? AND started_at < ?"
+                time_parameters = (utc_start.isoformat(), utc_end.isoformat())
             uri = f"file:{path.as_posix()}?mode=ro"
             try:
                 with sqlite3.connect(uri, uri=True, timeout=10) as connection:
@@ -828,6 +871,14 @@ class StatisticsStore:
                         if "error_message" in columns
                         else "NULL AS error_message"
                     )
+                    where = f"WHERE 1=1{predicate}{time_predicate}"
+                    query_parameters = (*parameters, *time_parameters)
+                    total += int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM invocations {where}",
+                            query_parameters,
+                        ).fetchone()[0]
+                    )
                     rows = connection.execute(
                         f"""SELECT started_at, finished_at, task, provider_id, model,
                                    gateway_key_id, status, error_code,
@@ -836,9 +887,9 @@ class StatisticsStore:
                                    reasoning_tokens, visible_output_tokens, total_tokens,
                                    usage_mode, usage_exact
                               FROM invocations
-                             WHERE 1=1{predicate}
+                             {where}
                              ORDER BY started_at DESC LIMIT ?""",
-                        (*parameters, limit),
+                        (*query_parameters, offset + limit),
                     ).fetchall()
             except (OSError, sqlite3.Error):
                 continue
@@ -869,7 +920,15 @@ class StatisticsStore:
                 for row in rows
             )
         collected.sort(key=lambda item: str(item["started_at"]), reverse=True)
-        return {"outcome": outcome, "date": day, "items": collected[:limit]}
+        return {
+            "outcome": outcome,
+            "date": day,
+            "hour": hour,
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+            "items": collected[offset : offset + limit],
+        }
 
     def _mark_success(self) -> None:
         self._healthy = True

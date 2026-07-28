@@ -10,3 +10,15 @@
 - 数据库写入失败不会中断模型响应，可通过管理端统计 API 查看存储健康状态和丢弃数。
 
 `daily/` 是运行数据，不纳入 Git 版本管理。修改统计代码后需要重启网关。
+
+## 多模态 Asset
+
+`assets/` 保存 `/assets` 上传的输入媒体和 Provider 登记的生成产物。每个 Asset 的公开描述只
+包含稳定 ID、用途、文件名、MIME、大小、SHA-256、状态和有效期；本地 `content.bin` 路径只允许
+存储层和绑定当前 tenant/subject 的 `RequestContext.assets` 使用。
+
+- 图片、音频、视频和普通文件分别应用环境变量中的大小上限；
+- 输入按当前 tenant + subject + Idempotency-Key 隔离与去重；
+- 生成媒体必须先登记为 `purpose=output`，公开响应不得泄露本地路径；
+- 过期检查会在访问时返回 410，后台清理任务会回收过期内容；
+- `assets/` 是部署数据，不纳入 Git，也由更新器保护。

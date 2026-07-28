@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -108,6 +109,7 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
         assert active_hour["input_tokens"] == 100
         assert active_hour["cached_input_tokens"] == 25
         assert active_hour["output_tokens"] == 20
+        assert active_hour["failures"] == 1
         assert active_hour["cache_hit_rate"] == 0.25
         assert active_hour["success_rate"] == 0.5
         empty_hour = next(item for item in hourly["items"] if not item["calls"])
@@ -151,6 +153,92 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
                 (incomplete.invocation_id,),
             ).fetchone()
         assert unknown == (None, None)
+
+    asyncio.run(scenario())
+
+
+def test_invocation_history_is_paginated_beyond_one_hundred_and_filters_hour(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = StatisticsStore(tmp_path / "storage")
+        day = "2026-07-28"
+        database = store._path_for_day(day)
+        store._initialize_database(database)
+
+        rows: list[tuple[str, ...]] = []
+        for index in range(125):
+            hour = 9 if index < 75 else 10
+            local_started = datetime(
+                2026,
+                7,
+                28,
+                hour,
+                index % 60,
+                tzinfo=store.timezone,
+            )
+            rows.append(
+                (
+                    f"inv-page-{index:03d}",
+                    day,
+                    "llm",
+                    "example",
+                    "example-model",
+                    "tenant",
+                    f"request-page-{index:03d}",
+                    local_started.astimezone(timezone.utc).isoformat(),
+                    "completed",
+                )
+            )
+        with sqlite3.connect(database) as connection:
+            connection.executemany(
+                """INSERT INTO invocations(
+                    invocation_id, day, task, provider_id, model, tenant_id,
+                    request_id, started_at, status
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+
+        first = await store.recent_invocations("all", day=day, limit=20)
+        sixth = await store.recent_invocations(
+            "all", day=day, limit=20, offset=100
+        )
+        seventh = await store.recent_invocations(
+            "all", day=day, limit=20, offset=120
+        )
+        nine_oclock = await store.recent_invocations(
+            "all", day=day, hour=9, limit=20
+        )
+
+        assert first["total"] == 125
+        assert len(first["items"]) == 20
+        assert sixth["total"] == 125
+        assert len(sixth["items"]) == 20
+        assert len(seventh["items"]) == 5
+        assert nine_oclock["hour"] == 9
+        assert nine_oclock["total"] == 75
+
+    asyncio.run(scenario())
+
+
+def test_gateway_key_usage_counts_tool_action_as_success(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = StatisticsStore(tmp_path / "storage")
+        handle = await store.begin_invocation(
+            task="llm",
+            provider_id="example",
+            model="example-tool-model",
+            tenant_id="tenant",
+            gateway_key_id="agent-key",
+            request_id="request-tool-call",
+        )
+        assert handle is not None
+        await store.finish_invocation(handle, status="requires_action")
+
+        usage = await store.gateway_key_usage()
+
+        assert usage["agent-key"]["calls"] == 1
+        assert usage["agent-key"]["successes"] == 1
 
     asyncio.run(scenario())
 
@@ -253,8 +341,29 @@ def test_admin_statistics_api_is_protected_and_validates_queries(tmp_path: Path)
         assert invocation_logs.status_code == 200
         assert invocation_logs.json()["outcome"] == "failure"
         assert invocation_logs.json()["date"] == "2000-01-01"
+        assert invocation_logs.json()["page"] == 1
+        assert invocation_logs.json()["page_size"] == 10
+        assert invocation_logs.json()["total"] == 0
+        assert invocation_logs.json()["pages"] == 1
+        selected_hour = client.get(
+            "/admin/api/statistics/invocations",
+            params={
+                "date": "2000-01-01",
+                "hour": 23,
+                "page": 2,
+                "page_size": 20,
+            },
+        )
+        assert selected_hour.status_code == 200
+        assert selected_hour.json()["hour"] == 23
+        assert selected_hour.json()["page"] == 2
         invalid_invocation_date = client.get(
             "/admin/api/statistics/invocations",
             params={"date": "not-a-date"},
         )
         assert invalid_invocation_date.status_code == 422
+        invalid_invocation_hour = client.get(
+            "/admin/api/statistics/invocations",
+            params={"date": "2000-01-01", "hour": 24},
+        )
+        assert invalid_invocation_hour.status_code == 422
