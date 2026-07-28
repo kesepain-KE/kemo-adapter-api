@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from core.retrieval_executor import ModelOperationFailure
@@ -39,7 +38,16 @@ def install_exception_handlers(app: FastAPI) -> None:
         ):
             return JSONResponse(
                 status_code=422,
-                content={"detail": jsonable_encoder(exc.errors())},
+                content={
+                    "detail": [
+                        {
+                            "location": [str(part) for part in error.get("loc", ())],
+                            "message": str(error.get("msg") or "请求字段无效"),
+                            "type": str(error.get("type") or "validation_error"),
+                        }
+                        for error in exc.errors()[:20]
+                    ]
+                },
             )
         errors = [
             {
@@ -126,6 +134,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             403: "AUTHORIZATION_ERROR",
             404: "RESPONSE_NOT_FOUND",
             409: "IDEMPOTENCY_CONFLICT",
+            429: "RATE_LIMITED",
         }.get(exc.status_code, "INTERNAL_ERROR")
         return JSONResponse(
             status_code=exc.status_code,
@@ -143,4 +152,5 @@ def install_exception_handlers(app: FastAPI) -> None:
                     "details": {},
                 },
             },
+            headers=exc.headers,
         )

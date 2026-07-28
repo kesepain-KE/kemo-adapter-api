@@ -37,6 +37,9 @@ class Settings:
     web_username: str = ""
     web_password: str = ""
     web_token: str = ""
+    web_cookie_secure: bool | None = None
+    web_allowed_hosts: tuple[str, ...] = ()
+    api_docs_enabled: bool = False
     status_token: str = ""
     statistics_timezone: str = "Asia/Shanghai"
     request_json_max_bytes: int = 2 * 1024 * 1024
@@ -76,6 +79,9 @@ class Settings:
             web_username=os.getenv("WEB_USERNAME", ""),
             web_password=os.getenv("WEB_PASSWORD", ""),
             web_token=os.getenv("WEB_TOKEN", ""),
+            web_cookie_secure=_optional_bool_env("WEB_COOKIE_SECURE"),
+            web_allowed_hosts=_csv_env("WEB_ALLOWED_HOSTS"),
+            api_docs_enabled=_bool_env("API_DOCS_ENABLED", False),
             status_token=os.getenv("STATUS_TOKEN", ""),
             statistics_timezone=os.getenv("STATISTICS_TIMEZONE", "Asia/Shanghai"),
             request_json_max_bytes=_positive_int_env(
@@ -115,3 +121,30 @@ def _positive_int_env(name: str, default: int) -> int:
     if value <= 0:
         raise ValueError(f"{name} 必须为正整数")
     return value
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} 必须是 true/false、1/0、yes/no 或 on/off")
+
+
+def _optional_bool_env(name: str) -> bool | None:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw or raw == "auto":
+        return None
+    return _bool_env(name, False)
+
+
+def _csv_env(name: str) -> tuple[str, ...]:
+    values = tuple(
+        value.strip() for value in os.getenv(name, "").split(",") if value.strip()
+    )
+    if any("/" in value or ":" in value for value in values):
+        raise ValueError(f"{name} 只能包含主机名，不能包含协议、端口或路径")
+    return values

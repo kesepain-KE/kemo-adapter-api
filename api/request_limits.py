@@ -25,13 +25,19 @@ class RequestBodyLimitMiddleware:
         *,
         max_bytes: int,
         paths: frozenset[str],
+        path_prefixes: frozenset[str] = frozenset(),
     ) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.paths = paths
+        self.path_prefixes = path_prefixes
 
     async def __call__(self, scope: dict[str, Any], receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http" or scope.get("path") not in self.paths:
+        path = str(scope.get("path") or "")
+        limited = path in self.paths or any(
+            path.startswith(prefix) for prefix in self.path_prefixes
+        )
+        if scope.get("type") != "http" or not limited:
             await self.app(scope, receive, send)
             return
 

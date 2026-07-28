@@ -6,11 +6,13 @@ from contextlib import asynccontextmanager
 import json
 import mimetypes
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from api.errors import install_exception_handlers
 from api.request_limits import RequestBodyLimitMiddleware
@@ -51,6 +53,24 @@ def _project_version() -> str:
         return "0.0.0"
 
 
+def _validate_web_exposure(settings: Settings) -> None:
+    username = bool(settings.web_username.strip())
+    password = bool(settings.web_password.strip())
+    if username != password:
+        raise RuntimeError("WEB_USERNAME 与 WEB_PASSWORD 必须同时配置")
+    if settings.base_url:
+        parsed_base = urlsplit(settings.base_url)
+        if (
+            parsed_base.scheme not in {"http", "https"}
+            or not parsed_base.netloc
+            or parsed_base.username is not None
+            or parsed_base.password is not None
+        ):
+            raise RuntimeError(
+                "GATEWAY_BASE_URL 必须是无内嵌凭据的 http/https 地址"
+            )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -61,6 +81,7 @@ def create_app(
 ) -> FastAPI:
     load_dotenv()
     resolved_settings = settings or Settings.from_env()
+    _validate_web_exposure(resolved_settings)
     registry = ProviderRegistry()
     live_config = LiveConfigManager(live_config_root or PROJECT_ROOT)
     runtime_state = GatewayRuntimeState()
@@ -98,13 +119,52 @@ def create_app(
         await assets.close()
         await registry.close()
 
-    app = FastAPI(title="Kemo Provider Gateway", version=_project_version(), lifespan=lifespan)
+    app = FastAPI(
+        title="Kemo Provider Gateway",
+        version=_project_version(),
+        lifespan=lifespan,
+        docs_url="/docs" if resolved_settings.api_docs_enabled else None,
+        redoc_url="/redoc" if resolved_settings.api_docs_enabled else None,
+        openapi_url="/openapi.json" if resolved_settings.api_docs_enabled else None,
+    )
+    if resolved_settings.web_allowed_hosts:
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=list(resolved_settings.web_allowed_hosts),
+        )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+        )
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "style-src-attr 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        )
+        admin_document = request.url.path.startswith("/admin") and not (
+            request.url.path.startswith("/admin/assets/")
+            or request.url.path == "/admin/logo.png"
+        )
+        if request.url.path.startswith("/admin/api") or admin_document:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
     app.add_middleware(
         RequestBodyLimitMiddleware,
         max_bytes=resolved_settings.request_json_max_bytes,
         paths=frozenset(
             {"/model/responses", "/model/embeddings", "/model/rerank"}
         ),
+        path_prefixes=frozenset({"/admin/api/"}),
     )
     app.state.settings = resolved_settings
     app.state.registry = registry
@@ -154,14 +214,8 @@ def create_app(
             return FileResponse(frontend_dist / "index.html")
 
         @app.get("/", include_in_schema=False)
-        async def admin_entry(request: Request) -> RedirectResponse:
-            token = request.query_params.get("token")
-            target = "/admin"
-            if token is not None:
-                from urllib.parse import quote
-
-                target = f"/admin?token={quote(token, safe='')}"
-            return RedirectResponse(target, status_code=307)
+        async def admin_entry() -> RedirectResponse:
+            return RedirectResponse("/admin", status_code=303)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, object]:
