@@ -10,16 +10,20 @@ import setup as deployment_setup
 def _record_steps(monkeypatch):
     steps: list[str] = []
     monkeypatch.setattr(
-        deployment_setup, "install_dependencies", lambda: steps.append("install")
+        deployment_setup,
+        "check_environment",
+        lambda **_kwargs: steps.append("check") or True,
     )
-    monkeypatch.setattr(deployment_setup, "build_frontend", lambda: steps.append("build"))
-    monkeypatch.setattr(deployment_setup, "initialize_env", lambda: steps.append("env"))
-
-    def check() -> bool:
-        steps.append("check")
-        return True
-
-    monkeypatch.setattr(deployment_setup, "check_environment", check)
+    monkeypatch.setattr(
+        deployment_setup, "setup_venv", lambda: steps.append("venv") or True
+    )
+    monkeypatch.setattr(deployment_setup, "init_env", lambda: steps.append("env"))
+    monkeypatch.setattr(
+        deployment_setup, "install_dependencies", lambda: steps.append("install") or True
+    )
+    monkeypatch.setattr(
+        deployment_setup, "build_frontend", lambda: steps.append("build") or True
+    )
     return steps
 
 
@@ -28,10 +32,10 @@ def test_no_arguments_performs_complete_deployment(monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["setup.py"])
 
     assert deployment_setup.main() == 0
-    assert steps == ["install", "build", "env", "check"]
+    assert steps == ["check", "venv", "env", "install", "build"]
 
 
-def test_check_does_not_install_or_build(monkeypatch) -> None:
+def test_check_does_not_deploy(monkeypatch) -> None:
     steps = _record_steps(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["setup.py", "--check"])
 
@@ -39,12 +43,34 @@ def test_check_does_not_install_or_build(monkeypatch) -> None:
     assert steps == ["check"]
 
 
-def test_explicit_action_only_runs_requested_step(monkeypatch) -> None:
+def test_check_mode_never_bootstraps_node(monkeypatch) -> None:
+    calls: list[bool] = []
+
+    def check_environment(*, bootstrap_node: bool = True) -> bool:
+        calls.append(bootstrap_node)
+        return True
+
+    monkeypatch.setattr(deployment_setup, "check_environment", check_environment)
+    monkeypatch.setattr(sys, "argv", ["setup.py", "--check"])
+
+    assert deployment_setup.main() == 0
+    assert calls == [False]
+
+
+def test_build_frontend_runs_check_then_build(monkeypatch) -> None:
     steps = _record_steps(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["setup.py", "--build-frontend"])
 
     assert deployment_setup.main() == 0
-    assert steps == ["build", "check"]
+    assert steps == ["check", "build"]
+
+
+def test_init_env_only(monkeypatch) -> None:
+    steps = _record_steps(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["setup.py", "--init-env"])
+
+    assert deployment_setup.main() == 0
+    assert steps == ["env"]
 
 
 def test_check_cannot_be_combined_with_deployment_steps(monkeypatch) -> None:
@@ -67,7 +93,7 @@ def test_frontend_prefers_installed_pnpm(monkeypatch) -> None:
         lambda name: "C:/tools/pnpm.cmd" if name == "pnpm" else None,
     )
 
-    assert deployment_setup._frontend_package_command() == ["C:/tools/pnpm.cmd"]
+    assert deployment_setup._pnpm_command() == ["C:/tools/pnpm.cmd"]
 
 
 def test_frontend_uses_pinned_pnpm_through_npm(monkeypatch) -> None:
@@ -79,7 +105,7 @@ def test_frontend_uses_pinned_pnpm_through_npm(monkeypatch) -> None:
         deployment_setup.shutil, "which", lambda name: commands.get(name)
     )
 
-    assert deployment_setup._frontend_package_command() == [
+    assert deployment_setup._pnpm_command() == [
         "C:/Program Files/nodejs/npm.cmd",
         "exec",
         "--yes",
@@ -87,6 +113,31 @@ def test_frontend_uses_pinned_pnpm_through_npm(monkeypatch) -> None:
         "--",
         "pnpm",
     ]
+
+
+def test_existing_local_node_runtime_is_reused(monkeypatch, tmp_path) -> None:
+    runtime = tmp_path / ".runtime"
+    executable_root = runtime / "node" / "bin"
+    executable_root.mkdir(parents=True)
+    node = executable_root / "node"
+    npm = executable_root / "npm"
+    node.write_text("node", encoding="utf-8")
+    npm.write_text("npm", encoding="utf-8")
+
+    monkeypatch.setattr(deployment_setup, "FRONTEND_RUNTIME_ROOT", runtime)
+    monkeypatch.setattr(deployment_setup.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(deployment_setup, "_check_node", lambda: None)
+    monkeypatch.setattr(
+        deployment_setup,
+        "_install_local_node_runtime",
+        lambda: pytest.fail("已有本地工具链时不得重复下载"),
+    )
+    monkeypatch.setenv("PATH", "")
+
+    assert deployment_setup._ensure_node() == (str(node), str(npm))
+    assert str(executable_root) in deployment_setup.os.environ["PATH"].split(
+        deployment_setup.os.pathsep
+    )
 
 
 @pytest.mark.parametrize(
