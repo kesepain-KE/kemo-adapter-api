@@ -127,6 +127,11 @@ def require_write_csrf(
     """Require a per-session CSRF token for cookie-authenticated mutations."""
     if _bearer_token(authorization) is not None:
         return
+    if not control_plane_auth_required(request):
+        # Direct-login mode has no Web session/CSRF token. Still reject cross-site
+        # browser writes, and ignore obsolete cookies left by an earlier setup.
+        _require_same_origin(request)
+        return
     session_token = request.cookies.get(WEB_SESSION_COOKIE, "")
     if not session_token:
         return
@@ -419,6 +424,32 @@ async def gateway_api_keys(
         "items": items,
         "models": models,
     }
+
+
+@router.post("/keys/{key_id}/reveal")
+async def reveal_gateway_api_key(
+    key_id: str,
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+    _csrf: None = Depends(require_write_csrf),
+) -> dict[str, str]:
+    """Return one gateway token only after an explicit owner action."""
+    _no_store(response)
+
+    configured = dict(request.app.state.settings.api_keys)
+    # Match the precedence used by gateway authentication: hot config wins.
+    configured.update(request.app.state.live_config.current.api_keys)
+    matches = [
+        token
+        for token, config in configured.items()
+        if safe_key_id(token, config.key_id) == key_id
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="API 密钥不存在")
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail="API 密钥标识重复，无法安全读取")
+    return {"token": matches[0]}
 
 
 @router.put("/keys/{key_id}/model-policy")
