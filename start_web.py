@@ -12,7 +12,6 @@ import socket
 import sys
 from threading import Timer
 from typing import Any
-from urllib.parse import quote
 import webbrowser
 
 from dotenv import load_dotenv
@@ -182,13 +181,9 @@ def main() -> int:
 
     url = _browser_url(str(options["host"]), int(options["port"]))
     print(f"[KEMO] Web 管理端: {url}")
-    web_token = os.getenv("WEB_TOKEN", "").strip()
-    browser_url = f"{url}?token={quote(web_token, safe='')}" if web_token else url
-    if web_token:
-        print(f"[KEMO] Token 入口: {url}?token=<WEB_TOKEN>")
     print("[KEMO] 环境变量仅在启动时读取，修改后必须重启。")
     if open_browser:
-        browser_timer = Timer(0.8, webbrowser.open, args=(browser_url,))
+        browser_timer = Timer(0.8, webbrowser.open, args=(url,))
         browser_timer.daemon = True
         browser_timer.start()
 

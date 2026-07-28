@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from fastapi import Header, HTTPException, Request
 
 from core.config import safe_key_id
+from web.backend.auth_service import WEB_SESSION_COOKIE
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +108,19 @@ async def _resolve_principal(
     if enforce_gateway_enabled and snapshot.gateway_api.get("enabled", True) is not True:
         raise HTTPException(status_code=503, detail="Gateway API 已停用")
 
+    if not authorization and allow_unconfigured_control_plane:
+        cookie_token = request.cookies.get(WEB_SESSION_COOKIE, "")
+        web_session = request.app.state.web_auth.resolve(
+            cookie_token, stage="complete"
+        )
+        if web_session is not None:
+            return Principal(
+                tenant_id="local",
+                subject_id="web-session-console",
+                scopes=frozenset({"owner"}),
+                key_id="web-console-session",
+            )
+
     if not authorization:
         if allow_unconfigured_control_plane and not control_plane_auth_required(request):
             return Principal(
@@ -119,20 +133,6 @@ async def _resolve_principal(
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="需要 Bearer Token")
     candidate = authorization[7:]
-
-    # 完整 Web 会话只属于管理面，不能作为模型调用密钥。
-    web_session = (
-        request.app.state.web_auth.resolve(candidate, stage="complete")
-        if allow_unconfigured_control_plane
-        else None
-    )
-    if web_session is not None:
-        return Principal(
-            tenant_id="local",
-            subject_id="web-session-console",
-            scopes=frozenset({"owner"}),
-            key_id="web-console-session",
-        )
 
     # .env 是重启生效的启动配置；api/keys.json 是无需重启的运行时密钥配置。
     available_keys = dict(settings.api_keys)

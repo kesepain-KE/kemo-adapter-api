@@ -6,6 +6,7 @@ import hmac
 import json
 import time
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
@@ -23,11 +24,14 @@ from web.backend.schemas import (
     WebPasswordAuth,
     WebTokenAuth,
 )
+from web.backend.auth_service import WEB_PREAUTH_COOKIE, WEB_SESSION_COOKIE
 from web.backend.restart_service import RestartAlreadyRunning
 from web.backend.service import RevisionConflict, RuntimeConfigWriter
 
 
-router = APIRouter(prefix="/admin/api", tags=["admin-internal"])
+router = APIRouter(
+    prefix="/admin/api", tags=["admin-internal"], include_in_schema=False
+)
 
 
 def _password_auth_state(request: Request) -> tuple[bool, bool]:
@@ -47,6 +51,91 @@ def _bearer_token(authorization: str | None) -> str | None:
         return None
     token = authorization[7:].strip()
     return token or None
+
+
+def _masked_secret(value: str) -> str:
+    """Return an operator hint without exposing a reusable credential."""
+    return f"{'•' * 12}{value[-4:]}" if len(value) > 4 else "•" * 16
+
+
+def _client_id(request: Request, stage: str) -> str:
+    host = request.client.host if request.client is not None else "unknown"
+    return f"{stage}:{host}"
+
+
+def _enforce_login_limit(request: Request, stage: str) -> str:
+    client_id = _client_id(request, stage)
+    retry_after = request.app.state.web_auth.login_retry_after(client_id)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="登录失败次数过多，请稍后再试",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return client_id
+
+
+def _secure_cookie(request: Request) -> bool:
+    configured = request.app.state.settings.web_cookie_secure
+    if configured is not None:
+        return configured
+    return request.app.state.settings.base_url.lower().startswith("https://")
+
+
+def _set_session_cookie(
+    response: Response, request: Request, *, name: str, token: str
+) -> None:
+    response.set_cookie(
+        name,
+        token,
+        max_age=request.app.state.web_auth.ttl_seconds,
+        path="/admin",
+        secure=_secure_cookie(request),
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def _delete_session_cookie(response: Response, *, name: str) -> None:
+    response.delete_cookie(name, path="/admin", httponly=True, samesite="strict")
+
+
+def _require_same_origin(request: Request) -> None:
+    """Reject cross-site browser requests while allowing non-browser API clients."""
+    fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    if fetch_site and fetch_site not in {"same-origin", "none"}:
+        raise HTTPException(status_code=403, detail="拒绝跨站管理请求")
+    source = request.headers.get("origin") or request.headers.get("referer")
+    if not source:
+        return
+    parsed = urlsplit(source)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=403, detail="管理请求来源无效")
+    allowed = {request.headers.get("host", "").lower()}
+    configured_base = request.app.state.settings.base_url.strip()
+    if configured_base:
+        allowed.add(urlsplit(configured_base).netloc.lower())
+    if parsed.netloc.lower() not in allowed:
+        raise HTTPException(status_code=403, detail="拒绝跨站管理请求")
+
+
+def require_write_csrf(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+) -> None:
+    """Require a per-session CSRF token for cookie-authenticated mutations."""
+    if _bearer_token(authorization) is not None:
+        return
+    session_token = request.cookies.get(WEB_SESSION_COOKIE, "")
+    if not session_token:
+        return
+    _require_same_origin(request)
+    session = request.app.state.web_auth.resolve(session_token, stage="complete")
+    if session is None or csrf_token is None or not hmac.compare_digest(
+        csrf_token, session.csrf_token
+    ):
+        raise HTTPException(status_code=403, detail="CSRF 校验失败")
 
 
 def require_admin(principal: Principal = Depends(control_plane_principal)) -> Principal:
@@ -95,22 +184,28 @@ async def authenticate_web_token(
     response: Response,
 ) -> dict[str, object]:
     _no_store(response)
+    _require_same_origin(request)
+    client_id = _enforce_login_limit(request, "token")
     configured = request.app.state.settings.web_token.strip()
     if not configured:
         raise HTTPException(status_code=404, detail="Web Token 鉴权未启用")
     if not hmac.compare_digest(body.token, configured):
+        request.app.state.web_auth.record_login_failure(client_id)
         raise HTTPException(status_code=401, detail="Web Token 无效")
+    request.app.state.web_auth.clear_login_failures(client_id)
     password_required, password_valid = _password_auth_state(request)
     if not password_valid:
         raise HTTPException(status_code=503, detail="WEB_USERNAME 与 WEB_PASSWORD 必须同时配置")
     session = request.app.state.web_auth.issue(
         stage="password" if password_required else "complete"
     )
+    cookie_name = WEB_PREAUTH_COOKIE if password_required else WEB_SESSION_COOKIE
+    _set_session_cookie(response, request, name=cookie_name, token=session.token)
     return {
-        "session_token": session.token,
         "expires_at": session.expires_at,
         "expires_in": request.app.state.web_auth.ttl_seconds,
         "next_step": "password" if password_required else "complete",
+        "csrf_token": session.csrf_token if not password_required else None,
     }
 
 
@@ -119,9 +214,10 @@ async def authenticate_web_password(
     body: WebPasswordAuth,
     request: Request,
     response: Response,
-    authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
     _no_store(response)
+    _require_same_origin(request)
+    client_id = _enforce_login_limit(request, "password")
     settings = request.app.state.settings
     password_required, password_valid = _password_auth_state(request)
     if not password_valid:
@@ -130,7 +226,7 @@ async def authenticate_web_password(
         raise HTTPException(status_code=404, detail="用户名和密码鉴权未启用")
 
     token_required = bool(settings.web_token.strip())
-    preauth_token = _bearer_token(authorization)
+    preauth_token = request.cookies.get(WEB_PREAUTH_COOKIE)
     if token_required and (
         preauth_token is None
         or request.app.state.web_auth.resolve(preauth_token, stage="password") is None
@@ -140,17 +236,49 @@ async def authenticate_web_password(
     username_ok = hmac.compare_digest(body.username, settings.web_username)
     password_ok = hmac.compare_digest(body.password, settings.web_password)
     if not (username_ok and password_ok):
+        request.app.state.web_auth.record_login_failure(client_id)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    request.app.state.web_auth.clear_login_failures(client_id)
     session = request.app.state.web_auth.issue(stage="complete")
+    _set_session_cookie(
+        response, request, name=WEB_SESSION_COOKIE, token=session.token
+    )
     if preauth_token is not None:
         request.app.state.web_auth.revoke(preauth_token)
+        _delete_session_cookie(response, name=WEB_PREAUTH_COOKIE)
     return {
-        "session_token": session.token,
         "expires_at": session.expires_at,
         "expires_in": request.app.state.web_auth.ttl_seconds,
         "next_step": "complete",
+        "csrf_token": session.csrf_token,
     }
+
+
+@router.get("/auth/session")
+async def web_auth_session(request: Request, response: Response) -> dict[str, object]:
+    _no_store(response)
+    token = request.cookies.get(WEB_SESSION_COOKIE, "")
+    session = request.app.state.web_auth.resolve(token, stage="complete")
+    if session is None:
+        raise HTTPException(status_code=401, detail="Web 会话无效或已过期")
+    return {
+        "authenticated": True,
+        "expires_at": session.expires_at,
+        "csrf_token": session.csrf_token,
+    }
+
+
+@router.post("/auth/logout")
+async def web_auth_logout(request: Request, response: Response) -> dict[str, str]:
+    _no_store(response)
+    _require_same_origin(request)
+    for cookie_name in (WEB_SESSION_COOKIE, WEB_PREAUTH_COOKIE):
+        token = request.cookies.get(cookie_name)
+        if token:
+            request.app.state.web_auth.revoke(token)
+        _delete_session_cookie(response, name=cookie_name)
+    return {"status": "logged_out"}
 
 
 async def refresh_after_write(request: Request):
@@ -214,7 +342,7 @@ async def gateway_api_keys(
         configured[token] = {
             "id": stable_id,
             "name": config.subject_id.strip() or stable_id,
-            "token": token,
+            "masked_token": _masked_secret(token),
             "source": "environment",
             "created_at": None,
             "allowed_models": (
@@ -234,7 +362,7 @@ async def gateway_api_keys(
                 if isinstance(configured_name, str) and configured_name.strip()
                 else config.subject_id.strip() or stable_id
             ),
-            "token": token,
+            "masked_token": _masked_secret(token),
             "source": "runtime",
             "created_at": created_at if isinstance(created_at, str) and created_at.strip() else None,
             "allowed_models": (
@@ -300,6 +428,7 @@ async def update_key_model_policy(
     request: Request,
     response: Response,
     _: Principal = Depends(require_owner),
+    _csrf: None = Depends(require_write_csrf),
     config_writer: RuntimeConfigWriter = Depends(writer),
 ) -> dict[str, object]:
     _no_store(response)
@@ -464,6 +593,7 @@ async def probe_model(
     model: str,
     request: Request,
     principal: Principal = Depends(require_admin),
+    _csrf: None = Depends(require_write_csrf),
 ) -> dict[str, object]:
     try:
         package = request.app.state.registry.resolve(model)
@@ -542,6 +672,7 @@ async def request_restart(
     body: RestartRequestBody,
     request: Request,
     principal: Principal = Depends(require_owner),
+    _csrf: None = Depends(require_write_csrf),
 ) -> dict[str, object]:
     try:
         restart_request = request.app.state.restart_service.enqueue(
@@ -563,6 +694,7 @@ async def update_gateway(
     body: GatewayRuntimeUpdate,
     request: Request,
     _: Principal = Depends(require_admin),
+    _csrf: None = Depends(require_write_csrf),
     config_writer: RuntimeConfigWriter = Depends(writer),
 ) -> dict[str, str]:
     try:
@@ -580,6 +712,7 @@ async def update_control(
     body: LiveControlUpdate,
     request: Request,
     _: Principal = Depends(require_admin),
+    _csrf: None = Depends(require_write_csrf),
     config_writer: RuntimeConfigWriter = Depends(writer),
 ) -> dict[str, str]:
     try:
@@ -602,6 +735,7 @@ async def update_provider(
     body: ProviderApiUpdate,
     request: Request,
     _: Principal = Depends(require_admin),
+    _csrf: None = Depends(require_write_csrf),
     config_writer: RuntimeConfigWriter = Depends(writer),
 ) -> dict[str, str]:
     try:
