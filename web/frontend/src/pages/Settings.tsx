@@ -63,7 +63,7 @@ function formatRestartDuration(milliseconds: number): string {
 }
 
 export default function Settings() {
-  const { token, data, restart, isOwner, saveControl, saveProvider, requestRestart } = useAdmin()
+  const { csrfToken: token, data, restart, isOwner, saveControl, saveProvider, requestRestart } = useAdmin()
   const [tab, setTab] = useState<Tab>('runtime')
   const [prompt, setPrompt] = useState(data.highest_priority_system_prompt)
   const [disabledProviders, setDisabledProviders] = useState(data.disabled_providers)
@@ -228,7 +228,11 @@ export default function Settings() {
     setBusy(providerId); setError('')
     try {
       await saveProvider(providerId, config, draft.apiKey.trim() || undefined)
-      setProviderDrafts(current => ({ ...current, [providerId]: draftFromConfig(config) }))
+      const redactedConfig = {
+        ...config,
+        default_headers: Object.fromEntries(Object.keys(defaultHeaders).map(name => [name, ''])),
+      }
+      setProviderDrafts(current => ({ ...current, [providerId]: draftFromConfig(redactedConfig) }))
       flashSaved(`${providerId} API 配置已保存`)
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Provider 配置保存失败') }
     finally { setBusy('') }
@@ -286,7 +290,7 @@ export default function Settings() {
             <div className="provider-headers-title"><span>默认请求头</span><button className="btn" onClick={() => updateDraft(id, current => ({ ...current, headers: [...current.headers, { id: nextHeaderId(), name: '', value: '' }] }))}><Plus size={14}/>添加请求头</button></div>
             {draft.headers.length ? draft.headers.map(header => <div className="provider-header-row" key={header.id}>
               <input aria-label="请求头名称" value={header.name} onChange={event => updateDraft(id, current => ({ ...current, headers: current.headers.map(item => item.id === header.id ? { ...item, name: event.target.value } : item) }))} placeholder="Header 名称"/>
-              <input aria-label="请求头值" value={header.value} onChange={event => updateDraft(id, current => ({ ...current, headers: current.headers.map(item => item.id === header.id ? { ...item, value: event.target.value } : item) }))} placeholder="Header 值"/>
+              <input type="password" autoComplete="new-password" aria-label="请求头值" value={header.value} onChange={event => updateDraft(id, current => ({ ...current, headers: current.headers.map(item => item.id === header.id ? { ...item, value: event.target.value } : item) }))} placeholder="留空则保留当前值"/>
               <button className="icon-button danger" aria-label={`删除 ${header.name || '请求头'}`} onClick={() => updateDraft(id, current => ({ ...current, headers: current.headers.filter(item => item.id !== header.id) }))}><Trash2 size={15}/></button>
             </div>) : <p className="empty-inline">未配置默认请求头</p>}
           </div>

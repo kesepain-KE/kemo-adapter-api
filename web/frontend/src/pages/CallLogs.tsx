@@ -98,7 +98,7 @@ function InvocationCard({ item }: { item: InvocationLogItem }) {
 }
 
 export default function CallLogs() {
-  const { token } = useAdmin()
+  const { csrfToken: token } = useAdmin()
   const [date, setDate] = useState(localDate)
   const [hour, setHour] = useState<number | null>(null)
   const [outcome, setOutcome] = useState<InvocationOutcome>('all')

@@ -55,7 +55,7 @@ function limitText(model: ModelCapabilityDeclaration): string | null {
 }
 
 export default function Providers({ onSettings }: { onSettings: () => void }) {
-  const { token, data, refreshing, refresh, saveControl } = useAdmin()
+  const { csrfToken: token, data, refreshing, refresh, saveControl } = useAdmin()
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
   const [selectedId, setSelectedId] = useState(() => data.providers[0]?.provider_id ?? '')

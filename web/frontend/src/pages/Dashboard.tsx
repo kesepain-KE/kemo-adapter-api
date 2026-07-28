@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Activity, CircleAlert, Clock3, ShieldCheck, TimerReset } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
-import { adminApi, type DailyStatistics } from '../adminApi'
+import { adminApi, type StatisticsMetrics } from '../adminApi'
 import { Badge, Card, CardHeader } from '../components/UI'
 
 function integer(value: number | null | undefined): string {
@@ -148,37 +148,30 @@ function TrendChart({ points, mode }: { points: TrendPoint[]; mode: TrendMode })
 }
 
 export default function Dashboard() {
-  const { token, data, restart, isOwner } = useAdmin()
-  const [statistics, setStatistics] = useState<DailyStatistics | null>(null)
+  const { csrfToken: token, data, restart, isOwner } = useAdmin()
+  const [statistics, setStatistics] = useState<StatisticsMetrics | null>(null)
+  const [statisticsMode, setStatisticsMode] = useState<TrendMode | null>(null)
   const [statisticsError, setStatisticsError] = useState('')
   const [trendMode, setTrendMode] = useState<TrendMode>('day')
   const [trend, setTrend] = useState<TrendPoint[]>([])
   const [trendLoading, setTrendLoading] = useState(true)
   const [trendError, setTrendError] = useState('')
+  const loadSequence = useRef(0)
   const runtime = restart?.gateway ?? data.runtime
   const startedAt = new Date(runtime.started_at)
 
-  const loadStatistics = useCallback(async () => {
-    try {
-      setStatistics(await adminApi.dailyStatistics(token))
-      setStatisticsError('')
-    } catch (reason) {
-      setStatistics(null)
-      setStatisticsError(reason instanceof Error ? reason.message : '今日统计读取失败')
-    }
-  }, [token])
-
-  useEffect(() => {
-    void loadStatistics()
-    const timer = window.setInterval(() => { void loadStatistics() }, 15_000)
-    return () => window.clearInterval(timer)
-  }, [loadStatistics])
-
-  const loadTrend = useCallback(async () => {
+  const loadDashboardStatistics = useCallback(async () => {
+    const sequence = ++loadSequence.current
     setTrendLoading(true)
     try {
       if (trendMode === 'day') {
-        const hourly = await adminApi.hourlyStatistics(token)
+        const [daily, hourly] = await Promise.all([
+          adminApi.dailyStatistics(token),
+          adminApi.hourlyStatistics(token),
+        ])
+        if (sequence !== loadSequence.current) return
+        setStatistics(daily)
+        setStatisticsMode('day')
         setTrend(hourly.items.map(item => ({
           label: item.label,
           calls: item.calls,
@@ -195,6 +188,9 @@ export default function Dashboard() {
         const start = new Date(end)
         start.setDate(end.getDate() - days + 1)
         const series = await adminApi.statisticsSeries(token, localDate(start), localDate(end))
+        if (sequence !== loadSequence.current) return
+        setStatistics(series.summary)
+        setStatisticsMode(trendMode)
         setTrend(series.items.map(item => ({
           label: item.date.slice(5),
           calls: item.calls,
@@ -206,20 +202,28 @@ export default function Dashboard() {
           successRate: item.success_rate,
         })))
       }
+      setStatisticsError('')
       setTrendError('')
     } catch (reason) {
+      if (sequence !== loadSequence.current) return
+      const message = reason instanceof Error ? reason.message : '统计数据读取失败'
+      setStatistics(null)
+      setStatisticsMode(null)
       setTrend([])
-      setTrendError(reason instanceof Error ? reason.message : '调用趋势读取失败')
+      setStatisticsError(message)
+      setTrendError(message)
     } finally {
-      setTrendLoading(false)
+      if (sequence === loadSequence.current) setTrendLoading(false)
     }
   }, [token, trendMode])
 
   useEffect(() => {
-    void loadTrend()
-    const timer = window.setInterval(() => { void loadTrend() }, 15_000)
+    void loadDashboardStatistics()
+    const timer = window.setInterval(() => { void loadDashboardStatistics() }, 15_000)
     return () => window.clearInterval(timer)
-  }, [loadTrend])
+  }, [loadDashboardStatistics])
+
+  const visibleStatistics = statisticsMode === trendMode ? statistics : null
 
   const trendTotals = useMemo(() => ({
     calls: trend.reduce((sum, point) => sum + point.calls, 0),
@@ -228,10 +232,10 @@ export default function Dashboard() {
 
   return <>
     <div className="metrics-grid">
-      <Card className="metric"><span>调用次数</span><strong>{integer(statistics?.calls)}</strong><em>{statistics ? `${statistics.running} 个执行中 · ${statistics.replay_count} 次幂等重放` : '等待真实统计数据'}</em></Card>
-      <Card className="metric"><span>Token 使用量</span><strong>{integer(statistics?.tokens.total_tokens)}</strong><em>{statistics ? `${integer(statistics.tokens.input_tokens)} 输入 · ${integer(statistics.tokens.output_tokens)} 输出` : '未知计量不会按 0 处理'}</em></Card>
-      <Card className="metric"><span>Token 缓存率</span><strong>{percent(statistics?.cache_hit_rate)}</strong><em>{statistics ? `${statistics.cache_eligible_samples} 个精确计量样本` : '仅计算精确 Token 样本'}</em></Card>
-      <Card className="metric"><span>调用成功率</span><strong>{percent(statistics?.success_rate)}</strong><em>{statistics ? `${statistics.successes} 成功 · ${statistics.failures} 失败` : '等待真实统计数据'}</em></Card>
+      <Card className="metric"><span>调用次数</span><strong>{integer(visibleStatistics?.calls)}</strong><em>{visibleStatistics ? `${visibleStatistics.running} 个执行中 · ${visibleStatistics.replay_count} 次幂等重放` : '等待真实统计数据'}</em></Card>
+      <Card className="metric"><span>Token 使用量</span><strong>{integer(visibleStatistics?.tokens.total_tokens)}</strong><em>{visibleStatistics ? `${integer(visibleStatistics.tokens.input_tokens)} 输入 · ${integer(visibleStatistics.tokens.output_tokens)} 输出` : '未知计量不会按 0 处理'}</em></Card>
+      <Card className="metric"><span>Token 缓存率</span><strong>{percent(visibleStatistics?.cache_hit_rate)}</strong><em>{visibleStatistics ? `${visibleStatistics.cache_eligible_samples} 个精确计量样本` : '仅计算精确 Token 样本'}</em></Card>
+      <Card className="metric"><span>调用成功率</span><strong>{percent(visibleStatistics?.success_rate)}</strong><em>{visibleStatistics ? `${visibleStatistics.successes} 成功 · ${visibleStatistics.failures} 失败` : '等待真实统计数据'}</em></Card>
     </div>
     {statisticsError && <div className="alert"><CircleAlert size={18}/><span>{statisticsError}；仪表盘未显示推测值。</span></div>}
     {data.live_config_error && <div className="alert"><CircleAlert size={18}/><span>运行时配置加载失败，网关正在使用最后一个有效版本：{data.live_config_error}</span></div>}

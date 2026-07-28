@@ -133,6 +133,7 @@ export interface StatisticsSeries {
   from: string
   to: string
   timezone: string
+  summary: StatisticsMetrics
   items: DailyStatistics[]
 }
 
@@ -218,7 +219,7 @@ export interface ModelProbeResult {
 export interface GatewayApiKey {
   id?: string
   name: string
-  token: string
+  masked_token: string
   source: 'runtime' | 'environment'
   created_at: string | null
   last_used_at: string | null
@@ -258,10 +259,16 @@ export interface WebAuthMethods {
 }
 
 export interface WebAuthSession {
-  session_token: string
   expires_at: string
   expires_in: number
   next_step: 'password' | 'complete'
+  csrf_token: string | null
+}
+
+export interface WebSessionStatus {
+  authenticated: true
+  expires_at: string
+  csrf_token: string
 }
 
 export class AdminApiError extends Error {
@@ -271,10 +278,12 @@ export class AdminApiError extends Error {
 }
 
 async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
   const response = await fetch(`/admin/api${path}`, {
     ...init,
+    credentials: 'same-origin',
     headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(token && !['GET', 'HEAD', 'OPTIONS'].includes(method) ? { 'X-CSRF-Token': token } : {}),
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers,
     },
@@ -295,15 +304,17 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
 
 export const adminApi = {
   webAuthMethods: () => request<WebAuthMethods>('/auth/methods', ''),
+  webAuthSession: () => request<WebSessionStatus>('/auth/session', ''),
   authenticateWebToken: (token: string) => request<WebAuthSession>('/auth/token', '', {
     method: 'POST',
     body: JSON.stringify({ token }),
   }),
-  authenticateWebPassword: (username: string, password: string, preauthToken = '') =>
-    request<WebAuthSession>('/auth/password', preauthToken, {
+  authenticateWebPassword: (username: string, password: string) =>
+    request<WebAuthSession>('/auth/password', '', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
+  logout: () => request<{ status: 'logged_out' }>('/auth/logout', '', { method: 'POST' }),
   console: (token: string) => request<AdminConsoleData>('/console', token),
   gatewayApiKeys: (token: string) => request<GatewayApiKeys>('/keys', token),
   updateKeyModelPolicy: (

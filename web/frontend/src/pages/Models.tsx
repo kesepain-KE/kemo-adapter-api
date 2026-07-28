@@ -29,7 +29,7 @@ function capabilityTags(capability?: ModelCapabilityDeclaration): string[] {
 }
 
 export default function Models() {
-  const { token, data, saveControl } = useAdmin()
+  const { csrfToken: token, data, saveControl } = useAdmin()
   const [tab, setTab] = useState<'all' | 'enabled' | 'disabled'>('all')
   const [providerFilter, setProviderFilter] = useState('all')
   const [providerMenuOpen, setProviderMenuOpen] = useState(false)

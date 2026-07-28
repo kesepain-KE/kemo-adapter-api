@@ -24,7 +24,7 @@ function latency(value: number | null): string {
 }
 
 export default function Logs() {
-  const { token } = useAdmin()
+  const { csrfToken: token } = useAdmin()
   const [date, setDate] = useState(localDate)
   const [dimension, setDimension] = useState<Dimension>('provider')
   const [daily, setDaily] = useState<DailyStatistics | null>(null)

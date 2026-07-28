@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, Copy, Eye, EyeOff, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
+import { KeyRound, LoaderCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import { adminApi, type GatewayApiKey, type GatewayKeyModel } from '../adminApi'
 import { Badge, Card, EmptyState, SectionTitle, Subtabs } from '../components/UI'
@@ -19,23 +19,17 @@ function formatDate(value: string | null): string {
   }).format(date)
 }
 
-function maskedToken(token: string): string {
-  return `${'•'.repeat(16)}${token.slice(-6)}`
-}
-
 function keyIdentity(key: GatewayApiKey): string {
   return key.id ?? `${key.source}:${key.name}`
 }
 
 export default function Keys() {
-  const { token } = useAdmin()
+  const { csrfToken: token } = useAdmin()
   const [keys, setKeys] = useState<GatewayApiKey[]>([])
   const [models, setModels] = useState<GatewayKeyModel[]>([])
   const [revision, setRevision] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [revealed, setRevealed] = useState<Set<string>>(new Set())
-  const [copied, setCopied] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [detailTab, setDetailTab] = useState<'info' | 'usage' | 'models'>('info')
   const [refreshVersion, setRefreshVersion] = useState(0)
@@ -64,26 +58,6 @@ export default function Keys() {
       })
     return () => { active = false }
   }, [refreshVersion, token])
-
-  const toggleReveal = (name: string) => {
-    setRevealed(current => {
-      const next = new Set(current)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
-
-  const copyToken = async (key: GatewayApiKey) => {
-    try {
-      await navigator.clipboard.writeText(key.token)
-      const identity = keyIdentity(key)
-      setCopied(identity)
-      window.setTimeout(() => setCopied(current => current === identity ? '' : current), 1600)
-    } catch {
-      setError('浏览器拒绝访问剪贴板，请先使用查看按钮后手动复制。')
-    }
-  }
 
   const selectedKey = keys.find(key => keyIdentity(key) === selectedId) ?? keys[0]
   const allowedRegisteredCount = selectedKey?.allowed_models?.filter(
@@ -146,12 +120,11 @@ export default function Keys() {
         <Subtabs items={[{ id: 'info', label: '密钥信息' }, { id: 'usage', label: '调用情况' }, { id: 'models', label: '模型限制' }]} value={detailTab} onChange={setDetailTab}/>
         {detailTab === 'info' ? <div className="key-detail-info">
           <div className="api-key-secret">
-            <span>完整 API 密钥</span>
+            <span>API 密钥（安全掩码）</span>
             <div>
-              <code title={revealed.has(keyIdentity(selectedKey)) ? selectedKey.token : undefined}>{revealed.has(keyIdentity(selectedKey)) ? selectedKey.token : maskedToken(selectedKey.token)}</code>
-              <button className="key-icon-button" onClick={() => toggleReveal(keyIdentity(selectedKey))} aria-label={`${revealed.has(keyIdentity(selectedKey)) ? '隐藏' : '查看'} ${selectedKey.name} 密钥`}>{revealed.has(keyIdentity(selectedKey)) ? <EyeOff size={15}/> : <Eye size={15}/>}</button>
-              <button className={`key-icon-button ${copied === keyIdentity(selectedKey) ? 'copied' : ''}`} onClick={() => void copyToken(selectedKey)} aria-label={`复制 ${selectedKey.name} 密钥`}>{copied === keyIdentity(selectedKey) ? <Check size={15}/> : <Copy size={15}/>}</button>
+              <code>{selectedKey.masked_token}</code>
             </div>
+            <small>完整密钥不再返回浏览器；请在创建时保存，或在服务器端安全轮换。</small>
           </div>
           <div className="key-info-facts"><div><span>密钥来源</span><strong>{selectedKey.source === 'runtime' ? 'api/keys.json · 热加载' : '启动环境变量 · 重启生效'}</strong></div><div><span>创建日期</span><strong>{formatDate(selectedKey.created_at)}</strong></div><div><span>最近一次调用</span><strong>{formatDate(selectedKey.last_used_at)}</strong></div></div>
         </div> : detailTab === 'usage' ? <div className="key-usage-panel">
