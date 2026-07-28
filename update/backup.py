@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import datetime
+import os
+import re
 import shutil
 from pathlib import Path
 
 
 BACKUP_ROOT_NAME = ".backup"
 KEEP_BACKUPS = 10
+_BACKUP_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 
 # 备份时排除的目录和文件
 _EXCLUDE_DIRS = frozenset({
@@ -67,10 +70,15 @@ def _timestamp() -> str:
 def create(project_root: Path) -> tuple[bool, str]:
     """冷备份整个项目（排除无关文件）到 .backup/<timestamp>/。"""
     ts = _timestamp()
-    dst = _backup_dir(project_root) / ts
+    backup_root = _backup_dir(project_root)
+    dst = backup_root / ts
+    staging = backup_root / f".creating-{ts}-{os.getpid()}"
 
-    # 检查磁盘空间（粗略）
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        return False, f"备份标识已存在，请稍后重试: .backup/{ts}/"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
 
     # 计算需要复制的文件数
     count = 0
@@ -78,11 +86,13 @@ def create(project_root: Path) -> tuple[bool, str]:
         for src in project_root.rglob("*"):
             if src.is_file() and not _should_exclude(src, project_root):
                 rel = src.relative_to(project_root)
-                target = dst / rel
+                target = staging / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)
                 count += 1
+        staging.replace(dst)
     except Exception as e:
+        shutil.rmtree(staging, ignore_errors=True)
         return False, f"备份失败: {e}"
 
     # 清理旧备份
@@ -98,7 +108,7 @@ def list_backups(project_root: Path) -> list[str]:
         return []
     dirs = []
     for d in backup_dir.iterdir():
-        if d.is_dir():
+        if d.is_dir() and _BACKUP_ID_RE.fullmatch(d.name):
             dirs.append(d.name)
     dirs.sort(reverse=True)
     return dirs
@@ -116,7 +126,13 @@ def restore(project_root: Path, backup_id: str) -> tuple[bool, str]:
             return False, "没有可用的备份"
         backup_id = backups[0]
 
-    src = _backup_dir(project_root) / backup_id
+    if not _BACKUP_ID_RE.fullmatch(backup_id):
+        return False, "备份标识格式无效"
+
+    backup_root = _backup_dir(project_root).resolve()
+    src = (backup_root / backup_id).resolve()
+    if src.parent != backup_root:
+        return False, "备份路径超出 .backup 目录"
     if not src.is_dir():
         return False, f"备份不存在: .backup/{backup_id}/"
 

@@ -1,4 +1,4 @@
-"""Git 操作：远程检测、多镜像源、暂存、拉取、回滚。"""
+"""Git 操作：远程检测、同步状态、暂存与精确提交应用。"""
 
 from __future__ import annotations
 
@@ -17,11 +17,18 @@ class GitDiff(NamedTuple):
         return bool(self.files)
 
 
+class GitSyncState(NamedTuple):
+    relation: str
+    ahead: int
+    behind: int
+
+
 PROTECTED_PATTERNS = (
     ".env",
     "providers/",
     "api/keys.json",
     "storage/daily/",
+    "storage/assets/",
     "core/runtime/",
     ".backup/",
     "开发目录/",
@@ -54,12 +61,47 @@ def _iter_mirrors(project_root: Path):
         yield m
 
 
-def _git(args: list[str], project_root: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+def _git_environment() -> dict[str, str]:
+    """Return a deterministic environment for machine-readable Git output.
+
+    Git for Windows can emit UTF-8 repository data while Python otherwise
+    decodes ``text=True`` streams with the active ANSI code page (for example
+    cp936). A stable C locale also keeps diagnostics parseable on Linux.
+    """
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
+    return env
+
+
+def run_git(
+    args: list[str], project_root: Path, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
+    """Run Git with one UTF-8 text boundary on Windows and Linux."""
     return subprocess.run(
-        ["git"] + args,
+        [
+            "git",
+            "-c",
+            "i18n.logOutputEncoding=UTF-8",
+            "-c",
+            "core.quotePath=false",
+            *args,
+        ],
         cwd=project_root,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_git_environment(),
+        timeout=timeout,
     )
+
+
+def _git(
+    args: list[str], project_root: Path, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
+    """Backward-compatible internal alias for existing update operations."""
+    return run_git(args, project_root, timeout)
 
 
 def _resolve_remote_url(project_root: Path) -> str | None:
@@ -71,8 +113,6 @@ def _resolve_remote_url(project_root: Path) -> str | None:
     # SSH 格式转为 HTTPS（方便镜像源包装）
     if url.startswith("git@"):
         url = url.replace(":", "/").replace("git@", "https://")
-    if url.endswith(".git"):
-        url = url[:-4]
     return url
 
 
@@ -151,13 +191,32 @@ def get_protected_remote_diff(project_root: Path) -> GitDiff:
 
 def has_remote_commits(project_root: Path) -> bool:
     """检查 fetch 后是否有新提交。"""
-    r = _git(["rev-list", "--count", "HEAD..FETCH_HEAD"], project_root)
+    return get_sync_state(project_root).behind > 0
+
+
+def get_sync_state(project_root: Path) -> GitSyncState:
+    """Classify HEAD relative to the exact commit stored in FETCH_HEAD."""
+    r = _git(
+        ["rev-list", "--left-right", "--count", "HEAD...FETCH_HEAD"],
+        project_root,
+    )
     if r.returncode != 0:
-        return False
+        return GitSyncState("unknown", 0, 0)
     try:
-        return int(r.stdout.strip()) > 0
-    except ValueError:
-        return False
+        ahead_text, behind_text = r.stdout.split()
+        ahead = int(ahead_text)
+        behind = int(behind_text)
+    except (TypeError, ValueError):
+        return GitSyncState("unknown", 0, 0)
+    if ahead and behind:
+        relation = "diverged"
+    elif ahead:
+        relation = "ahead"
+    elif behind:
+        relation = "behind"
+    else:
+        relation = "up_to_date"
+    return GitSyncState(relation, ahead, behind)
 
 
 def get_commit_log(project_root: Path, max_count: int = 10) -> list[str]:
@@ -177,8 +236,8 @@ def get_stash_label() -> str:
 
 
 def stash_local(project_root: Path, label: str) -> bool:
-    """暂存本地未提交修改。返回 True 表示有修改被暂存。"""
-    r = _git(["stash", "push", "-m", label], project_root)
+    """暂存已跟踪和未跟踪源码；Git 忽略的持久化数据保持原位。"""
+    r = _git(["stash", "push", "--include-untracked", "-m", label], project_root)
     return r.returncode == 0 and "Saved working directory" in r.stdout
 
 
@@ -187,25 +246,48 @@ def stash_pop(project_root: Path) -> bool:
     return r.returncode == 0
 
 
-def pull(project_root: Path, remote_url: str | None = None) -> bool:
-    """git pull --ff-only，支持通过镜像 URL 拉取。"""
-    if remote_url:
-        r = _git(["pull", "--ff-only", remote_url, "main"], project_root, timeout=60)
-    else:
-        # 先尝试直连 origin
-        r = _git(["pull", "--ff-only", "origin", "main"], project_root, timeout=60)
-        if r.returncode != 0 and not os.environ.get("GIT_MIRROR"):
-            # 直连失败且没有镜像配置，快速重试——用镜像包装后的 URL
-            origin_url = _resolve_remote_url(project_root)
-            if origin_url:
-                for mirror_prefix in _MIRROR_CHAINS:
-                    if not mirror_prefix:
-                        continue
-                    url = _mirror_url(origin_url, mirror_prefix)
-                    r = _git(["pull", "--ff-only", url, "main"], project_root, timeout=60)
-                    if r.returncode == 0:
-                        return True
+def get_fetch_commit(project_root: Path) -> str:
+    """Return the immutable commit id selected by the last successful fetch."""
+    r = _git(["rev-parse", "--verify", "FETCH_HEAD^{commit}"], project_root)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def fast_forward_to_fetch_head(
+    project_root: Path,
+    expected_commit: str | None = None,
+) -> bool:
+    """Fast-forward HEAD to the already inspected fetched commit."""
+    target = expected_commit or "FETCH_HEAD"
+    r = _git(["merge", "--ff-only", target], project_root, timeout=60)
     return r.returncode == 0
+
+
+def hard_reset_to_fetch_head(
+    project_root: Path,
+    expected_commit: str | None = None,
+) -> bool:
+    """Reset tracked source to the inspected fetched commit in explicit repair mode."""
+    target = expected_commit or "FETCH_HEAD"
+    r = _git(["reset", "--hard", target], project_root, timeout=60)
+    return r.returncode == 0
+
+
+def create_recovery_ref(
+    project_root: Path,
+    *,
+    label: str,
+    commit: str,
+) -> str | None:
+    """Keep local commits reachable before a destructive repair reset."""
+    safe_label = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in label
+    ).strip("-")
+    if not safe_label or not commit:
+        return None
+    reference = f"refs/kemo-update/recovery/{safe_label}"
+    r = _git(["update-ref", reference, commit], project_root)
+    return reference if r.returncode == 0 else None
 
 
 def get_current_commit(project_root: Path) -> str:
@@ -216,11 +298,6 @@ def get_current_commit(project_root: Path) -> str:
 def get_current_branch(project_root: Path) -> str:
     r = _git(["rev-parse", "--abbrev-ref", "HEAD"], project_root)
     return r.stdout.strip() if r.returncode == 0 else "unknown"
-
-
-def rollback(project_root: Path, target: str = "HEAD@{1}") -> bool:
-    r = _git(["reset", "--hard", target], project_root)
-    return r.returncode == 0
 
 
 def has_local_changes(project_root: Path) -> bool:

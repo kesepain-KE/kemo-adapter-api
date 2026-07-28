@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import NamedTuple
 
+from update.git import run_git
+
 
 class VersionInfo(NamedTuple):
     version: str
@@ -31,12 +33,11 @@ def read_local(project_root: Path) -> VersionInfo:
 
 def read_remote(project_root: Path) -> VersionInfo | None:
     """从 FETCH_HEAD 读取远程 version.json。"""
-    import subprocess
     try:
-        result = subprocess.run(
-            ["git", "show", "FETCH_HEAD:version.json"],
-            cwd=project_root,
-            capture_output=True, text=True, timeout=10,
+        result = run_git(
+            ["show", "FETCH_HEAD:version.json"],
+            project_root,
+            timeout=10,
         )
         if result.returncode != 0:
             return None
@@ -58,11 +59,11 @@ def compare(local: VersionInfo, remote: VersionInfo) -> int:
     except ValueError:
         return 0
     for i in range(max(len(lv), len(rv))):
-        l = lv[i] if i < len(lv) else 0
-        r = rv[i] if i < len(rv) else 0
-        if l < r:
+        local_part = lv[i] if i < len(lv) else 0
+        remote_part = rv[i] if i < len(rv) else 0
+        if local_part < remote_part:
             return 1
-        if l > r:
+        if local_part > remote_part:
             return -1
     return 0
 

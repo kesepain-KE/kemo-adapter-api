@@ -21,7 +21,8 @@ def install_requirements(project_root: Path) -> bool:
         r = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", str(req)],
             cwd=project_root,
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            timeout=120,
         )
         return r.returncode == 0
     except subprocess.TimeoutExpired:
