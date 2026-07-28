@@ -18,6 +18,7 @@ SENSITIVE_CONFIG_KEY = re.compile(
     r"(^|_)(api_?key|token|secret|password|authorization|credential)(_|$)",
     re.IGNORECASE,
 )
+HEADER_CONFIG_KEYS = frozenset({"default_headers", "headers"})
 
 
 class RevisionConflict(Exception):
@@ -111,9 +112,13 @@ class RuntimeConfigWriter:
     def _public_config(cls, value: dict[str, Any]) -> dict[str, Any]:
         public: dict[str, Any] = {}
         for key, item in value.items():
-            if SENSITIVE_CONFIG_KEY.search(str(key)):
+            normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+            if SENSITIVE_CONFIG_KEY.search(normalized_key):
                 continue
-            if isinstance(item, dict):
+            if normalized_key in HEADER_CONFIG_KEYS and isinstance(item, dict):
+                # Header values can carry arbitrary credentials. Only names may reach the browser.
+                public[key] = {str(name): "" for name in item}
+            elif isinstance(item, dict):
                 public[key] = cls._public_config(item)
             elif isinstance(item, list):
                 public[key] = [
@@ -149,7 +154,21 @@ class RuntimeConfigWriter:
         providers_root = (self.project_root / "providers").resolve()
         if directory.parent != providers_root or not directory.is_dir():
             raise LookupError("Provider 目录不存在；新增 Provider 代码需要重启部署")
-        self._atomic_json(directory / "config.json", config)
+        config_path = directory / "config.json"
+        current_config: dict[str, Any] = {}
+        if config_path.exists():
+            parsed = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                current_config = parsed
+        for header_key in HEADER_CONFIG_KEYS:
+            incoming_headers = config.get(header_key)
+            existing_headers = current_config.get(header_key)
+            if isinstance(incoming_headers, dict) and isinstance(existing_headers, dict):
+                config[header_key] = {
+                    name: existing_headers.get(name) if value == "" and name in existing_headers else value
+                    for name, value in incoming_headers.items()
+                }
+        self._atomic_json(config_path, config)
         if api_key is not None:
             secrets_path = directory / "secrets.json"
             current: dict[str, Any] = {}
