@@ -152,7 +152,7 @@ Default endpoints:
 
 - Web console: `http://127.0.0.1:7531/admin`
 - Kemo model catalog: `http://127.0.0.1:7531/model/models`
-- OpenAPI: `http://127.0.0.1:7531/docs`
+- OpenAPI: disabled by default; enable `API_DOCS_ENABLED=true` only in a trusted development environment
 
 `HOST`, `PORT`, `LOG_LEVEL`, and the externally advertised `GATEWAY_BASE_URL` are loaded from `.env`. When the gateway is published behind a reverse proxy or domain, set `GATEWAY_BASE_URL` to that external address. It is displayed and copied by the console; it does not change the listener or route layout.
 
@@ -168,7 +168,9 @@ The gateway deliberately uses three independent credential classes:
 | Web credentials | `/admin` and protected management APIs | `WEB_TOKEN`, username, and password in `.env` |
 | Status token | Read-only `GET /status` access | `STATUS_TOKEN` in `.env` |
 
-When both a Web token and username/password are configured, the token check runs first and the password check runs second. Both session stages expire after two hours. If all three Web credential fields are empty, the console enters passwordless owner mode; always configure management credentials on an untrusted network.
+When both a Web token and username/password are configured, the token check runs first and the password check runs second. Both session stages expire after two hours. The Web token is submitted through the login form only and must never be placed in a URL. Successful login creates an opaque server-side session carried by an `HttpOnly`, `SameSite=Strict` cookie; state-changing requests also require a CSRF token.
+
+When all three Web credentials are empty, the gateway enters no-login owner mode. LAN addresses and `0.0.0.0` binds are allowed so a trusted local network can use the console directly. Every client that can reach the management console has owner privileges in this mode. Public deployments must therefore configure both `WEB_TOKEN` and the `WEB_USERNAME`/`WEB_PASSWORD` pair, terminate HTTPS at a trusted reverse proxy, publish an `https://` `GATEWAY_BASE_URL`, configure `WEB_ALLOWED_HOSTS`, and enforce network access controls. The API-key page returns masked identifiers only; full gateway keys and Provider header secrets are never sent back to the browser.
 
 `STATUS_TOKEN` must not match a model invocation key or Web token. The status API never returns raw gateway keys, Provider secrets, request bodies, raw vendor responses, or stack traces.
 

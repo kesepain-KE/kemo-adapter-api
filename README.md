@@ -151,7 +151,7 @@ python start_web.py
 
 - Web 管理端：`http://127.0.0.1:7531/admin`
 - Kemo 模型目录：`http://127.0.0.1:7531/model/models`
-- OpenAPI：`http://127.0.0.1:7531/docs`
+- OpenAPI：默认关闭；仅在受信开发环境设置 `API_DOCS_ENABLED=true` 后访问 `/docs`
 
 `HOST`、`PORT`、`LOG_LEVEL` 和公开展示用的 `GATEWAY_BASE_URL` 从 `.env` 读取。若网关通过反向代理或域名对外发布，请把 `GATEWAY_BASE_URL` 设置为外部访问地址；它只用于控制台展示和复制，不会改变监听地址或路由。
 
@@ -167,7 +167,9 @@ python start_web.py
 | Web 管理凭据 | 访问管理端和受保护管理接口 | `.env` 中的 `WEB_TOKEN`、用户名和密码 |
 | 状态 Token | 只读访问 `GET /status` | `.env` 中的 `STATUS_TOKEN` |
 
-同时配置 Web Token 和用户名/密码时，必须先通过 Token，再通过用户名和密码；两个会话阶段的有效期均为两小时。三项 Web 凭据全部为空时，管理网页进入免登录 owner 模式，因此非可信网络部署必须主动配置管理凭据。
+同时配置 Web Token 和用户名/密码时，必须先通过 Token，再通过用户名和密码；两个会话阶段的有效期均为两小时。Web Token 只能通过登录表单提交，禁止放入 URL。登录后使用服务端随机会话与 `HttpOnly`、`SameSite=Strict` Cookie，前端不保存登录 Bearer Token；写操作另有 CSRF 校验。
+
+三项 Web 凭据全部为空时，网关进入免登录 owner 模式；局域网地址和 `0.0.0.0` 监听同样允许启动，方便可信内网直接使用。该模式下所有能访问管理端的客户端都拥有最高管理权限，因此公网部署必须配置 `WEB_TOKEN`、`WEB_USERNAME` 与 `WEB_PASSWORD` 两道鉴权，并通过反向代理提供 HTTPS，将 `GATEWAY_BASE_URL` 设为外部 `https://` 地址、配置 `WEB_ALLOWED_HOSTS` 和网络访问控制。API 密钥页只返回安全掩码，不会把完整网关调用密钥或 Provider 请求头密钥发送到浏览器。
 
 `STATUS_TOKEN` 必须独立于模型调用密钥和 Web Token。状态接口不会返回网关密钥原文、Provider 密钥、请求正文、原始厂商响应或堆栈。
 
