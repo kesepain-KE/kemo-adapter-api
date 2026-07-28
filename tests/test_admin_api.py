@@ -102,6 +102,7 @@ def test_empty_auth_environment_allows_direct_web_owner_but_not_public_api(
     monkeypatch.setenv("WEB_USERNAME", "")
     monkeypatch.setenv("WEB_PASSWORD", "")
     monkeypatch.setenv("WEB_TOKEN", "")
+    monkeypatch.setenv("HOST", "127.0.0.1")
     app = create_app(
         Settings.from_env(), live_config_root=root, discover_providers=False
     )
@@ -115,6 +116,21 @@ def test_empty_auth_environment_allows_direct_web_owner_but_not_public_api(
         assert client.get(
             "/model/capabilities", params={"model": "unknown-model"}
         ).status_code == 401
+
+
+def test_non_loopback_web_console_allows_empty_auth(tmp_path: Path) -> None:
+    root = no_auth_project(tmp_path)
+    app = create_app(
+        Settings(host="0.0.0.0"),
+        live_config_root=root,
+        discover_providers=False,
+    )
+
+    with TestClient(app) as client:
+        console = client.get("/admin/api/console")
+        assert console.status_code == 200
+        assert console.json()["authentication"] == {"required": False}
+        assert console.json()["permissions"] == {"can_restart": True}
 
 
 def test_any_configured_auth_value_disables_direct_web_login(tmp_path: Path) -> None:
@@ -156,16 +172,56 @@ def test_web_token_issues_two_hour_control_plane_session_only(tmp_path: Path) ->
         assert session.status_code == 200
         assert session.json()["next_step"] == "complete"
         assert session.json()["expires_in"] == 7200
-        headers = {"Authorization": f"Bearer {session.json()['session_token']}"}
-        console = client.get("/admin/api/console", headers=headers)
+        assert "session_token" not in session.json()
+        assert session.json()["csrf_token"].startswith("csrf_")
+        cookie = session.headers["set-cookie"].lower()
+        assert "kemo_web_session=" in cookie
+        assert "httponly" in cookie
+        assert "samesite=strict" in cookie
+        console = client.get("/admin/api/console")
         assert console.status_code == 200
         assert console.json()["permissions"] == {"can_restart": True}
-        assert client.get("/admin/api/system/restart", headers=headers).status_code == 200
+        assert "script-src 'self'" in console.headers["content-security-policy"]
+        assert console.headers["x-frame-options"] == "DENY"
+        assert console.headers["referrer-policy"] == "no-referrer"
+        assert console.headers["cache-control"] == "no-store, max-age=0"
+        assert client.get("/openapi.json").status_code == 404
+        assert client.get("/admin/api/system/restart").status_code == 200
         assert client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers=headers,
         ).status_code == 401
+
+
+def test_https_public_base_sets_secure_session_cookie(tmp_path: Path) -> None:
+    root = no_auth_project(tmp_path)
+    app = create_app(
+        Settings(web_token="web-control-token", base_url="https://gateway.example.com"),
+        live_config_root=root,
+        discover_providers=False,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/api/auth/token", json={"token": "web-control-token"}
+        )
+    assert response.status_code == 200
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_auth_validation_response_does_not_echo_secret_input(tmp_path: Path) -> None:
+    root = no_auth_project(tmp_path)
+    app = create_app(
+        Settings(web_token="web-control-token"),
+        live_config_root=root,
+        discover_providers=False,
+    )
+    marker = "must-not-be-reflected"
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/api/auth/token", json={"token": marker * 500}
+        )
+    assert response.status_code == 422
+    assert marker not in response.text
 
 
 def test_web_token_precedes_password_and_both_sessions_last_two_hours(
@@ -201,23 +257,21 @@ def test_web_token_precedes_password_and_both_sessions_last_two_hours(
         assert token_step.status_code == 200
         assert token_step.json()["next_step"] == "password"
         assert token_step.json()["expires_in"] == 7200
-        preauth = token_step.json()["session_token"]
-        preauth_headers = {"Authorization": f"Bearer {preauth}"}
-        assert client.get("/admin/api/console", headers=preauth_headers).status_code == 401
+        assert token_step.json()["csrf_token"] is None
+        assert "session_token" not in token_step.json()
+        assert client.get("/admin/api/console").status_code == 401
 
         password_step = client.post(
             "/admin/api/auth/password",
-            headers=preauth_headers,
             json={"username": "kemo", "password": "correct-password"},
         )
         assert password_step.status_code == 200
         assert password_step.json()["next_step"] == "complete"
         assert password_step.json()["expires_in"] == 7200
-        session_headers = {
-            "Authorization": f"Bearer {password_step.json()['session_token']}"
-        }
-        assert client.get("/admin/api/console", headers=session_headers).status_code == 200
-        assert client.get("/admin/api/console", headers=preauth_headers).status_code == 401
+        assert password_step.json()["csrf_token"].startswith("csrf_")
+        assert "session_token" not in password_step.json()
+        assert client.get("/admin/api/console").status_code == 200
+        assert client.get("/admin/api/auth/session").json()["authenticated"] is True
 
 
 def test_web_password_can_authenticate_without_web_token(tmp_path: Path) -> None:
@@ -233,8 +287,39 @@ def test_web_password_can_authenticate_without_web_token(tmp_path: Path) -> None
             json={"username": "kemo", "password": "password"},
         )
         assert session.status_code == 200
-        headers = {"Authorization": f"Bearer {session.json()['session_token']}"}
-        assert client.get("/admin/api/console", headers=headers).status_code == 200
+        assert "session_token" not in session.json()
+        assert client.get("/admin/api/console").status_code == 200
+
+
+def test_cookie_authenticated_admin_writes_require_csrf_and_same_origin(
+    tmp_path: Path,
+) -> None:
+    root = no_auth_project(tmp_path)
+    app = create_app(
+        Settings(web_token="web-control-token"),
+        live_config_root=root,
+        discover_providers=False,
+    )
+    with TestClient(app) as client:
+        login = client.post(
+            "/admin/api/auth/token", json={"token": "web-control-token"}
+        )
+        csrf_token = login.json()["csrf_token"]
+        revision = client.get("/admin/api/console").json()["revision"]
+        body = {"expected_revision": revision, "enabled": False}
+
+        assert client.put("/admin/api/runtime/gateway", json=body).status_code == 403
+        assert client.put(
+            "/admin/api/runtime/gateway",
+            headers={"X-CSRF-Token": csrf_token, "Origin": "https://evil.example"},
+            json=body,
+        ).status_code == 403
+        accepted = client.put(
+            "/admin/api/runtime/gateway",
+            headers={"X-CSRF-Token": csrf_token, "Origin": "http://testserver"},
+            json=body,
+        )
+        assert accepted.status_code == 200
 
 
 def test_public_api_token_does_not_disable_direct_web_login(tmp_path: Path) -> None:
@@ -262,6 +347,10 @@ def test_admin_console_requires_admin_scope_and_redacts_provider_secrets(tmp_pat
             "base_url": "https://provider.invalid",
             "api_key": "must-not-reach-browser",
             "nested": {"access_token": "also-hidden", "region": "test"},
+            "default_headers": {
+                "Authorization": "Bearer hidden",
+                "X-API-Key": "header-secret",
+            },
         },
     )
     app = create_app(
@@ -287,9 +376,12 @@ def test_admin_console_requires_admin_scope_and_redacts_provider_secrets(tmp_pat
         assert config == {
             "base_url": "https://provider.invalid",
             "nested": {"region": "test"},
+            "default_headers": {"Authorization": "", "X-API-Key": ""},
         }
         assert "must-not-reach-browser" not in response.text
         assert "also-hidden" not in response.text
+        assert "Bearer hidden" not in response.text
+        assert "header-secret" not in response.text
 
 
 def test_system_inspection_endpoints_require_admin_scope(tmp_path: Path, monkeypatch) -> None:
@@ -347,7 +439,9 @@ def test_gateway_keys_are_owner_only_uncached_and_include_real_metadata(tmp_path
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store, max-age=0"
     items = {item["name"]: item for item in response.json()["items"]}
-    assert items["graph-production"]["token"] == "caller-token"
+    assert "token" not in items["graph-production"]
+    assert items["graph-production"]["masked_token"].endswith("oken")
+    assert "caller-token" not in response.text
     assert items["graph-production"]["id"] == "graph-production"
     assert items["graph-production"]["created_at"] == "2026-07-27T10:30:00+08:00"
     assert items["graph-production"]["usage"] == {

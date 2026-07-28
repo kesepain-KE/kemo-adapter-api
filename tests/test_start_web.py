@@ -131,6 +131,19 @@ def test_start_web_rejects_reused_status_token(monkeypatch) -> None:
         raise AssertionError("reused STATUS_TOKEN must be rejected")
 
 
+def test_startup_options_allow_empty_web_auth_on_wildcard_bind(monkeypatch) -> None:
+    clear_startup_env(monkeypatch)
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("WEB_TOKEN", "")
+    monkeypatch.setenv("WEB_USERNAME", "")
+    monkeypatch.setenv("WEB_PASSWORD", "")
+
+    options = start_web._startup_options()
+
+    assert options["host"] == "0.0.0.0"
+    assert options["port"] == 7531
+
+
 def test_start_web_requires_built_frontend(tmp_path: Path, monkeypatch, capsys) -> None:
     clear_startup_env(monkeypatch)
     monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.env")

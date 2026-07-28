@@ -95,6 +95,14 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
         assert daily["cache_hit_rate"] == 0.25
         assert daily["cache_eligible_samples"] == 1
 
+        series = await store.series(completed.day, completed.day)
+        assert series["summary"]["calls"] == 2
+        assert series["summary"]["successes"] == 1
+        assert series["summary"]["failures"] == 1
+        assert series["summary"]["tokens"]["total_tokens"] == 120
+        assert series["summary"]["cache_hit_rate"] == 0.25
+        assert series["summary"]["cache_eligible_samples"] == 1
+
         providers = await store.rankings(completed.day, "provider")
         assert providers["items"][0]["id"] == "deepseek"
         assert providers["items"][0]["calls"] == 2
