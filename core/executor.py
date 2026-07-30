@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from uuid import uuid4
 
 from core.assets import AssetStore
@@ -52,6 +53,18 @@ def canonical_request_hash(request: KemoRequest) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+@dataclass(slots=True)
+class PreparedStream:
+    record: ExecutionRecord
+    after_sequence: int
+    execution_lease: ExecutionLease | None
+    lease_owned_by_producer: bool
+
+
+class StreamResumeError(LookupError):
+    pass
+
+
 class GatewayExecutor:
     def __init__(
         self,
@@ -61,6 +74,7 @@ class GatewayExecutor:
         runtime_state: GatewayRuntimeState | None = None,
         statistics: StatisticsStore | None = None,
         assets: AssetStore | None = None,
+        execution_timeout_seconds: float = 900.0,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -68,6 +82,7 @@ class GatewayExecutor:
         self.runtime_state = runtime_state
         self.statistics = statistics
         self.assets = assets
+        self.execution_timeout_seconds = max(0.01, execution_timeout_seconds)
 
     async def prepare(self, request: KemoRequest, context: RequestContext) -> tuple[ExecutionRecord, bool]:
         package = await self.validate_request(request, context)
@@ -253,6 +268,7 @@ class GatewayExecutor:
         lease = execution_lease
         if lease is None and self.runtime_state is not None:
             lease = await self.runtime_state.admit_execution()
+        lease_owned_by_producer = False
         try:
             record, created = await self.prepare(request, context)
             if not created:
@@ -261,14 +277,54 @@ class GatewayExecutor:
                     return record.response
                 return await self.store.wait_terminal(record)
 
-            package = self.registry.resolve_registered(request.model)
             record.status = InternalStatus.RUNNING
-            await self.store.save(record)
             statistics_handle = await self._begin_statistics(request, context, record)
+            record.producer_task = asyncio.create_task(
+                self._execute_once(
+                    request,
+                    context,
+                    record,
+                    statistics_handle,
+                    lease,
+                ),
+                name=f"provider-execute:{record.response_id}",
+            )
+            lease_owned_by_producer = lease is not None
+            await self.store.save(record)
+            result = await asyncio.shield(record.producer_task)
+            assert isinstance(result, KemoResponse)
+            return result
+        finally:
+            if lease is not None and not lease_owned_by_producer:
+                await lease.release()
+
+    async def _execute_once(
+        self,
+        request: KemoRequest,
+        context: RequestContext,
+        record: ExecutionRecord,
+        statistics_handle: InvocationHandle | None,
+        execution_lease: ExecutionLease | None,
+    ) -> KemoResponse:
+        package = self.registry.resolve_registered(request.model)
+        response: KemoResponse | None = None
+        try:
             try:
-                result = await package.execute(request, context)
+                async with asyncio.timeout(self.execution_timeout_seconds):
+                    result = await package.execute(request, context)
                 if statistics_handle is not None:
                     statistics_handle.mark_response()
+                response = self._response_from_result(request, record, result, context)
+            except TimeoutError:
+                result = ProviderResult(
+                    status="failed",
+                    error=ErrorObject(
+                        type="gateway_timeout",
+                        code="GATEWAY_TIMEOUT",
+                        message="模型执行超过网关允许的最大时间。",
+                        retryable=True,
+                    ),
+                )
                 response = self._response_from_result(request, record, result, context)
             except ProviderException as exc:
                 result = ProviderResult(status="failed", error=exc.error)
@@ -301,8 +357,8 @@ class GatewayExecutor:
                 )
             return response
         finally:
-            if lease is not None:
-                await lease.release()
+            if execution_lease is not None:
+                await execution_lease.release()
 
     async def stream(
         self,
@@ -315,38 +371,89 @@ class GatewayExecutor:
         lease = execution_lease
         if lease is None and self.runtime_state is not None:
             lease = await self.runtime_state.admit_execution()
-        lease_owned_by_producer = False
+        prepared: PreparedStream | None = None
         try:
-            record, created = await self.prepare(request, context)
-            if created:
-                record.status = InternalStatus.RUNNING
-                created_event = EventAssembler.created(
-                    request_id=request.request_id, response_id=record.response_id
-                )
-                await self.store.append_event(record, created_event)
-                statistics_handle = await self._begin_statistics(request, context, record)
-                record.producer_task = asyncio.create_task(
-                    self._produce_stream(
-                        request, context, record, lease, statistics_handle
-                    ),
-                    name=f"provider-stream:{record.response_id}",
-                )
-                lease_owned_by_producer = lease is not None
-                await self.store.save(record)
-            else:
-                await self._record_replay(request, context, record)
-
-            after_sequence = -1
-            if last_event_id is not None:
-                matches = [event.sequence for event in record.events if event.event_id == last_event_id]
-                if not matches:
-                    raise LookupError("Last-Event-ID 不属于该响应或已过期")
-                after_sequence = matches[0]
-            async for event in self.store.subscribe(record, after_sequence):
+            prepared = await self.prepare_stream(
+                request,
+                context,
+                last_event_id=last_event_id,
+                execution_lease=lease,
+            )
+            async for event in self.iter_prepared_stream(prepared):
                 yield event
         finally:
-            if lease is not None and not lease_owned_by_producer:
+            if prepared is None and lease is not None:
                 await lease.release()
+
+    async def prepare_stream(
+        self,
+        request: KemoRequest,
+        context: RequestContext,
+        *,
+        last_event_id: str | None = None,
+        execution_lease: ExecutionLease | None = None,
+    ) -> PreparedStream:
+        """Prepare replay/idempotency before the HTTP SSE headers are sent."""
+        if last_event_id is not None:
+            existing = await self.store.get_by_request_id(
+                context.tenant_id, request.request_id
+            )
+            if existing is None:
+                raise StreamResumeError("Last-Event-ID 对应的响应不存在或已过期")
+
+        record, created = await self.prepare(request, context)
+        if created:
+            record.status = InternalStatus.RUNNING
+            created_event = EventAssembler.created(
+                request_id=request.request_id, response_id=record.response_id
+            )
+            await self.store.append_event(record, created_event)
+            statistics_handle = await self._begin_statistics(request, context, record)
+            record.producer_task = asyncio.create_task(
+                self._produce_stream(
+                    request,
+                    context,
+                    record,
+                    execution_lease,
+                    statistics_handle,
+                ),
+                name=f"provider-stream:{record.response_id}",
+            )
+            await self.store.save(record)
+        else:
+            await self._record_replay(request, context, record)
+
+        after_sequence = -1
+        if last_event_id is not None:
+            matches = [
+                event.sequence
+                for event in record.events
+                if event.event_id == last_event_id
+            ]
+            if not matches:
+                raise StreamResumeError("Last-Event-ID 不属于该响应或已过期")
+            after_sequence = matches[0]
+        return PreparedStream(
+            record=record,
+            after_sequence=after_sequence,
+            execution_lease=execution_lease,
+            lease_owned_by_producer=created and execution_lease is not None,
+        )
+
+    async def iter_prepared_stream(
+        self, prepared: PreparedStream
+    ) -> AsyncIterator[SSEEvent]:
+        try:
+            async for event in self.store.subscribe(
+                prepared.record, prepared.after_sequence
+            ):
+                yield event
+        finally:
+            if (
+                prepared.execution_lease is not None
+                and not prepared.lease_owned_by_producer
+            ):
+                await prepared.execution_lease.release()
 
     async def _produce_stream(
         self,
@@ -357,7 +464,26 @@ class GatewayExecutor:
         statistics_handle: InvocationHandle | None = None,
     ) -> None:
         try:
-            await self._produce_stream_inner(request, context, record, statistics_handle)
+            try:
+                await asyncio.wait_for(
+                    self._produce_stream_inner(
+                        request, context, record, statistics_handle
+                    ),
+                    timeout=self.execution_timeout_seconds,
+                )
+            except TimeoutError:
+                if record.response is None:
+                    await self._store_stream_failure(
+                        request,
+                        context,
+                        record,
+                        ErrorObject(
+                            type="gateway_timeout",
+                            code="GATEWAY_TIMEOUT",
+                            message="模型流式执行超过网关允许的最大时间。",
+                            retryable=True,
+                        ),
+                    )
         finally:
             if self.statistics is not None:
                 response = record.response
@@ -467,14 +593,14 @@ class GatewayExecutor:
                     )
                 if terminal_response is not None:
                     record.response = terminal_response
-                    record.status = InternalStatus(terminal_response.status)
                     record.provider_response_id = terminal_response.provider_response_id
                 await self.store.append_event(record, event)
                 if terminal_response is not None:
+                    record.status = InternalStatus(terminal_response.status)
                     await self.store.save(record)
                     return
         except asyncio.CancelledError:
-            return
+            raise
         except ProviderException as exc:
             result = ProviderResult(
                 status="failed",
@@ -485,7 +611,6 @@ class GatewayExecutor:
             )
             response = self._response_from_result(request, record, result, context)
             record.response = response
-            record.status = InternalStatus.FAILED
             failed = EventAssembler.assemble(
                 ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=exc.error),
                 request_id=request.request_id,
@@ -494,6 +619,7 @@ class GatewayExecutor:
                 terminal_response=response,
             )
             await self.store.append_event(record, failed)
+            record.status = InternalStatus.FAILED
             await self.store.save(record)
             return
         except Exception as exc:
@@ -513,7 +639,6 @@ class GatewayExecutor:
             )
             response = self._response_from_result(request, record, result, context)
             record.response = response
-            record.status = InternalStatus.FAILED
             failed = EventAssembler.assemble(
                 ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=error),
                 request_id=request.request_id,
@@ -522,6 +647,7 @@ class GatewayExecutor:
                 terminal_response=response,
             )
             await self.store.append_event(record, failed)
+            record.status = InternalStatus.FAILED
             await self.store.save(record)
             return
 
@@ -542,7 +668,6 @@ class GatewayExecutor:
             )
             response = self._response_from_result(request, record, result, context)
             record.response = response
-            record.status = InternalStatus.FAILED
             failed = EventAssembler.assemble(
                 ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=error),
                 request_id=request.request_id,
@@ -551,7 +676,31 @@ class GatewayExecutor:
                 terminal_response=response,
             )
             await self.store.append_event(record, failed)
+            record.status = InternalStatus.FAILED
             await self.store.save(record)
+
+    async def _store_stream_failure(
+        self,
+        request: KemoRequest,
+        context: RequestContext,
+        record: ExecutionRecord,
+        error: ErrorObject,
+    ) -> None:
+        if record.response is not None:
+            return
+        result = ProviderResult(status="failed", error=error)
+        response = self._response_from_result(request, record, result, context)
+        record.response = response
+        failed = EventAssembler.assemble(
+            ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=error),
+            request_id=request.request_id,
+            response_id=record.response_id,
+            sequence=len(record.events),
+            terminal_response=response,
+        )
+        await self.store.append_event(record, failed)
+        record.status = InternalStatus.FAILED
+        await self.store.save(record)
 
     async def get(self, tenant_id: str, response_id: str) -> KemoResponse | None:
         record = await self.store.get_by_response_id(tenant_id, response_id)
@@ -614,7 +763,6 @@ class GatewayExecutor:
             model=record.model,
             output=partial_output,
         )
-        record.status = InternalStatus.CANCELLED
         record.response = response
         cancelled = EventAssembler.assemble(
             ProviderEvent(
@@ -632,6 +780,7 @@ class GatewayExecutor:
             terminal_response=response,
         )
         await self.store.append_event(record, cancelled)
+        record.status = InternalStatus.CANCELLED
         if record.producer_task is not None and not record.producer_task.done():
             record.producer_task.cancel()
         await self.store.save(record)
