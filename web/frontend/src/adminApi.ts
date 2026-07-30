@@ -158,6 +158,7 @@ export interface InvocationLogItem {
   error_type: string | null
   error_message: string | null
   latency_ms: number | null
+  duration_ms?: number | null
   tokens: Record<'input_tokens' | 'cached_input_tokens' | 'output_tokens' | 'reasoning_tokens' | 'visible_output_tokens' | 'total_tokens', number | null>
   usage: {
     mode: string | null

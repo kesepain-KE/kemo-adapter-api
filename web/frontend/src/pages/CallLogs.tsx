@@ -79,7 +79,7 @@ function InvocationCard({ item }: { item: InvocationLogItem }) {
     <div className="invocation-facts">
       <div><Factory size={15}/><span>涉及厂商</span><strong>{item.provider_id}</strong></div>
       <div><Cpu size={15}/><span>厂商原模型名</span><strong title={item.provider_model}>{item.provider_model}</strong></div>
-      <div><Clock3 size={15}/><span>调用时间</span><strong>{formatTime(item.started_at)}</strong><small>延迟 {latency(item.latency_ms)}</small></div>
+      <div><Clock3 size={15}/><span>调用时间</span><strong>{formatTime(item.started_at)}</strong><small>响应延迟 {latency(item.latency_ms)}</small></div>
     </div>
 
     <div className="invocation-token-row">

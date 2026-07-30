@@ -165,6 +165,28 @@ def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path)
     asyncio.run(scenario())
 
 
+def test_latency_is_captured_at_first_response(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = StatisticsStore(tmp_path / "storage")
+        await store.initialize()
+        handle = await store.begin_invocation(
+            task="llm",
+            provider_id="deepseek",
+            model="deepseek-chat",
+            tenant_id="tenant-1",
+            gateway_key_id=None,
+            request_id="request-latency",
+        )
+        assert handle is not None
+        # Avoid timing flakiness: emulate a first response exactly 5 ms after start.
+        handle.response_started_perf_ns = handle.started_perf_ns + 5_000_000
+        await store.finish_invocation(handle, status="completed")
+        daily = await store.daily(handle.day)
+        assert daily["average_latency_ms"] == 5.0
+
+    asyncio.run(scenario())
+
+
 def test_invocation_history_is_paginated_beyond_one_hundred_and_filters_hour(
     tmp_path: Path,
 ) -> None:

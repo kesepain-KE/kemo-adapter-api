@@ -32,7 +32,7 @@ TOKEN_FIELDS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class InvocationHandle:
     invocation_id: str
     day: str
@@ -42,6 +42,12 @@ class InvocationHandle:
     provider_id: str
     model: str
     gateway_key_id: str | None
+    response_started_perf_ns: int | None = None
+
+    def mark_response(self) -> None:
+        """Capture the first provider response moment for response-latency metrics."""
+        if self.response_started_perf_ns is None:
+            self.response_started_perf_ns = time.perf_counter_ns()
 
 
 class StatisticsStore:
@@ -133,7 +139,13 @@ class StatisticsStore:
     ) -> None:
         if handle is None:
             return
-        latency_ms = max(0.0, (time.perf_counter_ns() - handle.started_perf_ns) / 1_000_000)
+        finished_perf_ns = time.perf_counter_ns()
+        duration_ms = max(0.0, (finished_perf_ns - handle.started_perf_ns) / 1_000_000)
+        response_latency_ms = (
+            max(0.0, (handle.response_started_perf_ns - handle.started_perf_ns) / 1_000_000)
+            if handle.response_started_perf_ns is not None
+            else None
+        )
         try:
             async with self._lock:
                 await asyncio.to_thread(
@@ -146,7 +158,8 @@ class StatisticsStore:
                     error_type,
                     error_message,
                     provider_response_id,
-                    latency_ms,
+                    duration_ms,
+                    response_latency_ms,
                 )
             self._mark_success()
         except Exception as exc:
@@ -283,6 +296,7 @@ class StatisticsStore:
                     error_type TEXT,
                     error_message TEXT,
                     latency_ms REAL,
+                    response_latency_ms REAL,
                     input_tokens INTEGER,
                     cached_input_tokens INTEGER,
                     output_tokens INTEGER,
@@ -315,6 +329,8 @@ class StatisticsStore:
                     replay_count INTEGER NOT NULL DEFAULT 0,
                     latency_sum_ms REAL NOT NULL DEFAULT 0,
                     latency_samples INTEGER NOT NULL DEFAULT 0,
+                    response_latency_sum_ms REAL NOT NULL DEFAULT 0,
+                    response_latency_samples INTEGER NOT NULL DEFAULT 0,
                     input_tokens_sum INTEGER NOT NULL DEFAULT 0,
                     input_tokens_samples INTEGER NOT NULL DEFAULT 0,
                     cached_input_tokens_sum INTEGER NOT NULL DEFAULT 0,
@@ -343,6 +359,20 @@ class StatisticsStore:
                 connection.execute("ALTER TABLE invocations ADD COLUMN error_type TEXT")
             if "error_message" not in columns:
                 connection.execute("ALTER TABLE invocations ADD COLUMN error_message TEXT")
+            if "response_latency_ms" not in columns:
+                connection.execute("ALTER TABLE invocations ADD COLUMN response_latency_ms REAL")
+            rollup_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(daily_rollups)")
+            }
+            if "response_latency_sum_ms" not in rollup_columns:
+                connection.execute(
+                    "ALTER TABLE daily_rollups ADD COLUMN response_latency_sum_ms REAL NOT NULL DEFAULT 0"
+                )
+            if "response_latency_samples" not in rollup_columns:
+                connection.execute(
+                    "ALTER TABLE daily_rollups ADD COLUMN response_latency_samples INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute("PRAGMA user_version=2")
         self._initialized_paths.add(path)
 
@@ -413,7 +443,8 @@ class StatisticsStore:
         error_type: str | None,
         error_message: str | None,
         provider_response_id: str | None,
-        latency_ms: float,
+        duration_ms: float,
+        response_latency_ms: float | None,
     ) -> None:
         normalized = self._usage_values(usage)
         with self._connect(handle.database) as connection:
@@ -425,7 +456,7 @@ class StatisticsStore:
             connection.execute(
                 """UPDATE invocations SET finished_at=?, status=?, error_code=?,
                     error_type=?, error_message=?,
-                    provider_response_id=?, latency_ms=?, input_tokens=?,
+                    provider_response_id=?, latency_ms=?, response_latency_ms=?, input_tokens=?,
                     cached_input_tokens=?, output_tokens=?, reasoning_tokens=?,
                     visible_output_tokens=?, total_tokens=?, usage_mode=?, usage_exact=?,
                     usage_exact_fields=?, usage_estimated_fields=?
@@ -437,7 +468,8 @@ class StatisticsStore:
                     str(error_type or "")[:160] or None,
                     str(error_message or "")[:2000] or None,
                     provider_response_id,
-                    latency_ms,
+                    duration_ms,
+                    response_latency_ms,
                     *(normalized[field] for field in TOKEN_FIELDS),
                     normalized["usage_mode"],
                     normalized["usage_exact"],
@@ -462,7 +494,13 @@ class StatisticsStore:
                     assignments.append("incompletes=incompletes+1")
                 params: list[object] = []
                 assignments.extend(["latency_sum_ms=latency_sum_ms+?", "latency_samples=latency_samples+1"])
-                params.append(latency_ms)
+                params.append(duration_ms)
+                if response_latency_ms is not None:
+                    assignments.extend([
+                        "response_latency_sum_ms=response_latency_sum_ms+?",
+                        "response_latency_samples=response_latency_samples+1",
+                    ])
+                    params.append(response_latency_ms)
                 for field in TOKEN_FIELDS:
                     value = normalized[field]
                     if value is not None:
@@ -551,6 +589,7 @@ class StatisticsStore:
             "replay_count": 0,
             "success_rate": None,
             "average_latency_ms": None,
+            "average_duration_ms": None,
             "tokens": {field: None for field in TOKEN_FIELDS},
             "token_coverage": {field: 0 for field in TOKEN_FIELDS},
             "cache_hit_rate": None,
@@ -569,7 +608,13 @@ class StatisticsStore:
         }
         metrics["success_rate"] = (int(row["successes"]) / terminal) if terminal else None
         latency_samples = int(row["latency_samples"])
+        response_latency_samples = int(row["response_latency_samples"] or 0)
         metrics["average_latency_ms"] = (
+            float(row["response_latency_sum_ms"]) / response_latency_samples
+            if response_latency_samples
+            else None
+        )
+        metrics["average_duration_ms"] = (
             float(row["latency_sum_ms"]) / latency_samples if latency_samples else None
         )
         metrics["tokens"] = {
@@ -593,6 +638,7 @@ class StatisticsStore:
         path = self._path_for_day(day)
         if not path.exists():
             return None
+        self._ensure_database(path)
         with self._connect(path) as connection:
             if task == "all":
                 return connection.execute(
@@ -601,6 +647,8 @@ class StatisticsStore:
                         SUM(cancellations) cancellations, SUM(incompletes) incompletes,
                         SUM(running) running, SUM(replay_count) replay_count,
                         SUM(latency_sum_ms) latency_sum_ms, SUM(latency_samples) latency_samples,
+                        SUM(response_latency_sum_ms) response_latency_sum_ms,
+                        SUM(response_latency_samples) response_latency_samples,
                         SUM(input_tokens_sum) input_tokens_sum, SUM(input_tokens_samples) input_tokens_samples,
                         SUM(cached_input_tokens_sum) cached_input_tokens_sum, SUM(cached_input_tokens_samples) cached_input_tokens_samples,
                         SUM(output_tokens_sum) output_tokens_sum, SUM(output_tokens_samples) output_tokens_samples,
@@ -649,6 +697,7 @@ class StatisticsStore:
         ]
         path = self._path_for_day(day)
         if path.exists():
+            self._ensure_database(path)
             with self._connect(path) as connection:
                 rows = connection.execute(
                     """SELECT started_at, status, input_tokens, cached_input_tokens,
@@ -738,6 +787,7 @@ class StatisticsStore:
         path = self._path_for_day(day)
         if not path.exists():
             return {"date": day, "dimension": dimension, "items": []}
+        self._ensure_database(path)
         with self._connect(path) as connection:
             rows = connection.execute(
                 """SELECT dimension_key,
@@ -745,6 +795,8 @@ class StatisticsStore:
                     SUM(cancellations) cancellations, SUM(incompletes) incompletes,
                     SUM(running) running, SUM(replay_count) replay_count,
                     SUM(latency_sum_ms) latency_sum_ms, SUM(latency_samples) latency_samples,
+                    SUM(response_latency_sum_ms) response_latency_sum_ms,
+                    SUM(response_latency_samples) response_latency_samples,
                     SUM(input_tokens_sum) input_tokens_sum, SUM(input_tokens_samples) input_tokens_samples,
                     SUM(cached_input_tokens_sum) cached_input_tokens_sum, SUM(cached_input_tokens_samples) cached_input_tokens_samples,
                     SUM(output_tokens_sum) output_tokens_sum, SUM(output_tokens_samples) output_tokens_samples,
@@ -780,6 +832,8 @@ class StatisticsStore:
             "replay_count",
             "latency_sum_ms",
             "latency_samples",
+            "response_latency_sum_ms",
+            "response_latency_samples",
             *(field for token_field in TOKEN_FIELDS for field in (
                 f"{token_field}_sum",
                 f"{token_field}_samples",
@@ -878,6 +932,8 @@ class StatisticsStore:
             else sorted(self.daily_root.glob("*/*/*.sqlite3"), reverse=True)
         )
         for path in paths:
+            if path.exists():
+                self._ensure_database(path)
             time_predicate = ""
             time_parameters: tuple[object, ...] = ()
             if hour is not None:
@@ -910,6 +966,11 @@ class StatisticsStore:
                         if "error_message" in columns
                         else "NULL AS error_message"
                     )
+                    response_latency_column = (
+                        "response_latency_ms"
+                        if "response_latency_ms" in columns
+                        else "NULL AS response_latency_ms"
+                    )
                     where = f"WHERE 1=1{predicate}{time_predicate}"
                     query_parameters = (*parameters, *time_parameters)
                     total += int(
@@ -922,6 +983,7 @@ class StatisticsStore:
                         f"""SELECT started_at, finished_at, task, provider_id, model,
                                    gateway_key_id, status, error_code,
                                    {error_type_column}, {error_message_column}, latency_ms,
+                                   {response_latency_column},
                                    input_tokens, cached_input_tokens, output_tokens,
                                    reasoning_tokens, visible_output_tokens, total_tokens,
                                    usage_mode, usage_exact
@@ -949,7 +1011,8 @@ class StatisticsStore:
                     "error_code": row["error_code"],
                     "error_type": row["error_type"],
                     "error_message": row["error_message"],
-                    "latency_ms": row["latency_ms"],
+                    "latency_ms": row["response_latency_ms"],
+                    "duration_ms": row["latency_ms"],
                     "tokens": {field: row[field] for field in TOKEN_FIELDS},
                     "usage": {
                         "mode": row["usage_mode"],

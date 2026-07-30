@@ -79,7 +79,7 @@ export default function Logs() {
         <Card className="metric"><span>调用次数</span><strong>{integer(daily.calls)}</strong><em>{daily.running} 个仍在执行 · {daily.replay_count} 次幂等重放</em></Card>
         <Card className="metric"><span>成功率</span><strong>{percent(daily.success_rate)}</strong><em>{daily.successes} 成功 · {daily.failures} 失败</em></Card>
         <Card className="metric"><span>Token 用量</span><strong>{integer(daily.tokens.total_tokens)}</strong><em>{daily.token_coverage.total_tokens ?? 0} 个调用提供总 Token</em></Card>
-        <Card className="metric"><span>平均延迟</span><strong>{latency(daily.average_latency_ms)}</strong><em>只统计已到达终态的调用</em></Card>
+        <Card className="metric"><span>平均响应延迟</span><strong>{latency(daily.average_latency_ms)}</strong><em>从请求开始到首个响应事件</em></Card>
       </div>
 
       <div className="two-grid stats-detail-grid">
@@ -91,7 +91,7 @@ export default function Logs() {
       <Subtabs<Dimension> items={[{ id: 'provider', label: '厂商' }, { id: 'model', label: '模型' }, { id: 'gateway_key', label: '网关密钥' }]} value={dimension} onChange={setDimension}/>
       {activeRanking?.items.length ? <Card className="table-card">
         <table>
-          <thead><tr><th>{dimensionLabel}</th><th>调用</th><th>成功率</th><th>总 Token</th><th>缓存命中率</th><th>平均延迟</th></tr></thead>
+          <thead><tr><th>{dimensionLabel}</th><th>调用</th><th>成功率</th><th>总 Token</th><th>缓存命中率</th><th>平均响应延迟</th></tr></thead>
           <tbody>{activeRanking.items.map(item => <tr key={item.id}><td><code>{item.id}</code></td><td>{item.calls}</td><td>{percent(item.success_rate)}</td><td>{integer(item.tokens.total_tokens)}</td><td>{percent(item.cache_hit_rate)}</td><td>{latency(item.average_latency_ms)}</td></tr>)}</tbody>
         </table>
       </Card> : <EmptyState title={`暂无${dimensionLabel}调用`} description={`${date} 尚未记录该维度的真实 Provider 执行。`}/>}

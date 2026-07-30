@@ -267,6 +267,8 @@ class GatewayExecutor:
             statistics_handle = await self._begin_statistics(request, context, record)
             try:
                 result = await package.execute(request, context)
+                if statistics_handle is not None:
+                    statistics_handle.mark_response()
                 response = self._response_from_result(request, record, result, context)
             except ProviderException as exc:
                 result = ProviderResult(status="failed", error=exc.error)
@@ -355,7 +357,7 @@ class GatewayExecutor:
         statistics_handle: InvocationHandle | None = None,
     ) -> None:
         try:
-            await self._produce_stream_inner(request, context, record)
+            await self._produce_stream_inner(request, context, record, statistics_handle)
         finally:
             if self.statistics is not None:
                 response = record.response
@@ -388,6 +390,7 @@ class GatewayExecutor:
         request: KemoRequest,
         context: RequestContext,
         record: ExecutionRecord,
+        statistics_handle: InvocationHandle | None = None,
     ) -> None:
         completed_media: dict[str, MessageItem] = {}
         completed_media_fingerprints: dict[str, str] = {}
@@ -404,6 +407,21 @@ class GatewayExecutor:
                     return
                 if provider_event.provider_response_id:
                     record.provider_response_id = provider_event.provider_response_id
+                if statistics_handle is not None and provider_event.kind in {
+                    ProviderEventKind.ITEM_ADDED,
+                    ProviderEventKind.TEXT_DELTA,
+                    ProviderEventKind.AUDIO_DELTA,
+                    ProviderEventKind.REASONING_SUMMARY_DELTA,
+                    ProviderEventKind.REASONING_CONTENT_DELTA,
+                    ProviderEventKind.TOOL_ARGUMENTS_DELTA,
+                    ProviderEventKind.TOOL_COMPLETED,
+                    ProviderEventKind.MEDIA_COMPLETED,
+                    ProviderEventKind.COMPLETED,
+                    ProviderEventKind.INCOMPLETE,
+                    ProviderEventKind.FAILED,
+                    ProviderEventKind.CANCELLED,
+                }:
+                    statistics_handle.mark_response()
                 terminal_response = None
                 if provider_event.kind in {
                     ProviderEventKind.COMPLETED,

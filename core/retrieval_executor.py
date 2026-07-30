@@ -215,6 +215,8 @@ class RetrievalExecutor:
         result: ProviderEmbeddingResult | None = None
         try:
             result = await self._call_provider_embedding(package, request, context)
+            if statistics_handle is not None:
+                statistics_handle.mark_response()
             response = self._build_embedding_response(request, result, expected_dimensions)
         except ModelOperationFailure as exc:
             if self.statistics is not None:
@@ -282,6 +284,8 @@ class RetrievalExecutor:
         result: ProviderRerankResult | None = None
         try:
             result = await self._call_provider_rerank(package, request, context)
+            if statistics_handle is not None:
+                statistics_handle.mark_response()
             response = self._build_rerank_response(request, result)
         except ModelOperationFailure as exc:
             if self.statistics is not None:
