@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0",
+  "version": "0.7.1",
   "protocol_version": "1.0",
   "build": null,
   "notes": "完整多模态与 Asset 链路、模型能力和动态推理档位声明、安全可恢复更新、调用统计与跨平台部署增强"
