@@ -79,7 +79,15 @@ def _secure_cookie(request: Request) -> bool:
     configured = request.app.state.settings.web_cookie_secure
     if configured is not None:
         return configured
-    return request.app.state.settings.base_url.lower().startswith("https://")
+    # ``auto`` follows the URL actually used by this request. This matters when
+    # one instance is reached through public HTTPS and also through a LAN HTTP
+    # address: a Secure cookie issued for the LAN flow would never be sent back.
+    scheme = request.url.scheme.lower()
+    if request.client is not None and request.client.host in {"127.0.0.1", "::1"}:
+        forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+        if forwarded in {"http", "https"}:
+            scheme = forwarded
+    return scheme == "https"
 
 
 def _set_session_cookie(

@@ -200,12 +200,40 @@ def test_https_public_base_sets_secure_session_cookie(tmp_path: Path) -> None:
         live_config_root=root,
         discover_providers=False,
     )
-    with TestClient(app) as client:
+    with TestClient(app, base_url="https://gateway.example.com") as client:
         response = client.post(
             "/admin/api/auth/token", json={"token": "web-control-token"}
         )
     assert response.status_code == 200
     assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_lan_http_entry_does_not_set_secure_cookie_when_public_base_is_https(
+    tmp_path: Path,
+) -> None:
+    root = no_auth_project(tmp_path)
+    app = create_app(
+        Settings(
+            web_token="web-control-token",
+            web_username="kemo",
+            web_password="password",
+            base_url="https://gateway.example.com",
+        ),
+        live_config_root=root,
+        discover_providers=False,
+    )
+    with TestClient(app, base_url="http://192.168.1.20") as client:
+        response = client.post(
+            "/admin/api/auth/token", json={"token": "web-control-token"}
+        )
+        password = client.post(
+            "/admin/api/auth/password",
+            json={"username": "kemo", "password": "password"},
+        )
+    assert response.status_code == 200
+    assert response.json()["next_step"] == "password"
+    assert password.status_code == 200
+    assert "secure" not in response.headers["set-cookie"].lower()
 
 
 def test_auth_validation_response_does_not_echo_secret_input(tmp_path: Path) -> None:
