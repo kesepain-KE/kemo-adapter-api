@@ -9,9 +9,31 @@ from fastapi.responses import JSONResponse
 from core.retrieval_executor import ModelOperationFailure
 from core.assets import AssetStoreFailure
 from core.provider_contract import ProviderException
+from core.runtime_state import GatewayDrainingError, GatewayOverloadedError
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(GatewayDrainingError)
+    @app.exception_handler(GatewayOverloadedError)
+    async def handle_gateway_capacity_error(
+        _: Request, exc: GatewayDrainingError | GatewayOverloadedError
+    ) -> JSONResponse:
+        overloaded = isinstance(exc, GatewayOverloadedError)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "protocol_version": "1.0",
+                "error": {
+                    "type": "gateway_capacity",
+                    "code": "GATEWAY_OVERLOADED" if overloaded else "GATEWAY_DRAINING",
+                    "message": str(exc),
+                    "retryable": True,
+                    "details": {},
+                },
+            },
+            headers={"Retry-After": "5"},
+        )
+
     @app.exception_handler(AssetStoreFailure)
     async def handle_asset_store_failure(
         _: Request, exc: AssetStoreFailure
@@ -129,6 +151,9 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def handle_http_exception(_: Request, exc: HTTPException) -> JSONResponse:
         detail_code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
         detail_message = exc.detail.get("message") if isinstance(exc.detail, dict) else None
+        detail_retryable = (
+            exc.detail.get("retryable") if isinstance(exc.detail, dict) else None
+        )
         code = detail_code if isinstance(detail_code, str) and detail_code else {
             401: "AUTHENTICATION_ERROR",
             403: "AUTHORIZATION_ERROR",
@@ -148,7 +173,11 @@ def install_exception_handlers(app: FastAPI) -> None:
                         if isinstance(detail_message, str) and detail_message
                         else str(exc.detail)
                     ),
-                    "retryable": False,
+                    "retryable": (
+                        detail_retryable
+                        if isinstance(detail_retryable, bool)
+                        else exc.status_code in {408, 425, 429, 502, 503, 504}
+                    ),
                     "details": {},
                 },
             },

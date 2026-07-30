@@ -30,7 +30,7 @@ from core.live_config import LiveConfigManager
 from core.registry import ProviderRegistry
 from core.retrieval_executor import RetrievalExecutor
 from core.runtime_state import GatewayRuntimeState
-from core.stores import InMemoryExecutionStore
+from core.stores import SQLiteExecutionStore
 from storage.statistics import StatisticsStore
 from web.backend.router import router as admin_router
 from web.backend.auth_service import WebAuthService
@@ -84,7 +84,9 @@ def create_app(
     _validate_web_exposure(resolved_settings)
     registry = ProviderRegistry()
     live_config = LiveConfigManager(live_config_root or PROJECT_ROOT)
-    runtime_state = GatewayRuntimeState()
+    runtime_state = GatewayRuntimeState(
+        max_concurrent_executions=resolved_settings.max_concurrent_executions
+    )
     restart_service = RestartService(live_config.project_root, runtime_state)
     statistics = StatisticsStore(
         statistics_root or live_config.project_root / "storage",
@@ -100,12 +102,18 @@ def create_app(
             retention_hours=resolved_settings.asset_retention_hours,
         ),
     )
+    executions = SQLiteExecutionStore(
+        live_config.project_root / "storage" / "executions",
+        retention_hours=resolved_settings.execution_retention_hours,
+        max_events_per_response=resolved_settings.max_sse_events_per_response,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         snapshot = await live_config.refresh()
         await statistics.initialize()
         await assets.initialize()
+        await executions.initialize()
         if discover_providers:
             registry.discover(
                 resolved_settings.provider_settings, snapshot.provider_settings
@@ -117,6 +125,7 @@ def create_app(
         await restart_service.stop_watcher()
         await runtime_state.mark_stopping()
         await assets.close()
+        await executions.close()
         await registry.close()
 
     app = FastAPI(
@@ -176,17 +185,23 @@ def create_app(
     app.state.runtime_config_writer = RuntimeConfigWriter(live_config.project_root)
     app.state.statistics = statistics
     app.state.assets = assets
+    app.state.executions = executions
     app.state.web_auth = WebAuthService()
     app.state.executor = GatewayExecutor(
         registry,
-        InMemoryExecutionStore(),
+        executions,
         live_config,
         runtime_state,
         statistics,
         assets,
+        execution_timeout_seconds=resolved_settings.model_execution_timeout_seconds,
     )
     app.state.retrieval_executor = RetrievalExecutor(
-        registry, live_config, runtime_state, statistics
+        registry,
+        live_config,
+        runtime_state,
+        statistics,
+        execution_timeout_seconds=resolved_settings.model_execution_timeout_seconds,
     )
     app.include_router(responses_router)
     app.include_router(assets_router)

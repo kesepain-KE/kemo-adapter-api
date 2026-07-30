@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 
@@ -12,13 +16,42 @@ from api.middleware import (
     ensure_model_task_allowed,
 )
 from api.sse import encode_sse
-from core.executor import GatewayExecutor
-from core.models import KemoRequest, KemoResponse
+from core.executor import GatewayExecutor, StreamResumeError
+from core.models import KemoRequest, KemoResponse, SSEEvent
 from core.stores import IdempotencyConflict
-from core.runtime_state import GatewayDrainingError
+from core.runtime_state import GatewayDrainingError, GatewayOverloadedError
 
 
 router = APIRouter(tags=["responses"])
+
+
+async def _heartbeat_stream(
+    events: AsyncIterator[SSEEvent], heartbeat_seconds: float
+) -> AsyncIterator[bytes]:
+    """Keep proxy/CDN idle timers alive without inventing protocol events."""
+    iterator = events.__aiter__()
+    pending: asyncio.Task[SSEEvent] | None = None
+    try:
+        pending = asyncio.create_task(anext(iterator), name="kemo-sse-next-event")
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=heartbeat_seconds)
+            if not done:
+                yield b": kemo-heartbeat\n\n"
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            yield encode_sse(event)
+            pending = asyncio.create_task(anext(iterator), name="kemo-sse-next-event")
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 @router.post("/model/responses", response_model=KemoResponse)
@@ -39,10 +72,15 @@ async def create_response(
         raise HTTPException(status_code=400, detail="协议版本不兼容")
     try:
         execution_lease = await http_request.app.state.runtime_state.admit_execution()
-    except GatewayDrainingError as exc:
+    except (GatewayDrainingError, GatewayOverloadedError) as exc:
+        code = (
+            "GATEWAY_OVERLOADED"
+            if isinstance(exc, GatewayOverloadedError)
+            else "GATEWAY_DRAINING"
+        )
         raise HTTPException(
             status_code=503,
-            detail=str(exc),
+            detail={"code": code, "message": str(exc), "retryable": True},
             headers={"Retry-After": "5"},
         ) from exc
     context = executor.make_context(
@@ -53,23 +91,42 @@ async def create_response(
     )
     try:
         if request.stream:
-            await executor.validate_request(request, context)
+            prepared = await executor.prepare_stream(
+                request,
+                context,
+                last_event_id=last_event_id,
+                execution_lease=execution_lease,
+            )
 
             async def body():
-                async for event in executor.stream(
-                    request,
-                    context,
-                    last_event_id=last_event_id,
-                    execution_lease=execution_lease,
+                async for chunk in _heartbeat_stream(
+                    executor.iter_prepared_stream(prepared),
+                    http_request.app.state.settings.sse_heartbeat_seconds,
                 ):
-                    yield encode_sse(event)
+                    yield chunk
 
             return StreamingResponse(
                 body(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "X-Accel-Buffering": "no",
+                    "X-Kemo-Heartbeat-Seconds": str(
+                        http_request.app.state.settings.sse_heartbeat_seconds
+                    ),
+                },
             )
         return await executor.execute(request, context, execution_lease=execution_lease)
+    except StreamResumeError as exc:
+        await execution_lease.release()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STREAM_RESUME_CONFLICT",
+                "message": str(exc),
+                "retryable": False,
+            },
+        ) from exc
     except LookupError as exc:
         await execution_lease.release()
         raise HTTPException(status_code=404, detail=f"未知模型: {request.model}") from exc
