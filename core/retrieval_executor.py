@@ -30,7 +30,11 @@ from core.provider_contract import (
     RequestContext,
 )
 from core.registry import ProviderRegistry
-from core.runtime_state import GatewayRuntimeState
+from core.runtime_state import (
+    GatewayDrainingError,
+    GatewayOverloadedError,
+    GatewayRuntimeState,
+)
 from core.stores import IdempotencyConflict
 from storage.statistics import StatisticsStore
 
@@ -73,11 +77,13 @@ class RetrievalExecutor:
         live_config: LiveConfigManager | None = None,
         runtime_state: GatewayRuntimeState | None = None,
         statistics: StatisticsStore | None = None,
+        execution_timeout_seconds: float = 900.0,
     ) -> None:
         self.registry = registry
         self.live_config = live_config
         self.runtime_state = runtime_state
         self.statistics = statistics
+        self.execution_timeout_seconds = max(0.01, execution_timeout_seconds)
         self._records: dict[tuple[str, str, str], _OperationRecord] = {}
         self._records_lock = asyncio.Lock()
 
@@ -230,6 +236,8 @@ class RetrievalExecutor:
                     ),
                 )
             raise
+        except (GatewayDrainingError, GatewayOverloadedError):
+            raise
         except Exception as exc:
             failure = self._provider_contract_failure(request.request_id, exc)
             if self.statistics is not None:
@@ -299,6 +307,8 @@ class RetrievalExecutor:
                     ),
                 )
             raise
+        except (GatewayDrainingError, GatewayOverloadedError):
+            raise
         except Exception as exc:
             failure = self._provider_contract_failure(request.request_id, exc)
             if self.statistics is not None:
@@ -327,7 +337,19 @@ class RetrievalExecutor:
         lease = await self.runtime_state.admit_execution() if self.runtime_state else None
         try:
             try:
-                return await package.embed(request, context)
+                async with asyncio.timeout(self.execution_timeout_seconds):
+                    return await package.embed(request, context)
+            except TimeoutError as exc:
+                raise ModelOperationFailure(
+                    request.request_id,
+                    ErrorObject(
+                        type="gateway_timeout",
+                        code="GATEWAY_TIMEOUT",
+                        message="Embedding 执行超过网关允许的最大时间。",
+                        retryable=True,
+                    ),
+                    504,
+                ) from exc
             except ProviderException as exc:
                 status_code = 429 if exc.error.provider_status == 429 else 502
                 raise ModelOperationFailure(request.request_id, exc.error, status_code) from exc
@@ -343,7 +365,19 @@ class RetrievalExecutor:
         lease = await self.runtime_state.admit_execution() if self.runtime_state else None
         try:
             try:
-                return await package.rerank(request, context)
+                async with asyncio.timeout(self.execution_timeout_seconds):
+                    return await package.rerank(request, context)
+            except TimeoutError as exc:
+                raise ModelOperationFailure(
+                    request.request_id,
+                    ErrorObject(
+                        type="gateway_timeout",
+                        code="GATEWAY_TIMEOUT",
+                        message="Rerank 执行超过网关允许的最大时间。",
+                        retryable=True,
+                    ),
+                    504,
+                ) from exc
             except ProviderException as exc:
                 status_code = 429 if exc.error.provider_status == 429 else 502
                 raise ModelOperationFailure(request.request_id, exc.error, status_code) from exc

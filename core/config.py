@@ -48,6 +48,11 @@ class Settings:
     asset_audio_max_bytes: int = 100 * 1024 * 1024
     asset_video_max_bytes: int = 1024 * 1024 * 1024
     asset_file_max_bytes: int = 100 * 1024 * 1024
+    model_execution_timeout_seconds: float = 900.0
+    max_concurrent_executions: int = 64
+    sse_heartbeat_seconds: float = 15.0
+    execution_retention_hours: int = 24
+    max_sse_events_per_response: int = 200_000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -100,6 +105,21 @@ class Settings:
             asset_file_max_bytes=_positive_int_env(
                 "ASSET_FILE_MAX_BYTES", 100 * 1024 * 1024
             ),
+            model_execution_timeout_seconds=_positive_float_env(
+                "MODEL_EXECUTION_TIMEOUT_SECONDS", 900.0
+            ),
+            max_concurrent_executions=_positive_int_env(
+                "MAX_CONCURRENT_EXECUTIONS", 64
+            ),
+            sse_heartbeat_seconds=_positive_float_env(
+                "SSE_HEARTBEAT_SECONDS", 15.0
+            ),
+            execution_retention_hours=_positive_int_env(
+                "EXECUTION_RETENTION_HOURS", 24
+            ),
+            max_sse_events_per_response=_positive_int_env(
+                "MAX_SSE_EVENTS_PER_RESPONSE", 200_000
+            ),
         )
 
 
@@ -120,6 +140,16 @@ def _positive_int_env(name: str, default: int) -> int:
     value = int(raw)
     if value <= 0:
         raise ValueError(f"{name} 必须为正整数")
+    return value
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    value = float(raw)
+    if value <= 0:
+        raise ValueError(f"{name} 必须为正数")
     return value
 
 

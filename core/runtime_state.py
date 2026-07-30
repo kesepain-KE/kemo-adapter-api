@@ -20,6 +20,10 @@ class GatewayDrainingError(RuntimeError):
     pass
 
 
+class GatewayOverloadedError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class ExecutionLease:
     state: "GatewayRuntimeState"
@@ -32,13 +36,16 @@ class ExecutionLease:
 
 
 class GatewayRuntimeState:
-    def __init__(self) -> None:
+    def __init__(self, *, max_concurrent_executions: int = 64) -> None:
+        if max_concurrent_executions <= 0:
+            raise ValueError("max_concurrent_executions 必须大于 0")
         self.instance_id = f"instance_{uuid4().hex}"
         self.started_at = datetime.now(UTC)
         self.phase = GatewayPhase.STARTING
         self.active_executions = 0
         self.drain_reason: str | None = None
         self.drain_requested_by: str | None = None
+        self.max_concurrent_executions = max_concurrent_executions
         self._condition = asyncio.Condition()
 
     async def mark_running(self) -> None:
@@ -74,6 +81,8 @@ class GatewayRuntimeState:
         async with self._condition:
             if self.phase != GatewayPhase.RUNNING:
                 raise GatewayDrainingError("网关正在排空或重启，暂不接受新的模型请求")
+            if self.active_executions >= self.max_concurrent_executions:
+                raise GatewayOverloadedError("网关活动执行已达到并发上限，请稍后重试")
             self.active_executions += 1
             return ExecutionLease(self)
 
@@ -98,6 +107,7 @@ class GatewayRuntimeState:
             "instance_id": self.instance_id,
             "phase": self.phase.value,
             "active_executions": self.active_executions,
+            "max_concurrent_executions": self.max_concurrent_executions,
             "started_at": self.started_at.isoformat(),
             "drain_reason": self.drain_reason,
         }
