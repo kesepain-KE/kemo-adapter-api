@@ -14,7 +14,7 @@ from threading import Timer
 from typing import Any
 import webbrowser
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 import uvicorn
 
 from core.restart_control import (
@@ -209,6 +209,7 @@ def main() -> int:
         host=str(options["host"]),
         port=int(options["port"]),
         environment_override_names=environment_override_names,
+        dotenv_names=[name for name in dotenv_values(ENV_FILE) if name],
     )
     try:
         server.run()

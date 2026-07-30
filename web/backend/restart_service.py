@@ -153,14 +153,22 @@ class RestartService:
             str(request.startup_timeout_seconds),
         ]
         creationflags = 0
+        start_new_session = False
         if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+                | subprocess.DETACHED_PROCESS
+            )
+        else:
+            start_new_session = True
         try:
             subprocess.Popen(
                 command,
                 cwd=self.project_root,
                 close_fds=True,
                 creationflags=creationflags,
+                start_new_session=start_new_session,
             )
         except OSError:
             await self.runtime_state.cancel_drain()
@@ -175,7 +183,9 @@ class RestartService:
             return
 
         await self.runtime_state.mark_stopping()
-        await asyncio.sleep(0.8)
+        # Tell uvicorn to leave its serve loop immediately.  The detached
+        # replacement process independently waits for this PID and its port
+        # to disappear before loading the new .env and starting.
         self.server.should_exit = True
 
 

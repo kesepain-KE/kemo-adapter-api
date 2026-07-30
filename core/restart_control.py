@@ -149,6 +149,42 @@ def process_exists(pid: int) -> bool:
         return False
 
 
+def terminate_process(pid: int, *, force: bool = False) -> bool:
+    """Terminate exactly one process identified by ``pid``.
+
+    This is used only by the replacement process after the old gateway has
+    already entered shutdown and exceeded its graceful-stop deadline.  It is
+    deliberately kept here so Windows and POSIX use the same narrow API.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_terminate = 0x0001
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(process_terminate, False, pid)
+        if not handle:
+            return not process_exists(pid)
+        try:
+            return bool(kernel32.TerminateProcess(handle, 1))
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        import signal
+
+        os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+        return True
+    except (OSError, ProcessLookupError):
+        return not process_exists(pid)
+
+
 def acquire_restart_lock(paths: RestartPaths, request: RestartRequest, gateway_pid: int) -> None:
     paths.directory.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
@@ -237,6 +273,7 @@ def write_pid_metadata(
     host: str,
     port: int,
     environment_override_names: list[str],
+    dotenv_names: list[str] | None = None,
 ) -> None:
     atomic_json(
         paths.pid,
@@ -248,6 +285,7 @@ def write_pid_metadata(
             "port": port,
             "started_at": utc_now(),
             "environment_override_names": sorted(set(environment_override_names)),
+            "dotenv_names": sorted(set(dotenv_names or [])),
         },
     )
 

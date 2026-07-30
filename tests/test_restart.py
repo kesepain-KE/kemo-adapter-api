@@ -17,6 +17,7 @@ from core.restart_control import (
     release_restart,
     submit_restart,
 )
+from restart import _child_environment
 from core.runtime_state import GatewayDrainingError, GatewayPhase, GatewayRuntimeState
 from tests.test_admin_api import ADMIN_HEADERS, admin_project
 
@@ -107,3 +108,39 @@ def test_restart_admin_api_requires_owner_and_returns_queue_id(tmp_path: Path) -
             "status": "queued",
             "force": False,
         }
+
+
+def test_replacement_environment_reloads_changed_dotenv_and_drops_removed_values(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A replacement must not inherit values loaded by the old process."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("PORT=8754\nNEW_SETTING=updated\n", encoding="utf-8")
+    monkeypatch.setenv("PORT", "old-loaded-value")
+    monkeypatch.setenv("REMOVED_SETTING", "stale-value")
+    metadata = {
+        # PORT and REMOVED_SETTING were loaded from the previous .env, not
+        # supplied by the shell, so both must be removed before start_web.py
+        # calls load_dotenv(override=False).
+        "environment_override_names": [],
+        "dotenv_names": ["PORT", "REMOVED_SETTING"],
+    }
+
+    child = _child_environment(tmp_path, metadata)
+
+    assert "PORT" not in child
+    assert "REMOVED_SETTING" not in child
+    # start_web.py will load the new value from the current .env.
+    assert env_file.read_text(encoding="utf-8") == "PORT=8754\nNEW_SETTING=updated\n"
+
+
+def test_replacement_environment_preserves_explicit_process_overrides(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / ".env").write_text("PORT=8754\n", encoding="utf-8")
+    monkeypatch.setenv("PORT", "9999")
+    child = _child_environment(
+        tmp_path,
+        {"environment_override_names": ["PORT"], "dotenv_names": ["PORT"]},
+    )
+    assert child["PORT"] == "9999"

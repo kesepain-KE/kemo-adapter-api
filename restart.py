@@ -28,6 +28,7 @@ from core.restart_control import (
     process_exists,
     read_json,
     release_restart,
+    terminate_process,
     submit_restart,
     write_restart_status,
 )
@@ -56,9 +57,15 @@ def _prospective_environment(project_root: Path) -> Iterator[None]:
     paths = RestartPaths(project_root)
     metadata = read_json(paths.pid) or {}
     override_names = set(metadata.get("environment_override_names", []))
+    managed_names = set(metadata.get("dotenv_names", []))
+    managed_names.update(dotenv_values(project_root / ".env"))
     values = dotenv_values(project_root / ".env")
     previous: dict[str, str | None] = {}
     try:
+        for name in managed_names:
+            if name not in override_names:
+                previous[name] = os.environ.get(name)
+                os.environ.pop(name, None)
         for name, value in values.items():
             if name in override_names:
                 continue
@@ -113,10 +120,31 @@ def _port_is_free(host: str, port: int) -> bool:
 def _child_environment(project_root: Path, metadata: dict) -> dict[str, str]:
     environment = os.environ.copy()
     overrides = set(metadata.get("environment_override_names", []))
-    for name in dotenv_values(project_root / ".env"):
+    managed_names = set(metadata.get("dotenv_names", []))
+    managed_names.update(dotenv_values(project_root / ".env"))
+    for name in managed_names:
         if name not in overrides:
             environment.pop(name, None)
     return environment
+
+
+def _spawn_flags() -> tuple[int, bool]:
+    """Return creation flags/start-new-session for a detached replacement."""
+    if os.name == "nt":
+        flags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.CREATE_NO_WINDOW
+            | subprocess.DETACHED_PROCESS
+        )
+        return flags, False
+    return 0, True
+
+
+def _same_instance(metadata: dict, *, pid: int, instance_id: str) -> bool:
+    try:
+        return int(metadata.get("pid", -1)) == pid and metadata.get("instance_id") == instance_id
+    except (TypeError, ValueError):
+        return False
 
 
 def _replacement_process(args: argparse.Namespace) -> int:
@@ -126,8 +154,7 @@ def _replacement_process(args: argparse.Namespace) -> int:
     metadata_root = metadata.get("project_root")
     if (
         lock.get("request_id") != args.request_id
-        or int(metadata.get("pid", -1)) != args.old_pid
-        or metadata.get("instance_id") != args.old_instance_id
+        or not _same_instance(metadata, pid=args.old_pid, instance_id=args.old_instance_id)
         or not isinstance(metadata_root, str)
         or not metadata_root
         or Path(metadata_root).resolve() != PROJECT_ROOT.resolve()
@@ -148,12 +175,41 @@ def _replacement_process(args: argparse.Namespace) -> int:
         time.sleep(0.2)
     while not _port_is_free(host, port) and time.monotonic() < stop_deadline:
         time.sleep(0.2)
-    if process_exists(args.old_pid) or not _port_is_free(host, port):
+    old_alive = process_exists(args.old_pid)
+    port_busy = not _port_is_free(host, port)
+    if old_alive:
+        # The old process was asked to stop gracefully.  Before escalating,
+        # verify the PID file still names the same instance; never terminate a
+        # PID that has already been reused by another process.
+        current = read_json(paths.pid) or {}
+        same_instance = _same_instance(
+            current, pid=args.old_pid, instance_id=args.old_instance_id
+        )
+        if same_instance:
+            terminate_process(args.old_pid)
+            hard_deadline = time.monotonic() + 5.0
+            while process_exists(args.old_pid) and time.monotonic() < hard_deadline:
+                time.sleep(0.1)
+            old_alive = process_exists(args.old_pid)
+            if old_alive:
+                # POSIX services may catch SIGTERM; use SIGKILL only after the
+                # graceful window and the same-instance check above.
+                current = read_json(paths.pid) or {}
+                if _same_instance(
+                    current, pid=args.old_pid, instance_id=args.old_instance_id
+                ):
+                    terminate_process(args.old_pid, force=True)
+                    kill_deadline = time.monotonic() + 2.0
+                    while process_exists(args.old_pid) and time.monotonic() < kill_deadline:
+                        time.sleep(0.1)
+                    old_alive = process_exists(args.old_pid)
+    port_busy = not _port_is_free(host, port)
+    if old_alive or port_busy:
         write_restart_status(
             paths,
             request_id=args.request_id,
             phase="failed",
-            message="旧实例未能在超时前退出",
+            message=("旧实例未能在超时前退出" if old_alive else "旧实例端口未在超时前释放"),
         )
         release_restart(paths)
         return 4
@@ -166,9 +222,7 @@ def _replacement_process(args: argparse.Namespace) -> int:
         phase="starting",
         message="正在启动新实例",
     )
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    creationflags, start_new_session = _spawn_flags()
     try:
         child = subprocess.Popen(
             [sys.executable, str(PROJECT_ROOT / "start_web.py")],
@@ -176,6 +230,7 @@ def _replacement_process(args: argparse.Namespace) -> int:
             env=_child_environment(PROJECT_ROOT, metadata),
             close_fds=True,
             creationflags=creationflags,
+            start_new_session=start_new_session,
         )
     except OSError:
         write_restart_status(
