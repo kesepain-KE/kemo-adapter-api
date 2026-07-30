@@ -227,6 +227,57 @@ Provider 生成图片、音频、视频或文件后，必须通过 `RequestConte
 幂等范围是 `(tenant_id, request_id)`。相同 ID 和相同正文必须复用逻辑响应；相同 ID 和不同
 正文返回 `409 IDEMPOTENCY_CONFLICT`。
 
+### SSE 心跳、断线续传与持久化边界
+
+`stream=true` 时，网关会在发出 `200 text/event-stream` 响应头之前完成请求、幂等键和
+`Last-Event-ID` 校验。续传游标不存在、不属于当前响应或已经超过保留期时，接口直接返回 JSON
+格式的 `409 STREAM_RESUME_CONFLICT`，不会先返回成功的 SSE 响应再中途断开。
+
+每个 Kemo SSE 协议事件都有稳定的 `event_id` 和递增 `sequence`。客户端应保存最后一个已完整处理
+事件的 `event_id`；断线后使用完全相同的 Authorization、请求正文、`request_id`、
+`Idempotency-Key`，并通过 `Last-Event-ID` 回传该值。网关从它的下一个事件开始重放，避免重复消费。
+
+流空闲时默认每 15 秒发送一次 SSE 注释心跳：
+
+```text
+: kemo-heartbeat
+
+```
+
+心跳不是 Kemo 协议事件，没有 `event_id`，不推进 `sequence`，客户端只需忽略。SSE 响应同时携带
+`Cache-Control: no-cache, no-transform`、`X-Accel-Buffering: no` 和
+`X-Kemo-Heartbeat-Seconds`；反向代理仍应关闭流式响应缓冲，并把空闲超时设置为大于心跳间隔。
+
+幂等记录、统一终态和已发出的 SSE 事件持久化在网关本地 SQLite WAL 数据库
+`storage/executions/executions.sqlite3`，默认保留 24 小时。客户端断开不会取消同一网关进程中的
+Provider 执行，相同请求可以在保留期内重连或查询终态。网关进程重启时，上次尚未结束的执行会被
+确定性终结为 `status=incomplete`、`incomplete_details.reason=gateway_restarted`，并追加
+`response.incomplete` 终态事件。
+
+持久化只保证已经提交到本地数据库的事件和响应能够重放，不代表上游推理可以跨网关进程继续。
+进程退出时尚未落盘的上游输出无法恢复，也不会在重启后偷偷重新请求 Provider。
+
+### 超时、容量与安全重试
+
+- LLM、Embedding 和 Rerank 都受核心执行时限保护，默认 900 秒；超时错误码为
+  `GATEWAY_TIMEOUT` 且 `retryable=true`。LLM 在统一响应或 SSE 终态中返回失败，Embedding/Rerank
+  使用 HTTP 504。这里的 `retryable` 是错误分类提示，不代表已形成的 LLM 失败终态会在同一 ID 下重新执行。
+- 单进程默认最多同时执行 64 个模型请求。容量已满或网关处于 Drain 时返回 HTTP 503、
+  `GATEWAY_OVERLOADED` 或 `GATEWAY_DRAINING`，并携带 `Retry-After: 5`。
+- 单个流式响应默认最多持久化 200000 个事件，防止异常 Provider 无限占用内存和磁盘。
+- 建连、读取或 HTTP 级瞬时失败可以有限重试，并优先遵守 `retry_after_ms` 或 HTTP
+  `Retry-After`。不确定请求是否已经到达网关时，必须复用原来的 `request_id`、幂等键和完全相同的
+  正文，不能生成新 ID，否则无法利用幂等边界避免重复调用上游。Embedding/Rerank 的 HTTP 504
+  也按这一幂等规则处理。
+- 已经形成并持久化的 LLM `response.failed` 终态不是传输失败：相同 `request_id` 只会重放原失败，
+  不会再次调用 Provider。若业务层决定重新执行，必须创建新的逻辑请求和新 ID；这可能产生新计费，
+  不应由底层传输代码自动决定。
+- HTTP 错误正文中的显式 `retryable=true/false` 优先于状态码默认分类；显式为 `false` 时不得重试。
+
+这些默认值分别由 `SSE_HEARTBEAT_SECONDS`、`EXECUTION_RETENTION_HOURS`、
+`MODEL_EXECUTION_TIMEOUT_SECONDS`、`MAX_CONCURRENT_EXECUTIONS` 和
+`MAX_SSE_EVENTS_PER_RESPONSE` 配置；它们属于启动环境变量，修改后必须重启网关。
+
 ## kemo-graph 检索模型接口
 
 Embedding 与 Rerank 是独立同步任务，不使用 LLM `input/output` Item，也不通过
@@ -408,3 +459,16 @@ Asset 按 tenant + subject 隔离，上传/删除要求 `asset:write`，查询/�
 
 错误内容必须脱敏，不能包含密钥、完整上游错误体、内部堆栈、Provider State 明文或长期签名
 URL。完整字段、Item、Content Block、Usage 和 SSE 事件合同以协议模型及联调基线为准。
+
+常见的网关级错误：
+
+| 错误码 | 出现位置 | 是否可自动重试 | 说明 |
+| --- | --- | --- | --- |
+| `GATEWAY_TIMEOUT` | LLM 失败终态；Embedding/Rerank HTTP 504 | LLM 同 ID 否；Embedding/Rerank 可按幂等重试 | 达到核心执行时限 |
+| `GATEWAY_OVERLOADED` | HTTP 503 | 是 | 已达到单进程并发上限，遵守 `Retry-After` |
+| `GATEWAY_DRAINING` | HTTP 503 | 是 | 网关正在排空并准备重启，遵守 `Retry-After` |
+| `STREAM_RESUME_CONFLICT` | HTTP 409 JSON | 否 | SSE 游标不存在、过期或不属于当前响应 |
+| `IDEMPOTENCY_CONFLICT` | HTTP 409 JSON | 否 | 相同 request ID 对应了不同请求正文 |
+
+HTTP 408、425、429、500、502、503、504 在没有更具体声明时默认标记为可重试；任何错误中的显式
+`retryable` 值优先。认证、授权、协议校验和正文校验错误不得盲目重试。

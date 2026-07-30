@@ -65,6 +65,7 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 | 密钥白名单控制 | 每个网关调用密钥可单独允许全部、禁止全部或仅允许指定模型 |
 | 运行时热更新 | 厂商配置、调用密钥、系统提示词和 Provider/模型启停可在运行中生效 |
 | 独立模型探测 | 测试协议下沉到 Provider，核心只消费统一的探测结果 |
+| 可恢复的流式传输 | SQLite WAL 保存幂等记录、终态与 SSE 事件，支持心跳、断线续传和安全重放 |
 | 管理控制台 | 在网页中管理 Provider、模型、密钥、统计、调用日志、版本和重启 |
 | 智能体状态感知 | `GET /status` 使用独立状态 Token，供外部智能体读取脱敏的网关快照 |
 
@@ -95,6 +96,12 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 `GET /v1/models` 只用于模型发现兼容。网关不提供 `/v1/chat/completions` 或 `/chat/completions`；模型调用必须使用 Kemo 协议的 `POST /model/responses`。
 
 完整请求字段、鉴权、SSE、幂等、Embedding、Rerank 和错误契约见 [api.md](api.md)。
+
+生产运行默认每 15 秒发送一次 SSE 注释心跳，并将执行记录和已发事件持久化到
+`storage/executions/executions.sqlite3`。客户端断开不会取消当前进程中的 Provider 执行；在默认
+24 小时保留期内，可使用相同请求和 `Last-Event-ID` 从下一事件继续。网关重启不会重跑上游任务，
+未结束的任务会明确变成 `incomplete/gateway_restarted`。核心还提供 900 秒兜底超时、单进程 64
+并发上限和统一可重试语义，具体边界及环境变量见 [api.md](api.md)。
 
 ### 模型命名
 

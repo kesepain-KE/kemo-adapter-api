@@ -40,3 +40,4 @@ htmlcov/
 core/runtime/
 storage/daily/
 storage/assets/
+storage/executions/

@@ -65,6 +65,7 @@ kemo-agent / kemo-graph / other Kemo clients
 | Per-key access control | Every gateway key can allow all, deny all, or allow only selected models |
 | Hot-reload at runtime | Provider settings, gateway keys, system prompts, and provider/model toggles take effect without restart |
 | Provider-owned probes | Reachability testing is owned by each Provider; the core consumes a normalized result only |
+| Recoverable streaming | SQLite WAL stores idempotency records, terminal responses, and SSE events for heartbeats, reconnects, and safe replay |
 | Web console | Manage providers, models, keys, statistics, call logs, versions, and restarts from a browser |
 | Agent status awareness | `GET /status` uses an independent `STATUS_TOKEN` for read-only gateway snapshots |
 
@@ -95,6 +96,13 @@ The public surface contains model, retrieval, and read-only status APIs. Adminis
 `GET /v1/models` is a discovery-only compatibility endpoint. The gateway does not expose `/v1/chat/completions` or `/chat/completions`; inference must use `POST /model/responses`.
 
 See [api.md](api.md) for request fields, authentication, SSE, idempotency, Embedding, Rerank, and error contracts.
+
+Production streams emit an SSE comment heartbeat every 15 seconds by default and persist execution records and emitted
+events in `storage/executions/executions.sqlite3`. A client disconnect does not cancel the Provider execution in the
+current process; during the default 24-hour retention window, the same request and `Last-Event-ID` resume at the next
+event. A gateway restart never re-runs the upstream request: unfinished work becomes
+`incomplete/gateway_restarted`. The core also enforces a 900-second fallback timeout, a 64-execution single-process
+limit, and consistent retry semantics. See [api.md](api.md) for the exact boundaries and environment variables.
 
 ### Public model names
 
