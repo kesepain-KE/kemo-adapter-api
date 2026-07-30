@@ -29,6 +29,7 @@ PROTECTED_PATTERNS = (
     "api/keys.json",
     "storage/daily/",
     "storage/assets/",
+    "storage/executions/",
     "core/runtime/",
     ".backup/",
     "开发目录/",

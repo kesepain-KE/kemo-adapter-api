@@ -68,6 +68,7 @@ def test_apply_stops_before_transition_when_backup_fails(monkeypatch) -> None:
         "api/keys.json",
         "providers/deepseek/config.json",
         "storage/daily/2026-07-28.sqlite3",
+        "storage/executions/executions.sqlite3",
         "core/runtime/gateway.pid.json",
         ".backup/20260728-120000/.env",
         "开发目录/obsidian/index.md",
