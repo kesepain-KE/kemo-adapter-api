@@ -274,6 +274,7 @@ def write_pid_metadata(
     port: int,
     environment_override_names: list[str],
     dotenv_names: list[str] | None = None,
+    health_host_header: str | None = None,
 ) -> None:
     atomic_json(
         paths.pid,
@@ -286,6 +287,7 @@ def write_pid_metadata(
             "started_at": utc_now(),
             "environment_override_names": sorted(set(environment_override_names)),
             "dotenv_names": sorted(set(dotenv_names or [])),
+            "health_host_header": health_host_header,
         },
     )
 
@@ -293,4 +295,18 @@ def write_pid_metadata(
 def clear_pid_metadata(paths: RestartPaths, instance_id: str) -> None:
     current = read_json(paths.pid)
     if current and current.get("instance_id") == instance_id:
+        lock = read_json(paths.lock) or {}
+        try:
+            handoff_in_progress = (
+                bool(lock.get("request_id"))
+                and int(lock.get("gateway_pid", -1)) == int(current.get("pid", -2))
+            )
+        except (TypeError, ValueError):
+            handoff_in_progress = False
+        if handoff_in_progress:
+            # The detached replacement may be scheduled only after the old
+            # process reaches this finally block (especially on Windows).
+            # Keep non-secret metadata until the replacement validates it and
+            # the new start_web.py atomically overwrites the file.
+            return
         paths.pid.unlink(missing_ok=True)

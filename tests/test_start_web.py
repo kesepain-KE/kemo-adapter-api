@@ -181,7 +181,7 @@ def test_start_web_refuses_a_second_active_instance(
 
 def test_browser_url_uses_loopback_for_wildcard_bindings() -> None:
     assert start_web._browser_url("0.0.0.0", 7531) == "http://127.0.0.1:7531"
-    assert start_web._browser_url("::", 7531) == "http://127.0.0.1:7531"
+    assert start_web._browser_url("::", 7531) == "http://[::1]:7531"
 
 
 def test_access_log_filter_redacts_url_token() -> None:

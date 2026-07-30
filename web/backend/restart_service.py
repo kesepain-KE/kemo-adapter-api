@@ -15,6 +15,7 @@ from core.restart_control import (
     RestartRequest,
     read_json,
     read_restart_request,
+    release_restart,
     submit_restart,
     write_restart_status,
 )
@@ -81,7 +82,22 @@ class RestartService:
             request = read_restart_request(self.paths)
             if request and request.request_id != self._processing_request_id:
                 self._processing_request_id = request.request_id
-                await self._process(request)
+                try:
+                    await self._process(request)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Never let one unexpected restart-controller failure kill
+                    # the watcher or leave the gateway permanently draining.
+                    await self.runtime_state.cancel_drain()
+                    write_restart_status(
+                        self.paths,
+                        request_id=request.request_id,
+                        phase="failed",
+                        message="重启控制器发生内部错误，旧网关保持运行",
+                        active_executions=self.runtime_state.active_executions,
+                    )
+                    release_restart(self.paths)
             await asyncio.sleep(0.4)
 
     async def _process(self, request: RestartRequest) -> None:
@@ -97,15 +113,14 @@ class RestartService:
             self.paths.request.unlink(missing_ok=True)
             self.paths.lock.unlink(missing_ok=True)
             return
-        if not preflight(self.project_root):
+        if not await asyncio.to_thread(preflight, self.project_root):
             write_restart_status(
                 self.paths,
                 request_id=request.request_id,
                 phase="failed",
                 message="启动前检查失败，旧网关保持运行",
             )
-            self.paths.request.unlink(missing_ok=True)
-            self.paths.lock.unlink(missing_ok=True)
+            release_restart(self.paths)
             return
 
         write_restart_status(
@@ -128,8 +143,7 @@ class RestartService:
                 message="Drain 超时，已取消重启并恢复接收新请求",
                 active_executions=self.runtime_state.active_executions,
             )
-            self.paths.request.unlink(missing_ok=True)
-            self.paths.lock.unlink(missing_ok=True)
+            release_restart(self.paths)
             return
 
         write_restart_status(
@@ -163,14 +177,23 @@ class RestartService:
         else:
             start_new_session = True
         try:
-            subprocess.Popen(
-                command,
-                cwd=self.project_root,
-                close_fds=True,
-                creationflags=creationflags,
-                start_new_session=start_new_session,
-            )
-        except OSError:
+            self.paths.directory.mkdir(parents=True, exist_ok=True)
+            # A detached restart must not retain the terminal or CI pipe that
+            # launched the old gateway. Keep one local diagnostic log instead.
+            with (self.paths.directory / "restart-process.log").open(
+                "ab", buffering=0
+            ) as restart_log:
+                subprocess.Popen(
+                    command,
+                    cwd=self.project_root,
+                    stdin=subprocess.DEVNULL,
+                    stdout=restart_log,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                    creationflags=creationflags,
+                    start_new_session=start_new_session,
+                )
+        except (OSError, ValueError):
             await self.runtime_state.cancel_drain()
             write_restart_status(
                 self.paths,
@@ -178,8 +201,7 @@ class RestartService:
                 phase="failed",
                 message="无法启动替换进程，旧网关保持运行",
             )
-            self.paths.request.unlink(missing_ok=True)
-            self.paths.lock.unlink(missing_ok=True)
+            release_restart(self.paths)
             return
 
         await self.runtime_state.mark_stopping()

@@ -93,16 +93,31 @@ def _startup_options() -> dict[str, Any]:
     if log_level not in LOG_LEVELS:
         raise ValueError(f"LOG_LEVEL 必须是: {', '.join(sorted(LOG_LEVELS))}")
 
+    health_host_header: str | None = None
+    for allowed_host in settings.web_allowed_hosts:
+        candidate = allowed_host.strip()
+        if not candidate or candidate == "*":
+            continue
+        health_host_header = (
+            f"health.{candidate[2:]}" if candidate.startswith("*.") else candidate
+        )
+        break
+
     return {
         "host": settings.host,
         "port": settings.port,
         "log_level": log_level,
         "access_log": _env_bool("WEB_ACCESS_LOG", True),
+        # Loopback health checks still need a Host accepted by
+        # TrustedHostMiddleware on public-domain deployments.
+        "health_host_header": health_host_header,
     }
 
 
 def _browser_url(host: str, port: int) -> str:
-    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+    browser_host = "127.0.0.1" if host == "0.0.0.0" else host
+    if browser_host in {"::", "[::]"}:
+        browser_host = "::1"
     if ":" in browser_host and not browser_host.startswith("["):
         browser_host = f"[{browser_host}]"
     return f"http://{browser_host}:{port}"
@@ -110,7 +125,9 @@ def _browser_url(host: str, port: int) -> str:
 
 def _port_has_listener(host: str, port: int) -> bool:
     """只读探测目标监听地址，阻止 wildcard/specific address 双实例并存。"""
-    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+    connect_host = "127.0.0.1" if host == "0.0.0.0" else host
+    if connect_host in {"::", "[::]"}:
+        connect_host = "::1"
     connect_host = connect_host.strip("[]")
     try:
         with socket.create_connection((connect_host, port), timeout=0.25):
@@ -140,13 +157,36 @@ def _startup_conflict(paths: RestartPaths, *, host: str, port: int) -> str | Non
     return None
 
 
-def main() -> int:
-    # 保证从任意工作目录执行 ``python path/to/start_web.py`` 都能导入项目包。
+def _ensure_project_import_path() -> None:
     project_path = str(PROJECT_ROOT)
     if project_path not in sys.path:
         sys.path.insert(0, project_path)
-    environment_override_names = list(os.environ)
+
+
+def preflight_main() -> int:
+    """在独立进程中验证新环境、前端产物和后端导入，不监听端口。"""
+
+    _ensure_project_import_path()
     load_dotenv(ENV_FILE, override=False)
+    if not (FRONTEND_DIST / "index.html").is_file():
+        return 2
+    try:
+        _startup_options()
+        # 独立进程导入可以发现当前运行实例因模块缓存而看不到的语法、
+        # 依赖和应用装配错误。生命周期在这里不会启动，也不会接管端口。
+        from api.server import app as _app  # noqa: F401
+    except Exception:
+        return 2
+    return 0
+
+
+def main() -> int:
+    # 保证从任意工作目录执行 ``python path/to/start_web.py`` 都能导入项目包。
+    _ensure_project_import_path()
+    skip_dotenv = os.environ.pop("_KEMO_RESTART_SKIP_DOTENV", "") == "1"
+    environment_override_names = list(os.environ)
+    if not skip_dotenv:
+        load_dotenv(ENV_FILE, override=False)
 
     index_file = FRONTEND_DIST / "index.html"
     if not index_file.is_file():
@@ -210,6 +250,7 @@ def main() -> int:
         port=int(options["port"]),
         environment_override_names=environment_override_names,
         dotenv_names=[name for name in dotenv_values(ENV_FILE) if name],
+        health_host_header=options["health_host_header"],
     )
     try:
         server.run()
@@ -222,4 +263,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--preflight"]:
+        raise SystemExit(preflight_main())
     raise SystemExit(main())

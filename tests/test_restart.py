@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,13 +14,16 @@ from core.restart_control import (
     RestartAlreadyRunning,
     RestartPaths,
     RestartRequest,
+    clear_pid_metadata,
     read_json,
     release_restart,
     submit_restart,
+    write_pid_metadata,
 )
-from restart import _child_environment
+from restart import _child_environment, _prospective_environment
 from core.runtime_state import GatewayDrainingError, GatewayPhase, GatewayRuntimeState
 from tests.test_admin_api import ADMIN_HEADERS, admin_project
+from web.backend.auth_service import WebAuthService
 
 
 OWNER_HEADERS = {"Authorization": "Bearer owner-token"}
@@ -144,3 +148,90 @@ def test_replacement_environment_preserves_explicit_process_overrides(
         {"environment_override_names": ["PORT"], "dotenv_names": ["PORT"]},
     )
     assert child["PORT"] == "9999"
+
+
+def test_prospective_environment_restores_running_dotenv_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = RestartPaths(tmp_path)
+    monkeypatch.setenv("WEB_TOKEN", "old-running-token")
+    (tmp_path / ".env").write_text("WEB_TOKEN=new-token\n", encoding="utf-8")
+    write_pid_metadata(
+        paths,
+        pid=43210,
+        instance_id="instance_old",
+        host="127.0.0.1",
+        port=7531,
+        environment_override_names=[],
+        dotenv_names=["WEB_TOKEN"],
+    )
+
+    with _prospective_environment(tmp_path):
+        assert os.environ["WEB_TOKEN"] == "new-token"
+
+    assert os.environ["WEB_TOKEN"] == "old-running-token"
+
+
+def test_pid_metadata_is_retained_only_during_restart_handoff(tmp_path: Path) -> None:
+    paths = RestartPaths(tmp_path)
+    write_pid_metadata(
+        paths,
+        pid=43210,
+        instance_id="instance_old",
+        host="127.0.0.1",
+        port=7531,
+        environment_override_names=[],
+    )
+    paths.lock.write_text(
+        '{"request_id":"restart_test","gateway_pid":43210}',
+        encoding="utf-8",
+    )
+
+    clear_pid_metadata(paths, "instance_old")
+    assert read_json(paths.pid)["instance_id"] == "instance_old"
+
+    paths.lock.unlink()
+    clear_pid_metadata(paths, "instance_old")
+    assert not paths.pid.exists()
+
+
+def test_web_session_survives_restart_without_persisting_plain_cookie(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "web-sessions.json"
+    first = WebAuthService(
+        ttl_seconds=7200,
+        persistence_path=path,
+        namespace="credentials-v1",
+    )
+    issued = first.issue(stage="complete")
+
+    raw = path.read_text(encoding="utf-8")
+    assert issued.token not in raw
+    assert issued.csrf_token in raw
+
+    restored = WebAuthService(
+        ttl_seconds=7200,
+        persistence_path=path,
+        namespace="credentials-v1",
+    ).resolve(issued.token, stage="complete")
+    assert restored is not None
+    assert restored.csrf_token == issued.csrf_token
+    assert restored.token == ""
+
+
+def test_web_session_is_invalidated_when_authentication_changes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "web-sessions.json"
+    first = WebAuthService(
+        persistence_path=path,
+        namespace="credentials-v1",
+    )
+    issued = first.issue(stage="complete")
+
+    changed = WebAuthService(
+        persistence_path=path,
+        namespace="credentials-v2",
+    )
+    assert changed.resolve(issued.token, stage="complete") is None

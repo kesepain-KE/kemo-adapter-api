@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import hashlib
 import json
 import mimetypes
 from pathlib import Path
@@ -51,6 +52,21 @@ def _project_version() -> str:
         return version.strip() if isinstance(version, str) and version.strip() else "0.0.0"
     except (OSError, UnicodeError, json.JSONDecodeError):
         return "0.0.0"
+
+
+def _web_auth_namespace(settings: Settings) -> str:
+    """Bind persisted Web sessions to the active credential configuration."""
+
+    payload = json.dumps(
+        {
+            "web_token": settings.web_token,
+            "web_username": settings.web_username,
+            "web_password": settings.web_password,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _validate_web_exposure(settings: Settings) -> None:
@@ -186,7 +202,13 @@ def create_app(
     app.state.statistics = statistics
     app.state.assets = assets
     app.state.executions = executions
-    app.state.web_auth = WebAuthService()
+    app.state.web_auth = WebAuthService(
+        persistence_path=live_config.project_root
+        / "core"
+        / "runtime"
+        / "web-sessions.json",
+        namespace=_web_auth_namespace(resolved_settings),
+    )
     app.state.executor = GatewayExecutor(
         registry,
         executions,
