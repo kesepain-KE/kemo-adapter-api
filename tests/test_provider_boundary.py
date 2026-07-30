@@ -107,6 +107,20 @@ class BrokenStreamProvider(FakeProvider):
         raise ValueError("sensitive vendor body must not escape")
 
 
+class SlowProvider(FakeProvider):
+    async def execute(
+        self, request: KemoRequest, context: RequestContext
+    ) -> ProviderResult:
+        await asyncio.sleep(0.1)
+        return self.result()
+
+    async def _stream(
+        self, request: KemoRequest, context: RequestContext
+    ) -> AsyncIterator[ProviderEvent]:
+        await asyncio.sleep(0.1)
+        yield ProviderEvent(kind=ProviderEventKind.COMPLETED, result=self.result())
+
+
 class SlashNamedProvider(FakeProvider):
     @property
     def models(self) -> frozenset[str]:
@@ -263,6 +277,84 @@ def test_broken_adapter_becomes_sanitized_terminal_failure() -> None:
         assert events[-1].response.error is not None
         assert events[-1].response.error.code == "PROVIDER_BAD_RESPONSE"
         assert "sensitive vendor body" not in events[-1].response.error.message
+
+    asyncio.run(scenario())
+
+
+def test_core_timeout_normalizes_non_stream_and_stream_failures() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        registry.register(SlowProvider())
+        gateway = GatewayExecutor(
+            registry,
+            InMemoryExecutionStore(),
+            execution_timeout_seconds=0.02,
+        )
+        non_stream = request(stream=False)
+        response = await gateway.execute(
+            non_stream,
+            gateway.make_context(
+                tenant_id="t1", subject_id="u1", request_id=non_stream.request_id
+            ),
+        )
+        assert response.status == "failed"
+        assert response.error is not None
+        assert response.error.code == "GATEWAY_TIMEOUT"
+        assert response.error.retryable is True
+
+        stream_request = request(stream=True).model_copy(
+            update={"request_id": "req_stream_timeout"}
+        )
+        events = [
+            event
+            async for event in gateway.stream(
+                stream_request,
+                gateway.make_context(
+                    tenant_id="t1",
+                    subject_id="u1",
+                    request_id=stream_request.request_id,
+                ),
+            )
+        ]
+        assert [event.type for event in events] == [
+            "response.created",
+            "response.failed",
+        ]
+        assert events[-1].response is not None
+        assert events[-1].response.error is not None
+        assert events[-1].response.error.code == "GATEWAY_TIMEOUT"
+
+    asyncio.run(scenario())
+
+
+def test_non_stream_producer_survives_caller_cancellation_for_idempotent_replay() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        registry.register(SlowProvider())
+        gateway = GatewayExecutor(
+            registry,
+            InMemoryExecutionStore(),
+            execution_timeout_seconds=1,
+        )
+        call = request(stream=False)
+        context = gateway.make_context(
+            tenant_id="t1", subject_id="u1", request_id=call.request_id
+        )
+        caller = asyncio.create_task(gateway.execute(call, context))
+        await asyncio.sleep(0.01)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        await asyncio.sleep(0.12)
+
+        replay = await gateway.execute(
+            call,
+            gateway.make_context(
+                tenant_id="t1", subject_id="u1", request_id=call.request_id
+            ),
+        )
+        assert replay.status == "completed"
+        assert replay.output[0].type == "message"
 
     asyncio.run(scenario())
 
