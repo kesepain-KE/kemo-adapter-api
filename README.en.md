@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.0-blue" alt="Gateway version 0.7.0"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.2-blue" alt="Gateway version 0.7.2"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -247,7 +247,7 @@ python restart.py --reason "update configuration"
 python restart.py --status
 ```
 
-The restart module drains in-flight requests before restarting. The web console also provides confirmation, progress feedback, and status polling.
+The restart module drains in-flight requests before restarting. Before stopping the old process, an isolated Python process preflights the new environment, frontend artifact, and backend imports. The replacement then validates the new `.env` HOST/PORT through health checks before reporting success; if startup fails, it makes a best-effort rollback to the old startup environment. The web console also provides confirmation, progress feedback, and status polling. When authentication settings are unchanged, the two-hour Web session is handed off securely so a graceful restart does not immediately log the browser out.
 
 ### Self-update
 

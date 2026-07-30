@@ -1,0 +1,57 @@
+name: Version and update safety
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: version-update-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version-and-update:
+    name: Version and update (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Validate release metadata
+        run: python -m pytest tests/test_version_contract.py -q
+
+      - name: Run update unit safety tests
+        run: python -m pytest tests/test_update.py -q
+
+      - name: Run temporary Git repository integration tests
+        run: python -m pytest tests/test_update_git_integration.py -q
+
+      - name: Check the real remote without modifying source
+        run: python update.py --check
+
+      - name: Verify UTF-8 Git boundary and source syntax
+        run: |
+          python -m compileall -q update.py update tests
+          git diff --check

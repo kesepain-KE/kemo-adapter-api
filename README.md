@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.0-blue" alt="Gateway version 0.7.0"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.2-blue" alt="Gateway version 0.7.2"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -245,7 +245,7 @@ python restart.py --reason "update configuration"
 python restart.py --status
 ```
 
-重启模块会先进入 Drain，等待在途请求结束。管理控制台也提供二次确认、耗时反馈和状态轮询。
+重启模块会先进入 Drain，等待在途请求结束。停止旧实例前会在独立 Python 进程中预检新环境、前端产物和后端导入；新实例会按新 `.env` 的 HOST/PORT 通过健康检查后才宣布成功。若新实例启动失败，会尽力用旧启动环境恢复服务。管理控制台也提供二次确认、耗时反馈和状态轮询；认证配置未改变时，两小时 Web 会话会安全交接到新实例，不会因平滑重启立即掉线。
 
 ### 项目自更新
 
