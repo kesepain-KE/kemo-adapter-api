@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.2-blue" alt="Gateway version 0.7.2"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.3-blue" alt="Gateway version 0.7.3"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -68,6 +68,8 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 | 可恢复的流式传输 | SQLite WAL 保存幂等记录、终态与 SSE 事件，支持心跳、断线续传和安全重放 |
 | 管理控制台 | 在网页中管理 Provider、模型、密钥、统计、调用日志、版本和重启 |
 | 智能体状态感知 | `GET /status` 使用独立状态 Token，供外部智能体读取脱敏的网关快照 |
+
+调用日志的小时选择器始终显示该时间段的总调用次数；卡片颜色只由实际结果决定，成功次数贡献绿色、失败次数贡献红色，两者同时存在时按强度叠加。取消或尚未终态的调用不会被误标为成功或失败。
 
 这些能力不是分散的功能入口。它们共同服务于同一个目标：让上层智能体可以专注于理解用户，而不必关心背后是哪个厂商以什么方式提供服务。
 

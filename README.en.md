@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.2-blue" alt="Gateway version 0.7.2"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.3-blue" alt="Gateway version 0.7.3"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -68,6 +68,8 @@ kemo-agent / kemo-graph / other Kemo clients
 | Recoverable streaming | SQLite WAL stores idempotency records, terminal responses, and SSE events for heartbeats, reconnects, and safe replay |
 | Web console | Manage providers, models, keys, statistics, call logs, versions, and restarts from a browser |
 | Agent status awareness | `GET /status` uses an independent `STATUS_TOKEN` for read-only gateway snapshots |
+
+The call-log hour picker always displays the total number of calls in each period. Card colors are driven only by terminal outcomes: successful calls contribute green, failed calls contribute red, and both gradients are blended when both outcomes are present. Cancelled or non-terminal calls are not misclassified as either result.
 
 These are not isolated features. They share one goal: let the agent focus on understanding the user, without caring which vendor is behind the request.
 
