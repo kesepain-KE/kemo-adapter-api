@@ -68,14 +68,18 @@ export default function HourPicker({
         {HOURS.map(hour => {
           const item = statistics?.[hour]
           const calls = item?.calls ?? 0
+          const successes = item?.successes ?? 0
           const failures = item?.failures ?? 0
-          const green = Math.min(calls / 648, 1)
-          const red = Math.min(failures / 648, 1)
+          // 总调用数只负责显示；颜色严格由终态结果贡献，避免失败调用
+          // 同时被算进绿色调用量。成功与失败分别形成两层渐变，混合时
+          // 可以直接看出该小时的吞吐量与失败压力。
+          const successIntensity = Math.min(Math.max(successes, 0) / 648, 1)
+          const failureIntensity = Math.min(Math.max(failures, 0) / 648, 1)
           const style = {
-            '--hour-green': String(green),
-            '--hour-red': String(red),
+            '--hour-success': String(successIntensity),
+            '--hour-failure': String(failureIntensity),
           } as CSSProperties
-          const details = `${calls} 次调用，${failures} 次失败`
+          const details = `${calls} 次调用，${successes} 次成功，${failures} 次失败`
           return <button
             type="button"
             key={hour}
@@ -92,7 +96,7 @@ export default function HourPicker({
           </button>
         })}
       </div>
-      <footer className="stats-hour-legend"><span><i className="hour-legend-green"/>调用量（648 次封顶）</span><span><i className="hour-legend-red"/>失败量</span></footer>
+      <footer className="stats-hour-legend"><span><i className="hour-legend-green"/>成功调用（648 次封顶）</span><span><i className="hour-legend-red"/>失败调用（648 次封顶）</span></footer>
     </div>}
   </div>
 }
