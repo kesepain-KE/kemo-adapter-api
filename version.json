@@ -1,6 +1,6 @@
 {
-  "version": "0.7.3",
+  "version": "0.7.4",
   "protocol_version": "1.0",
   "build": null,
-  "notes": "修正调用日志小时分段的着色口径：总调用次数独立显示，成功与失败次数分别以绿色和红色渐变叠加呈现"
+  "notes": "修复 OpenCode thinking 模式多轮工具续轮丢失 reasoning_content，并增强 Responses Provider 加密推理状态的安全回放边界"
 }

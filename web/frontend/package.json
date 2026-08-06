@@ -1,7 +1,7 @@
 {
   "name": "kemo-gateway-console",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "packageManager": "pnpm@11.9.0",
   "type": "module",
   "scripts": {
