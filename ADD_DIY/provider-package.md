@@ -123,6 +123,9 @@ kemo-agent，`efforts` 必须填写 `minimal|low|medium|high|max` 五个 Kemo �
 五个 Kemo 逻辑档位都要有脱敏请求 Fixture；还要覆盖一个非法档位并确认返回
 `REASONING_EFFORT_UNSUPPORTED` 或 Provider 的统一 `VALIDATION_ERROR`。厂商响应中的推理正文、
 摘要、可回放状态和 `reasoning_tokens` 分别映射，不能因为支持其中一项就自动声明其余能力。
+`persisted_state=True` 只用于厂商明确要求工具续轮回放 reasoning 或不透明状态的模型。此时契约测试
+必须覆盖首次响应生成状态、Kemo `ReasoningItem` 保留状态、下一轮请求恢复状态，以及跨 Provider/
+跨模型状态被拒绝四条边界；仅返回推理摘要但不要求回放时仍应保持 `False`。
 
 ## 7. 工具调用与多轮
 
@@ -135,7 +138,9 @@ Provider 只翻译工具，不执行工具。必须覆盖：
 5. 最终 `ProviderResult.output` 保留全部 `tool_call`，终态为 `requires_action`；
 6. 工具结果通过原始 `call_id` 回传，不能混入另一调用；
 7. 非法 JSON 保留有限长度的 `arguments_raw` 和脱敏解析错误，不能静默丢失；
-8. 厂商要求回放 reasoning/provider state 时由该 Provider 自己保存和恢复，不能污染核心。
+8. 厂商要求回放 reasoning/provider state 时由该 Provider 自己保存和恢复，不能污染核心；
+9. Chat Completions 风格通常回填 assistant `reasoning_content`，Responses 风格应回放独立 reasoning
+   item 与厂商加密状态，禁止把两种协议机械混用。
 
 ### LLM 多模态内容
 
