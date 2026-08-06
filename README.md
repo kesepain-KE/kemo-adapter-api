@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.3-blue" alt="Gateway version 0.7.3"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.4-blue" alt="Gateway version 0.7.4"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -278,6 +278,11 @@ python update.py
 - **契约验证**：`test_contract.py` 包含实现是否符合接口约定的测试用例
 
 除了 `template/provider/`，没有第二份权威参考。厂商包实现后，建议先通过提供的契约测试再投入使用。
+
+推理模型如果要求在工具续轮中回传 reasoning 或厂商加密状态，Provider 必须在
+`ReasoningCapabilities.persisted_state` 中如实声明，并完成“响应映射 → Kemo reasoning item →
+下一轮厂商请求”的无损回放。状态必须同时绑定原 Provider 和原模型，不能作为普通消息文本注入，
+也不能跨厂商或跨模型复用。
 
 完整 Kemo 模式使用 `POST /model/responses` 统一承载对话、视觉、ASR、TTS、语音转换、图片
 生成/编辑、视频理解和视频生成；`metadata.capability`、输入/输出模态与

@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.3-blue" alt="Gateway version 0.7.3"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.4-blue" alt="Gateway version 0.7.4"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -276,6 +276,12 @@ The only authoritative template is `template/provider/`. A Provider must at mini
 - **Contract verification** — `test_contract.py` contains test cases that validate the implementation against the ProviderPackage interface
 
 There is no second authoritative reference beyond `template/provider/`. After implementing a provider package, run the contract tests before putting it into service.
+
+When a reasoning model requires its reasoning text or encrypted vendor state to be replayed during a tool
+continuation, the Provider must declare that requirement truthfully through
+`ReasoningCapabilities.persisted_state` and preserve the complete response → Kemo reasoning item → next vendor
+request round trip. Persisted state must stay bound to the original Provider and model; it must never be injected
+as ordinary message text or reused across Providers or models.
 
 Full Kemo mode uses `POST /model/responses` for conversation, vision, ASR, TTS, speech conversion, image
 generation/editing, video understanding, and video generation. `metadata.capability`, input/output modalities,
