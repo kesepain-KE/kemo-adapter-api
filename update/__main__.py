@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Compatibility entrypoint for the Kemo gateway updater."""
+"""支持 ``python -m update``，与根目录入口共用同一个 main。"""
 
 from __future__ import annotations
 

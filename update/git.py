@@ -8,6 +8,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import NamedTuple
 
+from update.constants import PROTECTED_EXCEPTIONS, PROTECTED_PATTERNS
+
 
 class GitDiff(NamedTuple):
     files: list[str]
@@ -22,24 +24,6 @@ class GitSyncState(NamedTuple):
     ahead: int
     behind: int
 
-
-PROTECTED_PATTERNS = (
-    ".env",
-    "providers/",
-    "api/keys.json",
-    "storage/daily/",
-    "storage/assets/",
-    "storage/executions/",
-    "core/runtime/",
-    ".backup/",
-    "开发目录/",
-    "*.bak",
-    "*.bak.*",
-    "*.log",
-    "*.pid",
-)
-
-PROTECTED_EXCEPTIONS = frozenset({"providers/__init__.py"})
 
 # 兼容已有调用方；这些路径不只是从差异展示中排除，也会阻止更新执行。
 EXCLUDED_PATTERNS = PROTECTED_PATTERNS
@@ -79,23 +63,39 @@ def run_git(
     args: list[str], project_root: Path, timeout: int = 30
 ) -> subprocess.CompletedProcess[str]:
     """Run Git with one UTF-8 text boundary on Windows and Linux."""
-    return subprocess.run(
-        [
-            "git",
-            "-c",
-            "i18n.logOutputEncoding=UTF-8",
-            "-c",
-            "core.quotePath=false",
-            *args,
-        ],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=_git_environment(),
-        timeout=timeout,
-    )
+    command = [
+        "git",
+        "-c",
+        "i18n.logOutputEncoding=UTF-8",
+        "-c",
+        "core.quotePath=false",
+        *args,
+    ]
+    try:
+        return subprocess.run(
+            command,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_git_environment(),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            stdout="",
+            stderr=f"Git 命令超时（{timeout} 秒）: {exc}",
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            command,
+            127,
+            stdout="",
+            stderr=f"无法启动 Git: {exc}",
+        )
 
 
 def _git(
@@ -242,9 +242,43 @@ def stash_local(project_root: Path, label: str) -> bool:
     return r.returncode == 0 and "Saved working directory" in r.stdout
 
 
+def create_stash(project_root: Path, label: str) -> str | None:
+    """创建 stash 并返回不可变提交 ID，避免恢复错误的 stash@{0}。"""
+
+    if not stash_local(project_root, label):
+        return None
+    result = _git(["rev-parse", "--verify", "refs/stash^{commit}"], project_root)
+    commit = result.stdout.strip() if result.returncode == 0 else ""
+    return commit or None
+
+
 def stash_pop(project_root: Path) -> bool:
     r = _git(["stash", "pop"], project_root)
     return r.returncode == 0
+
+
+def apply_stash(project_root: Path, stash_commit: str) -> bool:
+    """应用指定 stash 但先不删除；只有完整更新成功后才会 drop。"""
+
+    if not stash_commit:
+        return True
+    result = _git(["stash", "apply", "--index", stash_commit], project_root, timeout=60)
+    return result.returncode == 0 and not get_unmerged_files(project_root)
+
+
+def drop_stash(project_root: Path, stash_commit: str) -> bool:
+    """只删除与给定提交 ID 完全匹配的 stash。"""
+
+    result = _git(["stash", "list", "--format=%H"], project_root)
+    if result.returncode != 0:
+        return False
+    commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    try:
+        index = commits.index(stash_commit)
+    except ValueError:
+        return False
+    dropped = _git(["stash", "drop", f"stash@{{{index}}}"], project_root)
+    return dropped.returncode == 0
 
 
 def get_fetch_commit(project_root: Path) -> str:
@@ -271,6 +305,81 @@ def hard_reset_to_fetch_head(
     target = expected_commit or "FETCH_HEAD"
     r = _git(["reset", "--hard", target], project_root, timeout=60)
     return r.returncode == 0
+
+
+def reset_to_commit(project_root: Path, commit: str) -> bool:
+    """事务失败时仅回到本事务记录的更新前提交。"""
+
+    if not commit:
+        return False
+    result = _git(["reset", "--hard", commit], project_root, timeout=60)
+    return result.returncode == 0
+
+
+def get_unmerged_files(project_root: Path) -> list[str]:
+    """列出 index 中所有 UU/AA/DD 等未解决文件。"""
+
+    result = _git(["diff", "--name-only", "--diff-filter=U"], project_root)
+    if result.returncode != 0:
+        return []
+    return [
+        line.strip().replace("\\", "/")
+        for line in result.stdout.splitlines()
+        if line.strip()
+    ]
+
+
+def _git_path(project_root: Path, name: str) -> Path | None:
+    result = _git(["rev-parse", "--git-path", name], project_root)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    path = Path(result.stdout.strip())
+    return path if path.is_absolute() else project_root / path
+
+
+def get_operation_state(project_root: Path) -> str | None:
+    """检测尚未完成的 merge/rebase/cherry-pick/revert。"""
+
+    candidates = (
+        ("MERGE_HEAD", "merge"),
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+    )
+    for marker, label in candidates:
+        path = _git_path(project_root, marker)
+        if path is not None and path.exists():
+            return label
+    return None
+
+
+def abort_in_progress_operations(project_root: Path) -> None:
+    """尽力退出未完成 Git 操作；随后 reset 会保证 index 回到确定状态。"""
+
+    operation = get_operation_state(project_root)
+    commands = {
+        "merge": ["merge", "--abort"],
+        "rebase": ["rebase", "--abort"],
+        "cherry-pick": ["cherry-pick", "--abort"],
+        "revert": ["revert", "--abort"],
+    }
+    if operation in commands:
+        _git(commands[operation], project_root, timeout=60)
+
+
+def clean_update_paths(project_root: Path, paths: list[str]) -> bool:
+    """只清理远端更新涉及的非保护未跟踪路径，绝不扩大到整个仓库。"""
+
+    safe_paths = sorted({path for path in paths if path and not _is_protected(path)})
+    if not safe_paths:
+        return True
+    success = True
+    for start in range(0, len(safe_paths), 100):
+        chunk = safe_paths[start : start + 100]
+        result = _git(["clean", "-fd", "--", *chunk], project_root, timeout=60)
+        success = success and result.returncode == 0
+    return success
 
 
 def create_recovery_ref(

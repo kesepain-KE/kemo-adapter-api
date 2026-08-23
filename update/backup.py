@@ -23,6 +23,8 @@ _EXCLUDE_DIRS = frozenset({
     ".pytest_cache",
     "htmlcov",
     ".coverage",
+    "storage",
+    "开发目录",
 })
 
 _EXCLUDE_PREFIXES = frozenset({
@@ -47,6 +49,13 @@ def _should_exclude(path: Path, project_root: Path) -> bool:
 
     # 检查每层父目录
     parts = rel.split("/")
+    # Provider 包与凭据属于部署端私有生态；仓库只管理命名空间文件。
+    if parts[0] == "providers" and rel != "providers/__init__.py":
+        return True
+    if rel == ".env" or rel == "api/keys.json":
+        return True
+    if rel.startswith("core/runtime/"):
+        return True
     for part in parts:
         if part in _EXCLUDE_DIRS:
             return True
@@ -67,8 +76,8 @@ def _timestamp() -> str:
     return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
-def create(project_root: Path) -> tuple[bool, str]:
-    """冷备份整个项目（排除无关文件）到 .backup/<timestamp>/。"""
+def create_snapshot(project_root: Path) -> tuple[bool, str, str | None]:
+    """创建仅含可恢复源码的冷备份，并返回稳定备份标识。"""
     ts = _timestamp()
     backup_root = _backup_dir(project_root)
     dst = backup_root / ts
@@ -76,7 +85,7 @@ def create(project_root: Path) -> tuple[bool, str]:
 
     backup_root.mkdir(parents=True, exist_ok=True)
     if dst.exists():
-        return False, f"备份标识已存在，请稍后重试: .backup/{ts}/"
+        return False, f"备份标识已存在，请稍后重试: .backup/{ts}/", None
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -93,12 +102,19 @@ def create(project_root: Path) -> tuple[bool, str]:
         staging.replace(dst)
     except Exception as e:
         shutil.rmtree(staging, ignore_errors=True)
-        return False, f"备份失败: {e}"
+        return False, f"备份失败: {e}", None
 
     # 清理旧备份
     _cleanup_old(project_root)
 
-    return True, f"冷备份完成: .backup/{ts}/ ({count} 个文件)"
+    return True, f"冷备份完成: .backup/{ts}/ ({count} 个源码文件)", ts
+
+
+def create(project_root: Path) -> tuple[bool, str]:
+    """向后兼容旧调用方；新事务应使用 :func:`create_snapshot`。"""
+
+    ok, message, _ = create_snapshot(project_root)
+    return ok, message
 
 
 def list_backups(project_root: Path) -> list[str]:
@@ -118,7 +134,7 @@ def restore(project_root: Path, backup_id: str) -> tuple[bool, str]:
     """从 .backup/<backup_id>/ 恢复。
 
     backup_id 可以是具体时间戳或 'latest'。
-    跳过排除目录和文件。
+    跳过私有配置、Provider、运行数据和开发目录。
     """
     if backup_id == "latest":
         backups = list_backups(project_root)
