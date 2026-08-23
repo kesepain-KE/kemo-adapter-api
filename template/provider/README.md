@@ -21,6 +21,58 @@ Copy-Item -Recurse template/provider providers/deepseek_v2
 `test_contract.py` 必须替换为目标厂商的脱敏 Golden Fixture。所有运行路径
 中的 `Example`、`example`、`.invalid`、`vendor_`、TODO 和 `NotImplementedError` 必须清除。
 
+### 复制后先做这八步
+
+1. 把文件夹名改成小写的真实 `provider_id`；
+2. 同步修改 `provider.py`、`manifest.json` 和模型能力文件中的 Provider ID；
+3. 把 `.example` 文件改成 `manifest.json`、`config.json`、`secrets.json`；
+4. 只在 `secrets.json` 填上游密钥，至少保留一项，实际服务至少启用一项；
+5. 先把所有未验证能力设为 `false`，不要照抄厂商宣传；
+6. 按真实端点实现 `client.py`、`protocol.py`、`streaming.py`、`usage.py` 和 `errors.py`；
+7. 用脱敏响应替换 `test_contract.py`，先运行测试；
+8. 最后再执行 Provider 自有 `probe.py`，真实探测须有用户费用授权。
+
+新增模型时不复制模板，只同步 `provider.models`、`capabilities.py`、`manifest.json`、协议映射
+和测试。模型公开名始终是 `<provider_id>-<厂商原始模型名>`。
+
+### 密钥模板标准
+
+`secrets.json.example` 的标准格式是 `api_keys` 数组；即使只有一个上游密钥，也要保留
+`key_id`、`api_key` 和 `enabled` 三个字段：
+
+```json
+{
+  "api_keys": [
+    {
+      "key_id": "primary",
+      "api_key": "replace-with-provider-key",
+      "enabled": true
+    }
+  ]
+}
+```
+
+字段要求：
+
+- `key_id` 是同一 Provider 内稳定且唯一的标识，只能使用字母、数字、`.`、`_` 和 `-`；
+- `api_key` 是上游厂商密钥，只能放在 `secrets.json`，不得写入 `config.json`、manifest、代码、
+  日志、异常消息或提交记录；
+- `enabled` 必须是布尔值。启用密钥从当前游标按数组顺序选择，并在发起一次上游尝试前预留下一位置；
+  并发请求会尽量按开始顺序分摊，但不保证严格的逐请求均匀轮询，禁用项不会接收新请求；
+- 密钥池发生配额耗尽、限流或鉴权失效等明确的密钥级错误时，网关可在尚未产生有效输出前
+  切换到下一个启用密钥；全部密钥失败后才向调用方返回错误。普通模型权限不足或参数错误的
+  403 不得换钥匙；只有厂商明确证明 403 是当前密钥失效时，`errors.py` 才能传入
+  `key_failure=True`；
+- 密钥池可以通过管理端删除单个密钥，但至少必须保留一个启用的上游密钥；最后一个密钥只能替换或
+  追加新密钥后再删除，不能直接删除到空池。
+
+Provider 工厂只需为迁移兼容读取旧的单密钥写法 `{ "api_key": "..." }`，新文件不得继续使用
+该格式。网关为每个密钥构造独立 Provider 时，会在进程内显式注入 `api_key`；这不是环境变量，
+也不会写回磁盘。没有显式注入时，模板 `provider.py` 会选择 `api_keys` 中第一个
+`enabled: true` 且非空的密钥。若密钥池没有可用项，
+应快速抛出不包含密钥原文的配置错误。不要自行把密钥池内容返回给诊断接口；管理端只应展示
+`key_id`、状态和计量信息。
+
 文件夹名、`provider_id` 和 manifest 中的 ID 必须一致。当前核心正式支持 `llm`、
 `embedding`、`rerank`，其中 Kemo `llm` 合同已承载 conversation、vision、图片生成/编辑、ASR、
 TTS、语音转换、视频理解和视频生成九种操作。实时会话或合同外任务仍必须先扩展核心公开协议。
@@ -66,7 +118,7 @@ Kemo SSE 事件（输出给 kemo-agent）
 | `capabilities.py` | 真实模型能力和限制 |
 | `manifest.json` | 静态模型目录；必须与代码一致，当前不替代运行时代码注册 |
 | `config.json` | 可热更新的 Endpoint、超时等 API 配置 |
-| `secrets.json` | 可热更新的厂商密钥，不上传 Git |
+| `secrets.json` | 可热更新的厂商密钥池，不上传 Git |
 | `test_contract.py` | 脱敏 Golden Fixture 和 Provider 契约回归测试 |
 
 ## 实现路径
@@ -106,6 +158,9 @@ kemo-agent，`efforts` 必须暴露 `minimal|low|medium|high|max` 五个 Kemo �
 必须在本文件夹的 `protocol.py` 中逐档映射到厂商真实字段和值，不能直接假定名称相同。
 `KemoRequest.reasoning` 优先；兼容旧客户端的 `provider_options.reasoning_effort` 也必须经过同一
 能力列表检查。五个逻辑档位和至少一个非法档位都要加入脱敏 Fixture。
+
+密钥格式、路由和删除边界以上方“密钥模板标准”为唯一说明：不要在本节复制第二种格式。
+协议层只消费网关在进程内注入的当前密钥，不读取或回传密钥池原文。
 
 如果声明 LLM 多模态，必须读取 Kemo 的真实媒体结构：内容块使用 `mime_type`，媒体来源使用
 `source.kind`，并按来源读取 `source.uri` 或 `source.data`。不得读取不存在的
@@ -151,9 +206,13 @@ Provider 内部读取返回的 `asset_path`，不得把本地路径放入上游�
 ```python
 # errors.py
 HTTP 401 → AUTHENTICATION_ERROR
+HTTP 403 → PERMISSION_DENIED (默认，不触发密钥切换)
 HTTP 429 → RATE_LIMITED (retryable=True)
 HTTP 500 → PROVIDER_UNAVAILABLE (retryable=True)
 ```
+
+只有厂商文档明确证明 HTTP 403 是当前密钥失效时，才调用
+`from_http_status(403, key_failure=True)`；普通模型权限不足或请求参数错误不能换钥匙。
 
 ## 强制边界
 
@@ -170,6 +229,9 @@ HTTP 500 → PROVIDER_UNAVAILABLE (retryable=True)
 9. 模型测试协议必须封装在本包 `probe.py`，核心只消费 `ProviderProbeResult`。
 10. `ErrorObject` 不能直接抛出；Client 与协议层必须抛出 `ProviderException(ErrorObject)`，并让
     非 JSON 或形状异常的错误正文保留其真实 HTTP 状态，不能被二次解析异常覆盖。
+11. 使用多密钥路由时，必须记录 `provider_response_id` 由哪一个 Client 产生，并把 `cancel()` 路由回
+    同一 Client。任何绕过普通 `execute()` / `stream()` 的专用媒体端点也必须单独接入密钥路由，
+    否则只能明确声明该专用路径不具备密钥故障转移，不能用普通文本路径的测试代替。
 
 ## 发布前检查
 

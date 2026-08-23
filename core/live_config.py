@@ -95,19 +95,27 @@ class LiveConfigManager:
         paths = self._source_paths()
         fingerprint = self._fingerprint(paths)
         if fingerprint == self._source_fingerprint:
+            # A rejected write may have been repaired or rolled back to the
+            # last known-good bytes.  Do not leave its stale diagnostic on the
+            # control plane once the known-good fingerprint is restored.
+            self.last_error = None
             return self._snapshot
 
         async with self._lock:
             paths = self._source_paths()
             fingerprint = self._fingerprint(paths)
             if fingerprint == self._source_fingerprint:
+                self.last_error = None
                 return self._snapshot
             try:
                 snapshot = self._load(paths)
             except Exception as exc:
                 # 不记录异常正文，避免无意泄漏 secrets.json 内容。
                 self.last_error = f"{type(exc).__name__}: live config reload rejected"
-                self._source_fingerprint = fingerprint
+                # Keep the previous fingerprint so a subsequent request can
+                # retry after the file is repaired.  Marking the invalid
+                # fingerprint as current would make the control plane silently
+                # serve the old snapshot forever.
                 return self._snapshot
             self._snapshot = snapshot
             self._source_fingerprint = fingerprint

@@ -6,6 +6,7 @@ import json
 import os
 import hashlib
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from typing import Any
 
 
@@ -24,6 +25,23 @@ def safe_key_id(token: str, configured: object = None) -> str:
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
     return f"key_{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"
+
+
+def is_loopback_host(value: str | None) -> bool:
+    """Return whether a bind/URL host is a local loopback address.
+
+    ``localhost`` is accepted explicitly because it is the normal beginner
+    configuration, while IP parsing also covers both IPv4 and IPv6 loopback.
+    Wildcard binds (``0.0.0.0``/``::``) are deliberately not treated as local.
+    """
+
+    normalized = (value or "").strip().lower().strip("[]")
+    if normalized == "localhost":
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True, slots=True)

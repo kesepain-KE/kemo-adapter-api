@@ -1,7 +1,25 @@
 export interface AdminProvider {
   provider_id: string
   models: string[]
+  key_statuses?: ProviderKeyStatus[]
   [key: string]: unknown
+}
+
+export interface ProviderKeyStatus {
+  key_id: string
+  key_preview?: string | null
+  status: 'healthy' | 'cooldown' | 'exhausted' | 'disabled'
+  calls: number
+  successes: number
+  failures: number
+  last_error_code: string | null
+  last_used_at: number | null
+}
+
+export interface ProviderKeysResponse {
+  provider_id: string
+  revision: string
+  keys: ProviderKeyStatus[]
 }
 
 export interface AdminConsoleData {
@@ -256,6 +274,7 @@ export interface WebAuthMethods {
   token_required: boolean
   password_required: boolean
   configuration_valid: boolean
+  local_bypass?: boolean
   session_ttl_seconds: number
 }
 
@@ -367,6 +386,27 @@ export const adminApi = {
       config,
       ...(apiKey ? { api_key: apiKey } : {}),
     }),
+  }),
+  providerKeys: (token: string, providerId: string) =>
+    request<ProviderKeysResponse>(`/providers/${encodeURIComponent(providerId)}/keys`, token),
+  addProviderKey: (token: string, providerId: string, expectedRevision: string, apiKey: string) =>
+    request<ProviderKeysResponse>(`/providers/${encodeURIComponent(providerId)}/keys`, token, {
+      method: 'POST',
+      body: JSON.stringify({ expected_revision: expectedRevision, api_key: apiKey }),
+    }),
+  removeProviderKey: (token: string, providerId: string, expectedRevision: string, keyId: string) =>
+    request<ProviderKeysResponse>(`/providers/${encodeURIComponent(providerId)}/keys/${encodeURIComponent(keyId)}`, token, {
+      method: 'DELETE',
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    }),
+  updateProviderKeys: (
+    token: string,
+    providerId: string,
+    expectedRevision: string,
+    keys: Array<{ key_id: string; api_key: string; enabled: boolean }>,
+  ) => request<ProviderKeysResponse>(`/providers/${encodeURIComponent(providerId)}/keys`, token, {
+    method: 'PUT',
+    body: JSON.stringify({ expected_revision: expectedRevision, keys }),
   }),
   restartStatus: (token: string) => request<RestartStatus>('/system/restart', token),
   restartRequired: (token: string) => request<RestartRequiredStatus>('/system/restart-required', token),

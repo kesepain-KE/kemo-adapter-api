@@ -205,6 +205,8 @@ export default function Settings() {
   const saveProviderSettings = async (providerId: string) => {
     const draft = providerDrafts[providerId]
     if (!draft) return
+    const provider = data.providers.find(item => item.provider_id === providerId)
+    const hasProviderKeyPool = Boolean(provider?.key_statuses?.length)
     const baseUrl = draft.baseUrl.trim()
     if (!baseUrl) {
       setError(`${providerId} 的 Base URL 不能为空`)
@@ -227,7 +229,8 @@ export default function Settings() {
     }
     setBusy(providerId); setError('')
     try {
-      await saveProvider(providerId, config, draft.apiKey.trim() || undefined)
+      // 已存在密钥池后，本页只保存连接参数，密钥统一由 Provider 页面管理。
+      await saveProvider(providerId, config, hasProviderKeyPool ? undefined : draft.apiKey.trim() || undefined)
       const redactedConfig = {
         ...config,
         default_headers: Object.fromEntries(Object.keys(defaultHeaders).map(name => [name, ''])),
@@ -281,11 +284,13 @@ export default function Settings() {
 
     {tab === 'providers' && (!providerIds.length ? <EmptyState title="没有已加载 Provider" description="新增厂商目录后需重启网关，才会显示在这里。"/> : <div className="provider-settings-list">{providerIds.map(id => {
       const draft = providerDrafts[id] ?? draftFromConfig(data.provider_configs[id] ?? {})
+      const provider = data.providers.find(item => item.provider_id === id)
+      const hasProviderKeyPool = Boolean(provider?.key_statuses?.length)
       return <Card key={id} className="provider-config-card">
-        <CardHeader title={id} description="连接信息与默认请求头" action={<Badge>无需重启</Badge>}/>
+        <CardHeader title={id} description="连接信息与请求头；密钥池请在模型厂商页管理" action={<Badge>无需重启</Badge>}/>
         <div className="provider-api-fields">
           <div className="form-field full"><label>Base URL</label><input type="url" value={draft.baseUrl} onChange={event => updateDraft(id, current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.provider.example"/></div>
-          <div className="form-field full"><label>API 密钥</label><input type="password" autoComplete="new-password" value={draft.apiKey} onChange={event => updateDraft(id, current => ({ ...current, apiKey: event.target.value }))} placeholder="留空则继续使用当前密钥"/><small>密钥只写不回显；恢复配置会清空此输入框，不会删除已保存密钥。</small></div>
+          <div className="form-field full"><label>初始默认密钥（可选）</label><input type="password" autoComplete="new-password" value={draft.apiKey} disabled={hasProviderKeyPool} onChange={event => updateDraft(id, current => ({ ...current, apiKey: event.target.value }))} placeholder={hasProviderKeyPool ? '已有密钥池，请到模型厂商页管理' : '首次配置时输入上游 API 密钥'}/><small>{hasProviderKeyPool ? '该 Provider 已有密钥池；日常添加和状态查看请前往“模型厂商 → 上游密钥”。' : '仅用于首次初始化单个上游密钥；保存后可在“模型厂商 → 上游密钥”继续添加并查看状态。密钥只写不回显。'}</small></div>
           <div className="provider-headers full">
             <div className="provider-headers-title"><span>默认请求头</span><button className="btn" onClick={() => updateDraft(id, current => ({ ...current, headers: [...current.headers, { id: nextHeaderId(), name: '', value: '' }] }))}><Plus size={14}/>添加请求头</button></div>
             {draft.headers.length ? draft.headers.map(header => <div className="provider-header-row" key={header.id}>

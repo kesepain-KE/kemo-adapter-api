@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.4-blue" alt="Gateway version 0.7.4"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.5-blue" alt="Gateway version 0.7.5"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -142,7 +142,9 @@ Copy-Item api/keys.json.example api/keys.json
 
 然后替换样例 Token，设置 `scopes` 与 `allowed_models`。`allowed_models: null` 表示允许全部模型，空数组表示全部禁止，非空数组是模型白名单。真实的 `api/keys.json` 已被 Git 忽略。
 
-首次启动或应急场景也可以在 `.env` 中配置单个 `GATEWAY_API_KEY`。环境变量只在启动时读取，修改后必须重启。
+网关仍兼容从 `.env` 读取单个 `GATEWAY_API_KEY`；`.env.example` 保留了注释态入口，适合首次只让
+一个智能体快速连通或应急恢复。日常管理和无需重启的密钥轮换仍应使用 `api/keys.json`，不要同时长期
+维护两套来源。环境变量只在启动时读取，修改后必须重启。
 
 ### 3. 安装 Provider
 
@@ -166,19 +168,41 @@ python start_web.py
 
 ---
 
+## 给小模型智能体的最短操作表
+
+先判断目标，再只改对应文件：
+
+| 目标 | 只改哪里 | 是否重启 |
+| --- | --- | --- |
+| 创建厂商 | 复制 `template/provider/` 到 `providers/<id>/`，替换示例文件 | 是 |
+| 增加模型 | 同步 Provider 模型集合、`capabilities.py`、`manifest.json`、协议映射和测试 | 是 |
+| 修改上游密钥 | `providers/<id>/secrets.json` 的 `api_keys` 数组 | 否，热更新 |
+| 修改网关调用 Token | `api/keys.json` | 否，热更新 |
+| 修改 Base URL/请求头 | `providers/<id>/config.json` | 否，热更新 |
+| 修改 Python、依赖或网页构建 | 对应源码 | 是 |
+
+上游密钥即使只有一把也使用 `api_keys` 数组，并至少保留一把启用密钥。网关从当前游标开始按配置
+顺序选择密钥，并在发起一次上游尝试前预留下一位置；并发请求会尽量按开始顺序分摊，不承诺严格的逐请求均匀轮询。
+只有明确指向当前密钥的鉴权失效、额度耗尽或限流（普通模型权限不足、参数错误的 403 不算）才会在尚未
+输出前切换到下一个启用密钥，所有候选密钥都失败后才返回最终脱敏错误。
+参数错误、未知模型和已经开始输出的流不会盲目重放。标准推理档位为
+`minimal|low|medium|high|max` 五档；`xhigh` 仅是兼容映射值，不能直接透传。
+
+---
+
 ## 鉴权边界
 
 网关使用三类相互独立的凭据：
 
 | 凭据 | 用途 | 配置位置 |
 | --- | --- | --- |
-| 网关调用密钥 | 调用模型、Embedding、Rerank | `api/keys.json` 或启动配置 |
+| 网关调用密钥 | 调用模型、Embedding、Rerank | `api/keys.json`（旧版 `.env` 仅迁移兼容） |
 | Web 管理凭据 | 访问管理端和受保护管理接口 | `.env` 中的 `WEB_TOKEN`、用户名和密码 |
 | 状态 Token | 只读访问 `GET /status` | `.env` 中的 `STATUS_TOKEN` |
 
 同时配置 Web Token 和用户名/密码时，必须先通过 Token，再通过用户名和密码；两个会话阶段的有效期均为两小时。Web Token 只能通过登录表单提交，禁止放入 URL。登录后使用服务端随机会话与 `HttpOnly`、`SameSite=Strict` Cookie，前端不保存登录 Bearer Token；写操作另有 CSRF 校验。
 
-三项 Web 凭据全部为空时，网关进入免登录 owner 模式；局域网地址和 `0.0.0.0` 监听同样允许启动，方便可信内网直接使用。该模式下所有能访问管理端的客户端都拥有最高管理权限，因此公网部署必须配置 `WEB_TOKEN`、`WEB_USERNAME` 与 `WEB_PASSWORD` 两道鉴权，并通过反向代理提供 HTTPS，将 `GATEWAY_BASE_URL` 设为外部 `https://` 地址、配置 `WEB_ALLOWED_HOSTS` 和网络访问控制。API 密钥页只返回安全掩码，不会把完整网关调用密钥或 Provider 请求头密钥发送到浏览器。
+三项 Web 凭据全部为空时，网关进入免登录 owner 模式；局域网地址和 `0.0.0.0` 监听同样允许启动，方便可信内网直接使用。该模式下所有能访问管理端的客户端都拥有最高管理权限。如果在本机回环模式（`HOST=127.0.0.1` 或 `::1`）下残留了旧 Web 凭据，直接通过 `127.0.0.1`、`localhost` 或 `::1` 访问时会优先采用本机 owner 模式；一旦配置公网 `GATEWAY_BASE_URL`，或反向代理传入外部 `Host` / `X-Forwarded-Host` / `Forwarded`，该旁路就会关闭。公网部署必须配置 `WEB_TOKEN`、`WEB_USERNAME` 与 `WEB_PASSWORD` 两道鉴权，并通过反向代理提供 HTTPS，将 `GATEWAY_BASE_URL` 设为外部 `https://` 地址、配置 `WEB_ALLOWED_HOSTS` 和网络访问控制；反向代理必须保留外部 Host 或正确传递转发 Host 头，不能把所有请求伪装成回环 Host。API 密钥列表默认只返回安全掩码；owner 可通过受会话、同源和 CSRF 保护的“查看”操作短暂取得一把网关调用密钥。Provider 上游密钥和请求头密钥永不发送到浏览器。
 
 `STATUS_TOKEN` 必须独立于模型调用密钥和 Web Token。状态接口不会返回网关密钥原文、Provider 密钥、请求正文、原始厂商响应或堆栈。
 
@@ -306,3 +330,31 @@ Kemo Gateway 并不试图成为一个包罗万象的网关。
 - 密钥和配置可以在运行中变更，不需要中断服务。
 
 上层智能体可以持续使用同一套协议与你交互，厂商的差异、升级和切换，都被挡在这层翻译后面。
+
+### 同一 Provider 的多密钥路由
+
+Provider 上游密钥始终显式保存在各自的
+`providers/<provider_id>/secrets.json`，不会迁移到 `.env` 或
+`PROVIDER_SETTINGS_JSON`。磁盘上的唯一标准格式是有序的 `api_keys` 数组：
+
+```json
+{
+  "api_keys": [
+    {"key_id": "primary", "api_key": "上游密钥 A", "enabled": true},
+    {"key_id": "backup", "api_key": "上游密钥 B", "enabled": true}
+  ]
+}
+```
+
+旧版单密钥 `api_key` 只保留读取迁移兼容；管理端下次写入时会自动转换为上述标准格式，
+不会继续同时保存两套字段。网关从当前游标开始按配置顺序选择密钥，并在发起一次上游尝试前预留下一位置；并发
+请求因此会尽量按开始顺序分摊，但不承诺严格的逐请求均匀轮询。当上游明确返回配额耗尽、限流、余额不足或鉴权失效等
+密钥级错误时，会在本次请求尚未产生输出前继续尝试剩余启用密钥；普通模型权限不足或参数错误的 403 不
+触发换钥匙。A 的中间错误不会先发给智能体；非流式和
+尚未产生有效事件的流式请求都会继续尝试候选密钥，只有全部候选密钥失败后才返回最终脱敏错误。
+参数错误、模型不存在、Provider 整体不可用或已经产生部分流式输出时不会盲目换钥匙，以免重复计费或拼接重复内容。
+网页端 Provider 详情的“上游密钥”标签支持追加、管理和查看密钥池，并只显示密钥标识、健康状态和计量信息，
+不显示密钥原文。密钥可以删除，但每个 Provider 至少必须保留一个启用的上游密钥；前端会禁用最后一个密钥的删除按钮，
+后端管理 API 也会再次拒绝删除最后一个密钥或写入全部禁用的池。
+密钥健康状态和调用计数属于当前进程的路由状态，重启或重建 Provider 后会重新开始；每日 SQLite 统计中的
+密钥维度指网关调用 Token，不是上游 Provider 密钥。

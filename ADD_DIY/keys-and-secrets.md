@@ -3,9 +3,10 @@
 ## 存储位置
 
 - 无需重启的网关调用方 Token：`api/keys.json`；
-- 无需重启的厂商 API Key：`providers/<provider_id>/secrets.json`；
-- 启动/应急配置：`.env` 中的 `GATEWAY_API_KEY`、`GATEWAY_API_KEYS_JSON` 和
-  `PROVIDER_SETTINGS_JSON`，修改后必须重启；
+- 无需重启的厂商 API Key：显式保存在 `providers/<provider_id>/secrets.json`；标准持久化
+  格式固定为 `api_keys` 数组；
+- 启动/应急配置：`.env` 中的网关调用方鉴权配置，修改后必须重启；这些参数不是 Provider
+  上游密钥的存储位置；
 - 网关对外展示地址：`.env` 中的 `GATEWAY_BASE_URL`，只用于网页复制，不改变监听地址；
 - 生产环境可由 Secret Manager 原子更新上述运行时密钥文件；
 - `.env`、`api/keys.json` 和 `providers/*/secrets.json` 已被 `.gitignore` 排除。
@@ -23,6 +24,22 @@
 6. 最终报告只记录 key id/后四位和操作结果，不回显完整 Token。
 
 ## 修改厂商密钥
+
+标准文件结构：
+
+```json
+{
+  "api_keys": [
+    {"key_id": "primary", "api_key": "上游密钥 A", "enabled": true},
+    {"key_id": "backup-1", "api_key": "上游密钥 B", "enabled": true}
+  ]
+}
+```
+
+旧 `api_key`/`api_key_id` 字段仅用于读取迁移；管理端写入时必须删除旧字段，只保留
+`api_keys`。不得把 Provider 密钥迁移到 `.env` 或 `PROVIDER_SETTINGS_JSON`。密钥池允许
+追加和删除单个上游密钥，但每个 Provider 至少必须保留一个密钥；最后一个密钥只能替换，
+或先追加新密钥后再删除。
 
 1. 确认目标 `provider_id` 和环境；
 2. 在厂商控制台创建新 Key，不要立即撤销旧 Key；

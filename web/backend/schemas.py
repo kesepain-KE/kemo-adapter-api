@@ -36,6 +36,30 @@ class ProviderApiUpdate(AdminModel):
     api_key: str | None = Field(default=None, min_length=1)
 
 
+class ProviderKeyItem(AdminModel):
+    key_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    api_key: str = Field(min_length=1, max_length=8192)
+    enabled: bool = True
+
+
+class ProviderKeysUpdate(AdminModel):
+    expected_revision: str
+    keys: list[ProviderKeyItem] = Field(min_length=1, max_length=128)
+
+
+class ProviderKeyAppend(AdminModel):
+    """Append one upstream secret without requiring the client to echo the pool."""
+
+    expected_revision: str
+    api_key: str = Field(min_length=1, max_length=8192)
+
+
+class ProviderKeyDelete(AdminModel):
+    """Delete one upstream key while retaining at least one pool entry."""
+
+    expected_revision: str
+
+
 class KeyModelPolicyUpdate(AdminModel):
     expected_revision: str
     allowed_models: list[str] | None = None

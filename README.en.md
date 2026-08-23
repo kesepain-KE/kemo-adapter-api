@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.4-blue" alt="Gateway version 0.7.4"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.5-blue" alt="Gateway version 0.7.5"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -144,7 +144,10 @@ Copy-Item api/keys.json.example api/keys.json
 
 Replace the sample token and configure `scopes` and `allowed_models`. A `null` allowlist permits every model, an empty list denies every model, and a non-empty list is a strict model allowlist. The real `api/keys.json` is ignored by Git.
 
-For initial bootstrap or emergency access, a single `GATEWAY_API_KEY` may be placed in `.env` instead. Environment variables are read only at process startup and require a restart after changes.
+The single-token `GATEWAY_API_KEY` remains available as a commented quick-start entry in `.env.example`. It is useful
+for connecting one agent during first-time setup or emergency recovery. Routine management and restart-free rotation
+should use `api/keys.json`; do not maintain both sources long term. Environment variables are read only at process
+startup and require a restart after changes.
 
 ### 3. Install a Provider
 
@@ -168,19 +171,61 @@ Default endpoints:
 
 ---
 
+## Short guide for small automation agents
+
+Use this decision table before editing. Do not copy a template over an existing Provider.
+
+| Goal | Edit only | Restart? |
+| --- | --- | --- |
+| Create a new Provider | Copy `template/provider/` to `providers/<provider_id>/`, then replace every example file | Yes |
+| Add a model to an existing Provider | The Provider's model registry, `capabilities.py`, `manifest.json`, protocol mapping, and tests | Yes |
+| Change an upstream Provider key | `providers/<provider_id>/secrets.json` → `api_keys` | No |
+| Change a gateway caller key or model allowlist | `api/keys.json` | No |
+| Change a Provider URL or timeout | `providers/<provider_id>/config.json` | No |
+| Change Python, dependencies, a manifest, or the web build | The affected source files | Yes |
+
+The safe order is always: read the current Provider and tests, make the smallest change, run the
+contract tests, then report what changed and whether a restart is required. Never put an upstream key in
+`.env`, `config.json`, source code, Markdown, logs, or a commit.
+
+The canonical upstream key file is:
+
+```json
+{
+  "api_keys": [
+    {"key_id": "primary", "api_key": "provider-key-a", "enabled": true},
+    {"key_id": "backup-1", "api_key": "provider-key-b", "enabled": true}
+  ]
+}
+```
+
+Keep at least one enabled entry. The gateway selects keys in configured order and reserves the next cursor position
+before starting an upstream attempt; concurrent requests are therefore distributed in approximate start order, not a
+promise of strict per-request round-robin fairness. Only a 401/402/429, or an explicitly key-specific 403, that identifies the
+current credential as the cause is handled before output is produced; an ordinary model-permission or parameter 403
+does not trigger failover. The gateway tries the next enabled key and reports an error only after all eligible keys
+fail. Invalid request parameters, unknown models, or output that has already started are not silently replayed.
+
+For a new model, use the full public name `<provider_id>-<vendor_model_name>` and keep the same complete
+key in the Provider registry, `MODEL_CAPABILITIES`, and `manifest.json`. Declare only abilities verified by
+tests. The standard Kemo reasoning levels are `minimal`, `low`, `medium`, `high`, and `max`; `xhigh` is a
+compatibility value only when the Provider explicitly maps it to a real upstream setting.
+
+---
+
 ## Authentication boundaries
 
 The gateway deliberately uses three independent credential classes:
 
 | Credential | Purpose | Configuration |
 | --- | --- | --- |
-| Gateway invocation key | Models, Embedding, Rerank | `api/keys.json` or startup settings |
+| Gateway invocation key | Models, Embedding, Rerank | `api/keys.json` (legacy `.env` compatibility only) |
 | Web credentials | `/admin` and protected management APIs | `WEB_TOKEN`, username, and password in `.env` |
 | Status token | Read-only `GET /status` access | `STATUS_TOKEN` in `.env` |
 
 When both a Web token and username/password are configured, the token check runs first and the password check runs second. Both session stages expire after two hours. The Web token is submitted through the login form only and must never be placed in a URL. Successful login creates an opaque server-side session carried by an `HttpOnly`, `SameSite=Strict` cookie; state-changing requests also require a CSRF token.
 
-When all three Web credentials are empty, the gateway enters no-login owner mode. LAN addresses and `0.0.0.0` binds are allowed so a trusted local network can use the console directly. Every client that can reach the management console has owner privileges in this mode. Public deployments must therefore configure both `WEB_TOKEN` and the `WEB_USERNAME`/`WEB_PASSWORD` pair, terminate HTTPS at a trusted reverse proxy, publish an `https://` `GATEWAY_BASE_URL`, configure `WEB_ALLOWED_HOSTS`, and enforce network access controls. The API-key page returns masked identifiers only; full gateway keys and Provider header secrets are never sent back to the browser.
+When all three Web credentials are empty, the gateway enters no-login owner mode. LAN addresses and `0.0.0.0` binds are allowed so a trusted local network can use the console directly. Every client that can reach the management console has owner privileges in this mode. In loopback mode (`HOST=127.0.0.1` or `::1`), a direct request to `127.0.0.1`, `localhost`, or `::1` deliberately bypasses stale Web credentials left in `.env`; that bypass is disabled when a public `GATEWAY_BASE_URL` is configured or a reverse proxy supplies an external `Host`, `X-Forwarded-Host`, or `Forwarded` host. Public deployments must configure both `WEB_TOKEN` and the `WEB_USERNAME`/`WEB_PASSWORD` pair, terminate HTTPS at a trusted reverse proxy, publish an `https://` `GATEWAY_BASE_URL`, configure `WEB_ALLOWED_HOSTS`, and enforce network access controls. The proxy must preserve the external Host or forward it correctly instead of rewriting every request as a loopback Host. The API-key list returns masked values by default; an owner may use the session-, origin-, and CSRF-protected reveal action to retrieve one gateway invocation key briefly. Provider upstream keys and Provider header secrets are never sent to the browser.
 
 `STATUS_TOKEN` must not match a model invocation key or Web token. The status API never returns raw gateway keys, Provider secrets, request bodies, raw vendor responses, or stack traces.
 
@@ -306,3 +351,18 @@ It aims to be a stable protocol bridge:
 - Keys and configuration can change at runtime without interrupting service.
 
 The agent on top can keep talking through the same protocol. The vendor differences, upgrades, and swaps — they stay behind this translation layer.
+
+### One Provider, multiple upstream keys
+
+Upstream keys are stored explicitly in `providers/<provider_id>/secrets.json`; they are not moved into
+`.env` or `PROVIDER_SETTINGS_JSON`. The canonical format is an ordered `api_keys` array. The console only
+shows key IDs, masked previews, health state, and counters; it never returns the complete key.
+
+Enabled keys are selected in configured order from a cursor reserved before each upstream attempt; concurrent
+requests are therefore distributed in approximate start order, but are not guaranteed to be perfectly even. Before any stream output is emitted, a
+clear credential/quota/rate-limit failure continues through the remaining eligible keys without exposing the
+intermediate error to the caller. An ordinary model-permission or parameter error must not trigger failover. If every enabled and eligible key fails, the
+gateway returns one final sanitized error. Key cooldown and health state are runtime routing state; the
+24-hour/7-day/30-day statistics views do not define a time-based key schedule. Upstream-key counters are
+in-memory routing diagnostics and reset after a restart or Provider rebuild; persisted gateway-key rankings
+refer to caller tokens, not upstream Provider keys.

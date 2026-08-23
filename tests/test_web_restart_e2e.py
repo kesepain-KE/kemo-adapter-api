@@ -88,7 +88,10 @@ def _write_env(project: Path, port: str | int) -> None:
     (project / ".env").write_text(
         "\n".join(
             (
-                "HOST=127.0.0.1",
+                # Bind all interfaces so this E2E exercises the protected
+                # Token -> password path instead of the trusted loopback
+                # owner bypass. The client still connects through 127.0.0.1.
+                "HOST=0.0.0.0",
                 f"PORT={port}",
                 "WEB_OPEN_BROWSER=false",
                 "WEB_ACCESS_LOG=false",

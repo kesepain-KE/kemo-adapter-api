@@ -31,9 +31,10 @@ function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [methods, setMethods] = useState<WebAuthMethods | null>(null)
-  const [phase, setPhase] = useState<'loading' | 'token' | 'password'>('loading')
+  const [phase, setPhase] = useState<'loading' | 'token' | 'password' | 'error'>('loading')
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
+  const [authRetry, setAuthRetry] = useState(0)
 
   const exchangeToken = async (candidate: string) => {
     if (!candidate.trim()) {
@@ -67,7 +68,7 @@ function Login() {
         setMethods(value)
         if (!value.configuration_valid) {
           setAuthError('WEB_USERNAME 与 WEB_PASSWORD 必须同时配置。')
-          setPhase('password')
+          setPhase('error')
           return
         }
         if (value.token_required) {
@@ -75,19 +76,18 @@ function Login() {
         } else if (value.password_required) {
           setPhase('password')
         } else {
-          await connect('', true)
+          const connected = await connect('', true)
+          if (active && !connected) setPhase('error')
         }
       } catch (reason) {
         if (!active) return
         setAuthError(reason instanceof Error ? reason.message : '无法读取网页登录配置')
-        setPhase('token')
+        setPhase('error')
       }
     }
     void initialize()
     return () => { active = false }
-    // 登录页只在未建立管理会话时挂载一次。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [authRetry, connect])
 
   const submitToken = (event: React.FormEvent) => {
     event.preventDefault()
@@ -111,7 +111,10 @@ function Login() {
     <img className="brand-logo login-logo" src="/admin/logo.png" alt="Kemo Gateway Logo"/>
     <h1>Kemo Gateway</h1>
     <p>{phase === 'password' && methods?.token_required ? 'Token 验证通过，请继续验证用户名和密码。' : '完成管理身份验证后才能进入网关。'}</p>
-    {phase === 'loading' ? <div className="login-auth-loading"><LoaderCircle className="spin" size={20}/>正在读取鉴权方式…</div> : phase === 'token' ? <form onSubmit={submitToken}>
+    {phase === 'loading' ? <div className="login-auth-loading"><LoaderCircle className="spin" size={20}/>正在读取鉴权方式…</div> : phase === 'error' ? <div className="login-auth-failure">
+      <div className="login-error">{authError || error || '无法连接管理 API。'}</div>
+      <button className="button" type="button" onClick={() => { setAuthError(''); setPhase('loading'); setAuthRetry(value => value + 1) }} disabled={booting || authBusy}><LoaderCircle size={16}/>重新连接</button>
+    </div> : phase === 'token' ? <form onSubmit={submitToken}>
       <label htmlFor="admin-token">Web Token</label>
       <div className="login-input"><KeyRound size={18}/><input id="admin-token" type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} placeholder="输入管理令牌" autoFocus/></div>
       {(authError || error) && <div className="login-error">{authError || error}</div>}

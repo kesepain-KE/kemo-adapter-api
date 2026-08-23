@@ -2,8 +2,10 @@
 
 本目录用于网关管理网页，包括 Provider 状态、模型能力、密钥元数据、Usage 和运行状态管理。
 
-Web 的内部接口不属于公开 LLM API，不写入顶层 `api.md`。Web 不得向浏览器返回厂商完整密钥、
-Bearer Token 或 Provider State 明文；密钥页面只能展示 key id、状态和脱敏后的后四位。
+Web 的内部接口不属于公开 LLM API，不写入顶层 `api.md`。Provider 厂商密钥、请求头和 Provider
+State 明文永远不得返回浏览器；默认密钥列表只展示 key id、状态和脱敏后的后四位。网关调用 Token
+只有 owner 通过会话、同源和 CSRF 校验后，才能由短时 reveal 接口按需查看，响应必须 `no-store`，
+前端在短生命周期结束后立即清除。
 
 ## 技术栈与目录
 
@@ -11,7 +13,7 @@ Bearer Token 或 Provider State 明文；密钥页面只能展示 key id、状�
 - `backend/`：FastAPI 私有管理路由，统一位于 `/admin/api/*`。
 
 管理 API 必须使用带 `admin:web` 或 `owner` scope 的 Bearer Token。浏览器只在当前会话保存
-用户输入的管理密钥；Provider 密钥为只写字段，后端不会读回。对外 LLM API 被停用时，管理面
+用户输入的管理密钥；Provider 密钥原文为只写字段，后端不读回，只返回掩码和状态。对外 LLM API 被停用时，管理面
 仍保持鉴权可用，以便管理员重新开启网关。
 
 ## 启动

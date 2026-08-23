@@ -21,7 +21,8 @@ from core.provider_contract import (
     ProviderResult,
     RequestContext,
 )
-from core.registry import ProviderRegistry
+from core.registry import ProviderRegistry, _factory_settings
+from core.provider_keys import normalize_provider_keys
 from core.stores import IdempotencyConflict, InMemoryExecutionStore
 from core.usage import aggregate_stages
 
@@ -195,6 +196,112 @@ def test_discovery_rejects_provider_id_that_differs_from_directory(
 
     with pytest.raises(ValueError, match="Provider ID 必须与目录名一致"):
         ProviderRegistry().discover({})
+
+
+def test_discovery_injects_canonical_single_key_and_exposes_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_info = SimpleNamespace(name="providers.fake", ispkg=True)
+    received: list[dict[str, object]] = []
+
+    def factory(settings: object) -> FakeProvider:
+        assert isinstance(settings, dict)
+        received.append(settings)
+        return FakeProvider()
+
+    monkeypatch.setattr("core.registry.pkgutil.iter_modules", lambda *_: [module_info])
+    monkeypatch.setattr(
+        "core.registry.importlib.import_module",
+        lambda *_: SimpleNamespace(create_provider=factory),
+    )
+
+    registry = ProviderRegistry()
+    registry.discover(
+        {
+            "fake": {
+                "base_url": "https://provider.invalid",
+                "api_keys": [
+                    {
+                        "key_id": "primary",
+                        "api_key": "canonical-provider-secret",
+                        "enabled": True,
+                    }
+                ],
+            }
+        }
+    )
+
+    assert len(received) == 1
+    assert received[0]["api_key"] == "canonical-provider-secret"
+    package = registry.providers["fake"]
+    statuses = package.key_statuses()
+    assert [item["key_id"] for item in statuses] == ["primary"]
+    assert "canonical-provider-secret" not in repr(statuses)
+
+
+def test_discovery_rejects_all_disabled_pool_instead_of_using_legacy_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_info = SimpleNamespace(name="providers.fake", ispkg=True)
+
+    def factory(settings: object) -> FakeProvider:
+        assert isinstance(settings, dict)
+        assert settings.get("api_key") is None
+        return FakeProvider()
+
+    monkeypatch.setattr("core.registry.pkgutil.iter_modules", lambda *_: [module_info])
+    monkeypatch.setattr(
+        "core.registry.importlib.import_module",
+        lambda *_: SimpleNamespace(create_provider=factory),
+    )
+
+    with pytest.raises(ValueError, match="没有启用的 api_keys"):
+        ProviderRegistry().discover(
+            {
+                "fake": {
+                    "api_key": "stale-legacy-secret",
+                    "api_keys": [
+                        {
+                            "key_id": "primary",
+                            "api_key": "disabled-secret",
+                            "enabled": False,
+                        }
+                    ],
+                }
+            }
+        )
+
+
+def test_discovery_rejects_explicit_empty_pool_instead_of_using_legacy_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_info = SimpleNamespace(name="providers.fake", ispkg=True)
+    monkeypatch.setattr("core.registry.pkgutil.iter_modules", lambda *_: [module_info])
+    monkeypatch.setattr(
+        "core.registry.importlib.import_module",
+        lambda *_: SimpleNamespace(create_provider=lambda settings: FakeProvider()),
+    )
+
+    with pytest.raises(ValueError, match="api_keys 不能为空"):
+        ProviderRegistry().discover(
+            {"fake": {"api_keys": [], "api_key": "stale-legacy-secret"}}
+        )
+
+
+def test_factory_settings_does_not_fall_back_to_disabled_legacy_key() -> None:
+    settings = {
+        "api_key": "stale-legacy-secret",
+        "api_key_id": "legacy",
+        "api_keys": [
+            {"key_id": "disabled", "api_key": "new-secret", "enabled": False}
+        ],
+    }
+    pool = normalize_provider_keys(settings)
+    prepared = _factory_settings(settings, pool)
+
+    assert prepared["api_keys"] == settings["api_keys"]
+    assert "api_key" not in prepared
+    assert "api_key_id" not in prepared
 
 
 def test_non_stream_usage_is_preserved_without_gateway_reinterpretation() -> None:

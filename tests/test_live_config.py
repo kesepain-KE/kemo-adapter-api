@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from api.server import create_app
 from core.config import Settings
 from core.executor import GatewayExecutor
-from core.live_config import LiveConfigManager
+from core.live_config import LiveConfigManager, LiveConfigSnapshot
 from core.registry import ProviderRegistry
 from core.stores import InMemoryExecutionStore
 from tests.test_provider_boundary import FakeProvider
@@ -22,6 +22,27 @@ class ReloadableFakeProvider(FakeProvider):
 
     async def reload_config(self, settings) -> None:
         self.applied_settings.append(dict(settings))
+
+
+class FirstReloadableProvider(ReloadableFakeProvider):
+    provider_id = "first"
+
+    @property
+    def models(self) -> frozenset[str]:
+        return frozenset({"first-model"})
+
+
+class FailingReloadProvider(ReloadableFakeProvider):
+    provider_id = "second"
+
+    @property
+    def models(self) -> frozenset[str]:
+        return frozenset({"second-model"})
+
+    async def reload_config(self, settings) -> None:
+        if settings.get("mode") == "bad":
+            raise ValueError("candidate rejected")
+        await super().reload_config(settings)
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -118,6 +139,60 @@ def test_invalid_hot_config_keeps_last_known_good_snapshot(tmp_path: Path) -> No
         rejected = await manager.refresh()
         assert rejected is valid
         assert manager.last_error == "JSONDecodeError: live config reload rejected"
+
+        # A rollback/repaired write restores the known-good fingerprint.  The
+        # previous parse error must not remain visible forever.
+        write_json(
+            root / "core" / "live_control.json",
+            {
+                "highest_priority_system_prompt": "policy-v1",
+                "disabled_providers": [],
+                "disabled_models": [],
+            },
+        )
+        restored = await manager.refresh()
+        # Repairing the file causes a fresh valid snapshot; identity is not
+        # guaranteed even though the effective configuration matches.
+        assert restored.gateway_system_prompt == valid.gateway_system_prompt
+        assert restored.disabled_providers == valid.disabled_providers
+        assert restored.disabled_models == valid.disabled_models
+        assert manager.last_error is None
+
+    asyncio.run(scenario())
+
+
+def test_registry_rolls_back_already_reloaded_provider_when_later_provider_fails() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        first = FirstReloadableProvider()
+        second = FailingReloadProvider()
+        registry.register(first)
+        registry.register(second)
+
+        old = LiveConfigSnapshot(
+            revision="old",
+            provider_settings={
+                "first": {"mode": "old"},
+                "second": {"mode": "old"},
+            },
+        )
+        await registry.apply_live_config(old)
+        assert first.applied_settings[-1]["mode"] == "old"
+        assert second.applied_settings[-1]["mode"] == "old"
+
+        new = LiveConfigSnapshot(
+            revision="new",
+            provider_settings={
+                "first": {"mode": "new"},
+                "second": {"mode": "bad"},
+            },
+        )
+        with pytest.raises(ValueError, match="candidate rejected"):
+            await registry.apply_live_config(new)
+
+        assert first.applied_settings[-1]["mode"] == "old"
+        assert registry._live_revision == "old"
+        assert registry._applied_provider_settings["first"]["mode"] == "old"
 
     asyncio.run(scenario())
 

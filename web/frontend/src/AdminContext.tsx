@@ -21,7 +21,7 @@ interface AdminSessionValue {
   booting: boolean
   data: AdminConsoleData | null
   error: string
-  connect: (csrfToken?: string, allowEmpty?: boolean) => Promise<boolean>
+  connect: (csrfToken?: string, allowEmpty?: boolean, initialRestore?: boolean) => Promise<boolean>
 }
 
 const AdminContext = createContext<AdminContextValue | null>(null)
@@ -36,6 +36,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const csrfTokenRef = useRef(csrfToken)
+  const restoreStartedRef = useRef(false)
   csrfTokenRef.current = csrfToken
 
   const disconnect = useCallback(() => {
@@ -62,13 +63,13 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const connect = useCallback(async (candidate = '', allowEmpty = false) => {
+  const connect = useCallback(async (candidate = '', allowEmpty = false, initialRestore = false) => {
     const normalized = candidate.trim()
     if (!normalized && !allowEmpty) {
       setError('管理会话尚未建立。')
       return false
     }
-    setBooting(true)
+    if (initialRestore) setBooting(true)
     setError('')
     try {
       const consoleData = await adminApi.console(normalized)
@@ -84,20 +85,25 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       return true
     } catch (reason) {
       setData(null)
-      setError(normalized ? (reason instanceof Error ? reason.message : '无法连接管理 API') : '')
+      if (initialRestore && reason instanceof AdminApiError && reason.status === 401) {
+        // 没有旧会话是正常的首次访问；由 Login 再读取当前实例的鉴权方式。
+        setError('')
+      } else {
+        setError(reason instanceof Error ? reason.message : '无法连接管理 API')
+      }
       return false
     } finally {
-      setBooting(false)
+      if (initialRestore) setBooting(false)
     }
   }, [loadRestart])
 
   useEffect(() => {
+    if (restoreStartedRef.current) return
+    restoreStartedRef.current = true
     void adminApi.webAuthSession()
-      .then(session => connect(session.csrf_token, true))
-      .catch(() => connect('', true))
-    // 仅在首次挂载时通过 HttpOnly Cookie 恢复服务端会话。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      .then(session => connect(session.csrf_token, true, true))
+      .catch(() => connect('', true, true))
+  }, [connect])
 
   const refresh = useCallback(async () => {
     const currentToken = csrfTokenRef.current

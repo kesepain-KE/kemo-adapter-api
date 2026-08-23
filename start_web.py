@@ -12,6 +12,7 @@ import socket
 import sys
 from threading import Timer
 from typing import Any
+from urllib.parse import urlsplit
 import webbrowser
 
 from dotenv import dotenv_values, load_dotenv
@@ -73,14 +74,31 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _startup_options() -> dict[str, Any]:
     # 延迟导入，确保项目 .env 在 Settings 读取前已经加载。
-    from core.config import Settings
+    from core.config import Settings, is_loopback_host
 
     settings = Settings.from_env()
     if not settings.host.strip():
         raise ValueError("HOST 不能为空")
     if not 1 <= settings.port <= 65535:
         raise ValueError("PORT 必须在 1 到 65535 之间")
-    if bool(settings.web_username.strip()) != bool(settings.web_password.strip()):
+    parsed_base = urlsplit(settings.base_url) if settings.base_url else None
+    public_base_url = bool(
+        parsed_base is not None
+        and parsed_base.hostname
+        and not is_loopback_host(parsed_base.hostname)
+    )
+    if public_base_url and (
+        not settings.web_token.strip()
+        or not settings.web_username.strip()
+        or not settings.web_password.strip()
+    ):
+        raise ValueError(
+            "公网 GATEWAY_BASE_URL 必须同时配置 WEB_TOKEN、WEB_USERNAME 和 WEB_PASSWORD"
+        )
+    if (
+        bool(settings.web_username.strip()) != bool(settings.web_password.strip())
+        and (not is_loopback_host(settings.host) or public_base_url)
+    ):
         raise ValueError("WEB_USERNAME 与 WEB_PASSWORD 必须同时配置")
     status_token = settings.status_token.strip()
     if status_token and (

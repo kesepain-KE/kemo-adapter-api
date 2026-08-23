@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hmac
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from fastapi import Header, HTTPException, Request
 
-from core.config import safe_key_id
+from core.config import is_loopback_host, safe_key_id
 from web.backend.auth_service import WEB_SESSION_COOKIE
 
 
@@ -79,8 +80,17 @@ async def control_plane_principal(
 
 
 def control_plane_auth_required(request: Request) -> bool:
-    """存在管理 Token 或 Web 用户认证字段时，管理面必须显式认证。"""
+    """Return whether this request must present an explicit Web/API credential.
+
+    A process bound to a loopback address is the supported single-user local
+    mode.  It stays directly accessible from the local browser even if an old
+    ``WEB_TOKEN``/password remains in ``.env``.  A configured public
+    ``GATEWAY_BASE_URL`` or forwarded public host disables that bypass, which
+    prevents a reverse proxy from accidentally inheriting local mode.
+    """
     settings = request.app.state.settings
+    if control_plane_local_bypass(request):
+        return False
     snapshot = request.app.state.live_config.current
     principals = (*settings.api_keys.values(), *snapshot.api_keys.values())
     has_management_token = any(
@@ -93,6 +103,46 @@ def control_plane_auth_required(request: Request) -> bool:
         or settings.web_password.strip()
         or settings.web_token.strip()
     )
+
+
+def control_plane_local_bypass(request: Request) -> bool:
+    """Whether the current Web request is a direct local-console request."""
+
+    settings = request.app.state.settings
+    if not is_loopback_host(settings.host):
+        return False
+
+    # The browser must actually address the loopback host as well.  This keeps
+    # a public reverse-proxy Host from inheriting the local bypass.
+    if not is_loopback_host(request.url.hostname):
+        return False
+
+    # A public base URL means this loopback-bound process is intentionally
+    # published through a reverse proxy; keep the public authentication path.
+    base_url = settings.base_url.strip()
+    if base_url:
+        hostname = urlsplit(base_url).hostname
+        if hostname and not is_loopback_host(hostname):
+            return False
+
+    # Preserve the proxy's public host when possible.  Uvicorn may see the
+    # proxy itself as the client, so client address alone is not a safe signal.
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
+    if forwarded_host:
+        hostname = urlsplit(f"//{forwarded_host}").hostname
+        if hostname and not is_loopback_host(hostname):
+            return False
+    forwarded = request.headers.get("forwarded", "")
+    if forwarded:
+        for part in forwarded.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name.lower() != "host" or not value:
+                continue
+            hostname = urlsplit(f"//{value.strip().strip(chr(34))}").hostname
+            if hostname and not is_loopback_host(hostname):
+                return False
+            break
+    return True
 
 
 async def _resolve_principal(

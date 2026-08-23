@@ -17,6 +17,7 @@ STARTUP_ENV_NAMES = (
     "WEB_USERNAME",
     "WEB_PASSWORD",
     "STATUS_TOKEN",
+    "GATEWAY_BASE_URL",
     "GATEWAY_API_KEYS_JSON",
     "GATEWAY_API_KEY",
     "PROVIDER_SETTINGS_JSON",
@@ -147,6 +148,38 @@ def test_startup_options_allow_empty_web_auth_on_wildcard_bind(monkeypatch) -> N
 
     assert options["host"] == "0.0.0.0"
     assert options["port"] == 7531
+
+
+def test_startup_options_reject_partial_web_password_for_public_base_url(
+    monkeypatch,
+) -> None:
+    clear_startup_env(monkeypatch)
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.com")
+    monkeypatch.setenv("WEB_USERNAME", "owner")
+    monkeypatch.setenv("WEB_PASSWORD", "")
+
+    try:
+        start_web._startup_options()
+    except ValueError as exc:
+        assert "必须同时配置" in str(exc)
+    else:
+        raise AssertionError("public Base URL must reject partial password configuration")
+
+
+def test_startup_options_rejects_empty_web_credentials_for_public_base_url(
+    monkeypatch,
+) -> None:
+    clear_startup_env(monkeypatch)
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("GATEWAY_BASE_URL", "https://gateway.example.com")
+
+    try:
+        start_web._startup_options()
+    except ValueError as exc:
+        assert "公网 GATEWAY_BASE_URL" in str(exc)
+    else:
+        raise AssertionError("public Base URL must reject empty Web credentials")
 
 
 def test_start_web_requires_built_frontend(tmp_path: Path, monkeypatch, capsys) -> None:

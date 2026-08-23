@@ -14,6 +14,7 @@ from core.config import safe_key_id
 
 
 PROVIDER_ID = re.compile(r"^[a-z0-9_]+$")
+PROVIDER_KEY_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 SENSITIVE_CONFIG_KEY = re.compile(
     r"(^|_)(api_?key|token|secret|password|authorization|credential)(_|$)",
     re.IGNORECASE,
@@ -22,6 +23,10 @@ HEADER_CONFIG_KEYS = frozenset({"default_headers", "headers"})
 
 
 class RevisionConflict(Exception):
+    pass
+
+
+class ProviderKeyPoolConflict(Exception):
     pass
 
 
@@ -43,6 +48,59 @@ class RuntimeConfigWriter:
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    @staticmethod
+    def _atomic_bytes(path: Path, value: bytes) -> None:
+        """Restore a previously captured file without parsing its contents."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(value)
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def _managed_path(self, path: Path) -> Path:
+        resolved = path.resolve()
+        allowed_roots = (
+            self.project_root / "api",
+            self.project_root / "core",
+            self.project_root / "providers",
+        )
+        if not any(
+            resolved == root or root in resolved.parents for root in allowed_roots
+        ):
+            raise ValueError("不允许操作项目外的运行时文件")
+        return resolved
+
+    def capture_files(self, paths: list[Path]) -> dict[Path, bytes | None]:
+        """Capture exact bytes for a small, known set of runtime files.
+
+        The Web control plane uses this before a write so a failed hot reload
+        can restore the exact previous representation (including legacy fields
+        that are intentionally not exposed to the browser).
+        """
+        snapshot: dict[Path, bytes | None] = {}
+        for path in paths:
+            resolved = self._managed_path(path)
+            if resolved.exists():
+                if not resolved.is_file():
+                    raise ValueError(f"运行时配置路径不是文件: {resolved.name}")
+                snapshot[resolved] = resolved.read_bytes()
+            else:
+                snapshot[resolved] = None
+        return snapshot
+
+    def restore_files(self, snapshot: dict[Path, bytes | None]) -> None:
+        """Restore a snapshot captured by :meth:`capture_files`."""
+        for path, content in snapshot.items():
+            resolved = self._managed_path(path)
+            if content is None:
+                if resolved.exists():
+                    resolved.unlink()
+            else:
+                self._atomic_bytes(resolved, content)
 
     @staticmethod
     def assert_revision(expected: str, current: str) -> None:
@@ -145,6 +203,26 @@ class RuntimeConfigWriter:
             },
         )
 
+    @staticmethod
+    def _canonical_provider_secrets(
+        current: dict[str, Any], entries: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Return secrets with one canonical ordered ``api_keys`` field.
+
+        ``api_key`` and ``api_key_id`` were accepted by older Provider
+        packages, but keeping both representations creates two sources of
+        truth.  We retain unrelated Provider secret fields while removing the
+        legacy aliases whenever the Web control plane writes the file.
+        """
+
+        if not entries:
+            raise ValueError("密钥池不能为空")
+        canonical = dict(current)
+        canonical.pop("api_key", None)
+        canonical.pop("api_key_id", None)
+        canonical["api_keys"] = [dict(entry) for entry in entries]
+        return canonical
+
     def update_provider(
         self, provider_id: str, *, config: dict[str, Any], api_key: str | None
     ) -> None:
@@ -155,26 +233,212 @@ class RuntimeConfigWriter:
         if directory.parent != providers_root or not directory.is_dir():
             raise LookupError("Provider 目录不存在；新增 Provider 代码需要重启部署")
         config_path = directory / "config.json"
+        secrets_path = directory / "secrets.json"
         current_config: dict[str, Any] = {}
         if config_path.exists():
             parsed = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                current_config = parsed
+            if not isinstance(parsed, dict):
+                raise ValueError("Provider config.json 顶层必须是 object")
+            current_config = parsed
+        candidate_config = dict(config)
         for header_key in HEADER_CONFIG_KEYS:
-            incoming_headers = config.get(header_key)
+            incoming_headers = candidate_config.get(header_key)
             existing_headers = current_config.get(header_key)
             if isinstance(incoming_headers, dict) and isinstance(existing_headers, dict):
-                config[header_key] = {
+                candidate_config[header_key] = {
                     name: existing_headers.get(name) if value == "" and name in existing_headers else value
                     for name, value in incoming_headers.items()
                 }
-        self._atomic_json(config_path, config)
+
+        # Read and validate every file before changing either one.  A malformed
+        # secrets file or a blank replacement key must never leave config.json
+        # half-updated.
+        current_secrets: dict[str, Any] = {}
         if api_key is not None:
-            secrets_path = directory / "secrets.json"
-            current: dict[str, Any] = {}
             if secrets_path.exists():
                 parsed = json.loads(secrets_path.read_text(encoding="utf-8"))
-                if isinstance(parsed, dict):
-                    current = parsed
-            current["api_key"] = api_key
-            self._atomic_json(secrets_path, current)
+                if not isinstance(parsed, dict):
+                    raise ValueError("Provider secrets.json 顶层必须是 object")
+                current_secrets = parsed
+            secret = api_key.strip()
+            if not secret:
+                raise ValueError("密钥不能为空")
+            # This endpoint is the explicit single-key initializer/replacer.
+            # The Provider page owns multi-key pools and does not call it once
+            # a pool exists, so replacing the pool here preserves the old
+            # single ``api_key`` semantics without leaving stale backups.
+            existing = [{"key_id": "primary", "api_key": secret, "enabled": True}]
+            candidate_secrets = self._canonical_provider_secrets(current_secrets, existing)
+        else:
+            candidate_secrets = None
+
+        before = self.capture_files(
+            [config_path, secrets_path] if candidate_secrets is not None else [config_path]
+        )
+        try:
+            self._atomic_json(config_path, candidate_config)
+            if candidate_secrets is not None:
+                self._atomic_json(
+                    secrets_path,
+                    candidate_secrets,
+                )
+        except Exception:
+            self.restore_files(before)
+            raise
+
+    def update_provider_keys(self, provider_id: str, *, keys: list[dict[str, Any]]) -> None:
+        """Replace one Provider's ordered upstream key pool atomically."""
+        if not PROVIDER_ID.fullmatch(provider_id) or provider_id.startswith("_"):
+            raise ValueError("Provider ID 无效")
+        directory = (self.project_root / "providers" / provider_id).resolve()
+        providers_root = (self.project_root / "providers").resolve()
+        if directory.parent != providers_root or not directory.is_dir():
+            raise LookupError("Provider 目录不存在")
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in keys:
+            key_id = str(entry.get("key_id") or "").strip()
+            api_key = str(entry.get("api_key") or "").strip()
+            enabled = entry.get("enabled", True)
+            if (
+                not PROVIDER_KEY_ID.fullmatch(key_id)
+                or not api_key
+                or key_id in seen
+            ):
+                raise ValueError("密钥标识必须唯一且密钥不能为空")
+            if not isinstance(enabled, bool):
+                raise ValueError("密钥 enabled 必须是布尔值")
+            seen.add(key_id)
+            normalized.append({"key_id": key_id, "api_key": api_key, "enabled": enabled})
+        if not any(entry["enabled"] for entry in normalized):
+            raise ValueError("Provider 至少保留一个启用的上游密钥；如需停用，请使用 Provider 开关")
+        secrets_path = directory / "secrets.json"
+        current: dict[str, Any] = {}
+        if secrets_path.exists():
+            parsed = json.loads(secrets_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                current = parsed
+        self._atomic_json(
+            secrets_path,
+            self._canonical_provider_secrets(current, normalized),
+        )
+
+    @staticmethod
+    def _existing_provider_keys(current: dict[str, Any]) -> list[dict[str, Any]]:
+        """Normalize an existing secrets file without exposing or dropping keys."""
+
+        raw = current.get("api_keys")
+        if raw is None:
+            raw_entries: list[Any] = []
+        elif isinstance(raw, list):
+            raw_entries = raw
+        elif isinstance(raw, dict):
+            raw_entries = [
+                ({**value, "key_id": key_id} if isinstance(value, dict) else {"key_id": key_id, "api_key": value})
+                for key_id, value in raw.items()
+            ]
+        else:
+            raise ValueError("secrets.json: api_keys 必须是数组或对象")
+
+        # Older Provider packages use one legacy api_key field.
+        if raw is None and not raw_entries:
+            legacy = str(current.get("api_key") or "").strip()
+            if legacy:
+                raw_entries = [
+                    {
+                        "key_id": str(current.get("api_key_id") or "primary").strip(),
+                        "api_key": legacy,
+                        "enabled": True,
+                    }
+                ]
+
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, entry in enumerate(raw_entries):
+            if isinstance(entry, str):
+                key_id, api_key, enabled = f"key-{index + 1}", entry.strip(), True
+            elif isinstance(entry, dict):
+                key_id = str(entry.get("key_id") or entry.get("name") or f"key-{index + 1}").strip()
+                api_key = str(entry.get("api_key") or entry.get("key") or "").strip()
+                enabled = entry.get("enabled", True)
+            else:
+                raise ValueError("secrets.json: api_keys 包含无效项")
+            if not PROVIDER_KEY_ID.fullmatch(key_id) or not api_key:
+                raise ValueError("secrets.json: 密钥标识和密钥不能为空")
+            if not isinstance(enabled, bool):
+                raise ValueError("secrets.json: enabled 必须是布尔值")
+            if key_id in seen:
+                raise ValueError("secrets.json: 密钥标识必须唯一")
+            seen.add(key_id)
+            normalized.append({"key_id": key_id, "api_key": api_key, "enabled": enabled})
+        return normalized
+
+    def append_provider_key(self, provider_id: str, *, api_key: str) -> None:
+        """Append one upstream key while preserving the existing pool atomically."""
+
+        if not PROVIDER_ID.fullmatch(provider_id) or provider_id.startswith("_"):
+            raise ValueError("Provider ID 无效")
+        directory = (self.project_root / "providers" / provider_id).resolve()
+        providers_root = (self.project_root / "providers").resolve()
+        if directory.parent != providers_root or not directory.is_dir():
+            raise LookupError("Provider 目录不存在")
+        secret = api_key.strip()
+        if not secret:
+            raise ValueError("密钥不能为空")
+        secrets_path = directory / "secrets.json"
+        current: dict[str, Any] = {}
+        if secrets_path.exists():
+            parsed = json.loads(secrets_path.read_text(encoding="utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("secrets.json 必须是 object")
+            current = parsed
+        normalized = self._existing_provider_keys(current)
+        if any(entry["api_key"] == secret for entry in normalized):
+            raise ValueError("该上游密钥已经存在")
+        used_ids = {entry["key_id"] for entry in normalized}
+        if not normalized:
+            key_id = "primary"
+        else:
+            suffix = 1
+            key_id = f"backup-{suffix}"
+            while key_id in used_ids:
+                suffix += 1
+                key_id = f"backup-{suffix}"
+        normalized.append({"key_id": key_id, "api_key": secret, "enabled": True})
+        self._atomic_json(
+            secrets_path,
+            self._canonical_provider_secrets(current, normalized),
+        )
+
+    def remove_provider_key(self, provider_id: str, *, key_id: str) -> None:
+        """Remove one upstream key, never allowing an empty Provider pool."""
+
+        if not PROVIDER_ID.fullmatch(provider_id) or provider_id.startswith("_"):
+            raise ValueError("Provider ID 无效")
+        if not PROVIDER_KEY_ID.fullmatch(key_id):
+            raise ValueError("密钥标识无效")
+        directory = (self.project_root / "providers" / provider_id).resolve()
+        providers_root = (self.project_root / "providers").resolve()
+        if directory.parent != providers_root or not directory.is_dir():
+            raise LookupError("Provider 目录不存在")
+        secrets_path = directory / "secrets.json"
+        current: dict[str, Any] = {}
+        if secrets_path.exists():
+            parsed = json.loads(secrets_path.read_text(encoding="utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("secrets.json 必须是 object")
+            current = parsed
+        normalized = self._existing_provider_keys(current)
+        if len(normalized) <= 1:
+            raise ProviderKeyPoolConflict("Provider 至少保留一个上游密钥，无法删除最后一个密钥")
+        remaining = [entry for entry in normalized if entry["key_id"] != key_id]
+        if len(remaining) == len(normalized):
+            raise LookupError("上游密钥不存在")
+        if not any(entry["enabled"] for entry in remaining):
+            raise ProviderKeyPoolConflict(
+                "删除后 Provider 将没有启用的上游密钥；请先启用或追加另一个密钥"
+            )
+        self._atomic_json(
+            secrets_path,
+            self._canonical_provider_secrets(current, remaining),
+        )

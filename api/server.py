@@ -25,7 +25,7 @@ from api.routes import (
     status_router,
 )
 from core.assets import AssetLimits, AssetStore
-from core.config import Settings
+from core.config import Settings, is_loopback_host
 from core.executor import GatewayExecutor
 from core.live_config import LiveConfigManager
 from core.registry import ProviderRegistry
@@ -72,10 +72,21 @@ def _web_auth_namespace(settings: Settings) -> str:
 def _validate_web_exposure(settings: Settings) -> None:
     username = bool(settings.web_username.strip())
     password = bool(settings.web_password.strip())
-    if username != password:
+    parsed_base = urlsplit(settings.base_url) if settings.base_url else None
+    public_base_url = bool(
+        parsed_base is not None
+        and parsed_base.hostname
+        and not is_loopback_host(parsed_base.hostname)
+    )
+    if public_base_url and (
+        not settings.web_token.strip() or not username or not password
+    ):
+        raise RuntimeError(
+            "公网 GATEWAY_BASE_URL 必须同时配置 WEB_TOKEN、WEB_USERNAME 和 WEB_PASSWORD"
+        )
+    if username != password and (not is_loopback_host(settings.host) or public_base_url):
         raise RuntimeError("WEB_USERNAME 与 WEB_PASSWORD 必须同时配置")
-    if settings.base_url:
-        parsed_base = urlsplit(settings.base_url)
+    if parsed_base is not None:
         if (
             parsed_base.scheme not in {"http", "https"}
             or not parsed_base.netloc

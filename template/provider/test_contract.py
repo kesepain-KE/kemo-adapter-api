@@ -19,10 +19,117 @@ from core.provider_contract import (
 )
 
 from .media import parse_media_block, store_output_media
-from .provider import ExampleProvider
+from .errors import ExampleErrorMapper
+from .provider import ExampleProvider, resolve_api_key
 
 
 GATEWAY_MODEL = "example-model-name"
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (
+            {
+                "api_key": "injected-key",
+                "api_keys": [
+                    {"key_id": "disabled", "api_key": "disabled-key", "enabled": False},
+                    {"key_id": "backup", "api_key": "backup-key", "enabled": True},
+                ],
+            },
+            "injected-key",
+        ),
+        (
+            {
+                "api_keys": [
+                    {"key_id": "disabled", "api_key": "disabled-key", "enabled": False},
+                    {"key_id": "primary", "api_key": "primary-key", "enabled": True},
+                ]
+            },
+            "primary-key",
+        ),
+        ({"api_key": "legacy-key"}, "legacy-key"),
+    ],
+)
+def test_api_key_resolution_supports_canonical_pool_and_legacy_key(
+    settings: dict[str, Any], expected: str
+) -> None:
+    assert resolve_api_key(settings) == expected
+    provider = ExampleProvider.from_settings(settings)
+    assert provider._client._api_key == expected  # noqa: SLF001
+
+
+def test_api_key_resolution_rejects_pool_without_enabled_key() -> None:
+    with pytest.raises(ValueError, match="没有启用"):
+        resolve_api_key(
+            {
+                "api_keys": [
+                    {"key_id": "disabled", "api_key": "disabled-key", "enabled": False}
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("pool", "message"),
+    [
+        ([{"api_key": "missing-id", "enabled": True}], "key_id"),
+        (
+            [
+                {"key_id": "primary", "api_key": "first", "enabled": True},
+                {"key_id": "primary", "api_key": "second", "enabled": True},
+            ],
+            "必须唯一",
+        ),
+        ([{"key_id": "primary", "api_key": "value", "enabled": "true"}], "布尔"),
+        ([{"key_id": "primary", "api_key": "", "enabled": True}], "不能为空"),
+    ],
+)
+def test_api_key_resolution_rejects_noncanonical_pool_entries(
+    pool: list[dict[str, Any]], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        resolve_api_key({"api_keys": pool})
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "retryable"),
+    [
+        (401, "AUTHENTICATION_ERROR", False),
+        (402, "QUOTA_EXCEEDED", False),
+        (408, "PROVIDER_TIMEOUT", True),
+        (429, "RATE_LIMITED", True),
+        (500, "PROVIDER_UNAVAILABLE", True),
+        (400, "INVALID_REQUEST", False),
+    ],
+)
+def test_error_mapper_keeps_http_retry_boundary_and_redacts_body(
+    status: int, code: str, retryable: bool
+) -> None:
+    error = ExampleErrorMapper().from_http_status(
+        status,
+        retry_after_ms=12_000,
+        provider_request_id="safe-request-id",
+    )
+    assert error.code == code
+    assert error.retryable is retryable
+    assert error.provider_status == status
+    assert error.retry_after_ms == 12_000
+    assert "safe-request-id" in error.details.values()
+    assert "response body" not in repr(error).lower()
+
+
+def test_error_mapper_does_not_treat_ordinary_403_as_key_failure() -> None:
+    mapper = ExampleErrorMapper()
+    permission_error = mapper.from_http_status(403)
+    assert permission_error.code == "PERMISSION_DENIED"
+    assert permission_error.retryable is False
+    assert permission_error.details.get("key_failure") is not True
+
+    key_error = mapper.from_http_status(403, key_failure=True)
+    assert key_error.code == "AUTHENTICATION_ERROR"
+    assert key_error.retryable is False
+    assert key_error.details.get("key_failure") is True
 
 
 class FakeClient:

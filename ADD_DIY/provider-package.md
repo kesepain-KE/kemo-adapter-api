@@ -4,12 +4,26 @@ Provider 是厂商差异的唯一归属。网关核心只认识 `core.models` �
 `core.provider_contract.ProviderPackage`，不得知道具体厂商的请求字段、流事件、Token 规则或
 错误正文。
 
+## 0. 最短执行清单
+
+给小参数智能体的固定流程：
+
+1. **新增厂商**：复制 `template/provider/`，替换目录内的示例文件，再运行契约测试。
+2. **新增模型**：不要复制模板；同步 `provider.models`、`capabilities.py`、`manifest.json`，
+   再补协议映射和测试。
+3. **修改上游密钥**：只编辑 `providers/<provider_id>/secrets.json` 的 `api_keys`；至少
+   保留一项启用密钥，保存后可热更新。
+4. **修改网关调用 Token**：只编辑 `api/keys.json`；不要把上游厂商密钥和网关调用 Token 混在一起。
+
+完成后必须回答三个问题：模型公开名是否正确、能力是否有真实证据、这次修改是否需要重启。
+任何一个问题无法回答，都先停下并报告风险，不要猜测。
+
 ## 1. 写代码前的判定
 
 先确认任务属于以下哪一种：
 
 1. 修改现有厂商：读取目标目录全部源码和测试，只做增量修改，禁止重新复制模板覆盖；
-2. 给现有厂商增加模型：确认上游模型名、任务和能力，再同步模型集合、能力与 manifest；
+2. 给现有厂商增加模型：确认上游模型名、任务和能力，再同步模型集合、能力、manifest、协议映射和测试；
 3. 创建新厂商：复制 `template/provider/` 后完整替换占位符；
 4. 增加现有九种多模态操作之外的新任务或实时会话：停止创建 Provider，先向用户说明需要扩展
    公开协议。
@@ -48,6 +62,35 @@ video_generation；这些操作共享 `/model/responses`，但 Provider 必须�
 - `provider.models`、`MODEL_CAPABILITIES`、`manifest.json.models` 必须使用相同的完整网关
   模型名；斜杠格式 `provider/model` 已废弃。
 
+新增或轮换上游密钥时只使用 `providers/<provider_id>/secrets.json` 的有序 `api_keys` 数组：
+
+```json
+{
+  "api_keys": [
+    {"key_id": "primary", "api_key": "上游密钥 A", "enabled": true},
+    {"key_id": "backup-1", "api_key": "上游密钥 B", "enabled": true}
+  ]
+}
+```
+
+`key_id` 必须在本 Provider 内唯一；密钥原文不能出现在 `.env`、`config.json`、源码、日志或
+Git。网关从当前游标开始按配置顺序选择密钥，并在发起一次上游尝试前预留下一位置；并发请求会尽量按开始
+顺序分摊，但不承诺严格的逐请求均匀轮询。只有明确指向当前密钥的鉴权失效、额度耗尽或限流（普通模型权限不足、参数错误的 403 不算）
+才会在尚未产生输出前继续尝试其他启用密钥，全部候选密钥失败后才返回最终错误；参数错误和已开始输出的流
+不能盲目重放。
+
+### 增加一个模型时只做这六件事
+
+1. 记录厂商原始模型名和任务类型；
+2. 生成公开名 `<provider_id>-<原始模型名>`；
+3. 加入 `provider.models`；
+4. 在 `capabilities.py` 填写真实模态、工具、流式、推理和限制；
+5. 在 `manifest.json` 写完全相同的模型键，并在 `protocol.py` 映射真实上游参数；
+6. 增加脱敏 Fixture，运行契约测试；Python 或 manifest 改动后重启。
+
+任何未验证能力都填 `false` 或空列表。不要因为厂商宣传“兼容 OpenAI”就自动打开视觉、工具、
+推理或流式能力。
+
 ## 4. 文件职责
 
 | 文件 | 唯一职责 |
@@ -63,7 +106,7 @@ video_generation；这些操作共享 `/model/responses`，但 Provider 必须�
 | `probe.py` | 厂商自己的低成本真实可达性测试 |
 | `manifest.json` | 非敏感静态目录；必须与运行时代码一致，但当前不替代代码注册 |
 | `config.json` | 可热更新的非敏感 API 配置 |
-| `secrets.json` | 可热更新的厂商密钥，Git 忽略 |
+| `secrets.json` | 可热更新的厂商密钥；显式使用标准 `api_keys` 数组，Git 忽略；至少保留一个启用密钥 |
 | `requirements.txt` | 可选厂商依赖；部署端必须显式安装，不会自动安装 |
 
 ## 5. Provider Facade 契约

@@ -4,14 +4,22 @@ import asyncio
 from datetime import datetime
 import hmac
 import json
+import logging
 import time
+from collections.abc import Callable
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
-from api.middleware import Principal, control_plane_auth_required, control_plane_principal
+from api.middleware import (
+    Principal,
+    control_plane_auth_required,
+    control_plane_local_bypass,
+    control_plane_principal,
+)
 from core.config import safe_key_id
 from core.provider_contract import ProviderException
 from core.runtime_state import GatewayDrainingError
@@ -19,22 +27,29 @@ from web.backend.schemas import (
     GatewayRuntimeUpdate,
     KeyModelPolicyUpdate,
     LiveControlUpdate,
+    ProviderKeyAppend,
+    ProviderKeyDelete,
     ProviderApiUpdate,
+    ProviderKeysUpdate,
     RestartRequestBody,
     WebPasswordAuth,
     WebTokenAuth,
 )
 from web.backend.auth_service import WEB_PREAUTH_COOKIE, WEB_SESSION_COOKIE
 from web.backend.restart_service import RestartAlreadyRunning
-from web.backend.service import RevisionConflict, RuntimeConfigWriter
+from web.backend.service import ProviderKeyPoolConflict, RevisionConflict, RuntimeConfigWriter
 
 
 router = APIRouter(
     prefix="/admin/api", tags=["admin-internal"], include_in_schema=False
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _password_auth_state(request: Request) -> tuple[bool, bool]:
+    if control_plane_local_bypass(request):
+        return False, True
     settings = request.app.state.settings
     username = bool(settings.web_username.strip())
     password = bool(settings.web_password.strip())
@@ -44,6 +59,85 @@ def _password_auth_state(request: Request) -> tuple[bool, bool]:
 def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
+
+
+def _public_provider_key_statuses(package: object) -> list[dict[str, object]]:
+    """Return only redacted Provider key status fields to the browser."""
+
+    def nonnegative_int(value: object) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    getter = getattr(package, "key_statuses", None)
+    if not callable(getter):
+        return []
+    raw = getter()
+    if not isinstance(raw, (list, tuple)):
+        return []
+    allowed = {
+        "key_id",
+        "key_preview",
+        "status",
+        "calls",
+        "successes",
+        "failures",
+        "last_error_code",
+        "last_used_at",
+    }
+    result: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        safe: dict[str, object] = {
+            "key_id": str(item.get("key_id") or "")[:128],
+            "key_preview": None,
+            "status": str(item.get("status") or "unknown")[:32],
+            "calls": nonnegative_int(item.get("calls")),
+            "successes": nonnegative_int(item.get("successes")),
+            "failures": nonnegative_int(item.get("failures")),
+            "last_error_code": (
+                str(item.get("last_error_code"))[:128]
+                if item.get("last_error_code") is not None
+                else None
+            ),
+            "last_used_at": item.get("last_used_at"),
+        }
+        preview = item.get("key_preview")
+        # A valid preview is always edge-masked.  Do not trust an arbitrary
+        # Provider to return a field called key_preview containing the secret.
+        if (
+            isinstance(preview, str)
+            and "…" in preview
+            and len(preview) <= 32
+        ):
+            safe["key_preview"] = preview
+        # Keep this explicit allow-list in the implementation: adding a field
+        # to a Provider diagnostic must never accidentally expose it to Web.
+        result.append({name: safe[name] for name in allowed if name in safe})
+    return result
+
+
+def _public_provider_diagnostics(package: object) -> dict[str, object]:
+    """Build the small, stable Provider object used by the Web console.
+
+    Provider packages are deployment-side code and their ``diagnostics``
+    implementation is not a security boundary.  The console only needs the
+    registered identity, models and redacted key statuses, so do not forward
+    arbitrary diagnostic fields (headers, URLs, tokens, or SDK state).
+    """
+
+    provider_id = str(getattr(package, "provider_id", ""))[:128]
+    try:
+        models = sorted(str(model)[:256] for model in getattr(package, "models", ()))
+    except Exception:
+        models = []
+    return {
+        "provider_id": provider_id,
+        "models": models,
+        "key_statuses": _public_provider_key_statuses(package),
+    }
 
 
 def _bearer_token(authorization: str | None) -> str | None:
@@ -181,9 +275,10 @@ def invalid_statistics_query(exc: ValueError) -> HTTPException:
 @router.get("/auth/methods")
 async def web_auth_methods(request: Request, response: Response) -> dict[str, object]:
     _no_store(response)
+    local_bypass = control_plane_local_bypass(request)
     password_required, password_valid = _password_auth_state(request)
     return {
-        "token_required": bool(request.app.state.settings.web_token.strip()),
+        "token_required": bool(request.app.state.settings.web_token.strip()) and not local_bypass,
         "password_required": password_required,
         "configuration_valid": password_valid,
         "session_ttl_seconds": request.app.state.web_auth.ttl_seconds,
@@ -295,9 +390,62 @@ async def web_auth_logout(request: Request, response: Response) -> dict[str, str
 
 
 async def refresh_after_write(request: Request):
-    snapshot = await request.app.state.live_config.refresh()
+    live_config = request.app.state.live_config
+    snapshot = await live_config.refresh()
+    if live_config.last_error:
+        # LiveConfigManager keeps the last known-good snapshot when a file is
+        # malformed.  Do not report a successful write while the new bytes
+        # have been rejected and are waiting for another repair.
+        raise ValueError("运行时配置校验失败，请检查配置文件后重试")
     await request.app.state.registry.apply_live_config(snapshot)
     return snapshot
+
+
+async def _write_and_refresh(
+    request: Request,
+    config_writer: RuntimeConfigWriter,
+    paths: list[Path],
+    mutation: Callable[[], None],
+):
+    """Apply a file mutation and roll it back if live reload is rejected.
+
+    Provider config and secret files are separate JSON documents.  Capturing
+    their exact bytes before a Web write lets us restore both documents when
+    validation, Provider construction, or hot reload fails.  The restore is
+    followed by one normal refresh so the in-memory snapshot and registry are
+    brought back to the same version as the files.
+    """
+    before = config_writer.capture_files(paths)
+    try:
+        mutation()
+        return await refresh_after_write(request)
+    except Exception:
+        after = config_writer.capture_files(paths)
+        if after != before:
+            try:
+                config_writer.restore_files(before)
+                await refresh_after_write(request)
+            except Exception as rollback_error:
+                # Do not include Provider exception text: it may contain an
+                # upstream URL or vendor-specific detail.  The original error
+                # remains the API-facing failure when possible.
+                logger.error(
+                    "运行时配置回滚失败 (%s)", type(rollback_error).__name__
+                )
+        raise
+
+
+def _provider_runtime_paths(
+    config_writer: RuntimeConfigWriter,
+    provider_id: str,
+    *,
+    include_secrets: bool,
+) -> list[Path]:
+    provider_dir = config_writer.project_root / "providers" / provider_id
+    paths = [provider_dir / "config.json"]
+    if include_secrets:
+        paths.append(provider_dir / "secrets.json")
+    return paths
 
 
 @router.get("/console")
@@ -317,11 +465,146 @@ async def console_data(
         "highest_priority_system_prompt": snapshot.gateway_system_prompt,
         "disabled_providers": sorted(snapshot.disabled_providers),
         "disabled_models": sorted(snapshot.disabled_models),
-        "providers": [package.diagnostics() for package in registry.providers.values()],
+        "providers": [_public_provider_diagnostics(package) for package in registry.providers.values()],
         "provider_configs": request.app.state.runtime_config_writer.provider_configs(),
         "live_config_error": request.app.state.live_config.last_error,
         "runtime": request.app.state.runtime_state.snapshot(),
     }
+
+
+@router.get("/providers/{provider_id}/keys")
+async def provider_key_statuses(
+    provider_id: str,
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+) -> dict[str, object]:
+    _no_store(response)
+    package = request.app.state.registry.providers.get(provider_id)
+    if package is None:
+        raise HTTPException(status_code=404, detail="Provider 不存在")
+    return {
+        "provider_id": provider_id,
+        "revision": request.app.state.live_config.current.revision,
+        "keys": _public_provider_key_statuses(package),
+    }
+
+
+@router.put("/providers/{provider_id}/keys")
+async def update_provider_keys(
+    provider_id: str,
+    body: ProviderKeysUpdate,
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+    _csrf: None = Depends(require_write_csrf),
+    config_writer: RuntimeConfigWriter = Depends(writer),
+) -> dict[str, object]:
+    _no_store(response)
+    try:
+        async with config_writer.lock:
+            config_writer.assert_revision(body.expected_revision, request.app.state.live_config.current.revision)
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                [config_writer.project_root / "providers" / provider_id / "secrets.json"],
+                lambda: config_writer.update_provider_keys(
+                    provider_id, keys=[item.model_dump() for item in body.keys]
+                ),
+            )
+            package = request.app.state.registry.providers.get(provider_id)
+            return {
+                "provider_id": provider_id,
+                "revision": snapshot.revision,
+                "keys": _public_provider_key_statuses(package) if package else [],
+            }
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/providers/{provider_id}/keys")
+async def append_provider_key(
+    provider_id: str,
+    body: ProviderKeyAppend,
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+    _csrf: None = Depends(require_write_csrf),
+    config_writer: RuntimeConfigWriter = Depends(writer),
+) -> dict[str, object]:
+    """Append one upstream secret without requiring the client to echo existing keys."""
+
+    _no_store(response)
+    try:
+        async with config_writer.lock:
+            config_writer.assert_revision(body.expected_revision, request.app.state.live_config.current.revision)
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                [config_writer.project_root / "providers" / provider_id / "secrets.json"],
+                lambda: config_writer.append_provider_key(
+                    provider_id, api_key=body.api_key
+                ),
+            )
+            package = request.app.state.registry.providers.get(provider_id)
+            return {
+                "provider_id": provider_id,
+                "revision": snapshot.revision,
+                "keys": _public_provider_key_statuses(package) if package else [],
+            }
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/providers/{provider_id}/keys/{key_id}")
+async def delete_provider_key(
+    provider_id: str,
+    key_id: str,
+    body: ProviderKeyDelete,
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_owner),
+    _csrf: None = Depends(require_write_csrf),
+    config_writer: RuntimeConfigWriter = Depends(writer),
+) -> dict[str, object]:
+    """Delete one upstream key while preserving the pool's final entry."""
+
+    _no_store(response)
+    try:
+        async with config_writer.lock:
+            config_writer.assert_revision(
+                body.expected_revision, request.app.state.live_config.current.revision
+            )
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                [config_writer.project_root / "providers" / provider_id / "secrets.json"],
+                lambda: config_writer.remove_provider_key(
+                    provider_id, key_id=key_id
+                ),
+            )
+            package = request.app.state.registry.providers.get(provider_id)
+            return {
+                "provider_id": provider_id,
+                "revision": snapshot.revision,
+                "keys": _public_provider_key_statuses(package) if package else [],
+            }
+    except RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProviderKeyPoolConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/keys")
@@ -489,11 +772,15 @@ async def update_key_model_policy(
                 body.expected_revision,
                 request.app.state.live_config.current.revision,
             )
-            config_writer.update_key_model_policy(
-                key_id,
-                allowed_models=body.allowed_models,
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                [config_writer.project_root / "api" / "keys.json"],
+                lambda: config_writer.update_key_model_policy(
+                    key_id,
+                    allowed_models=body.allowed_models,
+                ),
             )
-            snapshot = await refresh_after_write(request)
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LookupError as exc:
@@ -739,8 +1026,12 @@ async def update_gateway(
     try:
         async with config_writer.lock:
             config_writer.assert_revision(body.expected_revision, request.app.state.live_config.current.revision)
-            config_writer.update_gateway(enabled=body.enabled)
-            snapshot = await refresh_after_write(request)
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                [config_writer.project_root / "api" / "runtime.json"],
+                lambda: config_writer.update_gateway(enabled=body.enabled),
+            )
             return {"revision": snapshot.revision, "status": "updated"}
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -757,12 +1048,16 @@ async def update_control(
     try:
         async with config_writer.lock:
             config_writer.assert_revision(body.expected_revision, request.app.state.live_config.current.revision)
-            config_writer.update_control(
-                prompt=body.highest_priority_system_prompt,
-                disabled_providers=body.disabled_providers,
-                disabled_models=body.disabled_models,
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                [config_writer.project_root / "core" / "live_control.json"],
+                lambda: config_writer.update_control(
+                    prompt=body.highest_priority_system_prompt,
+                    disabled_providers=body.disabled_providers,
+                    disabled_models=body.disabled_models,
+                ),
             )
-            snapshot = await refresh_after_write(request)
             return {"revision": snapshot.revision, "status": "updated"}
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -780,8 +1075,18 @@ async def update_provider(
     try:
         async with config_writer.lock:
             config_writer.assert_revision(body.expected_revision, request.app.state.live_config.current.revision)
-            config_writer.update_provider(provider_id, config=body.config, api_key=body.api_key)
-            snapshot = await refresh_after_write(request)
+            snapshot = await _write_and_refresh(
+                request,
+                config_writer,
+                _provider_runtime_paths(
+                    config_writer,
+                    provider_id,
+                    include_secrets=body.api_key is not None,
+                ),
+                lambda: config_writer.update_provider(
+                    provider_id, config=body.config, api_key=body.api_key
+                ),
+            )
             return {"revision": snapshot.revision, "status": "updated"}
     except RevisionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
