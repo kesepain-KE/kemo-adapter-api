@@ -7,6 +7,10 @@ from pathlib import Path
 import pytest
 
 from update import git as update_git
+from update import integrity as update_integrity
+from update import transaction as update_transaction
+from update.git import GitDiff
+from update.version import VersionInfo
 
 
 GIT = shutil.which("git")
@@ -117,3 +121,85 @@ def test_ahead_and_diverged_histories_leave_head_unchanged(tmp_path: Path) -> No
         local, update_git.get_fetch_commit(local)
     )
     assert update_git.get_current_commit(local) == local_head
+
+
+def test_stash_conflict_rolls_back_without_leaving_unmerged_files(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    seed, local, old_commit = _repository(tmp_path)
+    (seed / "README.txt").write_text("远端内容\n", encoding="utf-8")
+    _git(seed, "add", "README.txt")
+    _git(seed, "commit", "-m", "远端修改同一行")
+    _git(seed, "push", "origin", "main")
+    (local / "README.txt").write_text("本地内容\n", encoding="utf-8")
+    ok, _ = update_git.fetch(local)
+    assert ok
+    target = update_git.get_fetch_commit(local)
+
+    result = update_transaction.perform_update(
+        local,
+        VersionInfo("0.7.5", "1.0", ""),
+        VersionInfo("0.7.6", "1.0", ""),
+        is_repair=False,
+        yes=True,
+        diff=GitDiff(["README.txt"]),
+        target_commit=target,
+    )
+
+    assert result == 5
+    assert update_git.get_current_commit(local) == old_commit
+    assert (local / "README.txt").read_text(encoding="utf-8") == "本地内容\n"
+    assert update_git.get_unmerged_files(local) == []
+    assert update_integrity.find_conflict_markers(local) == []
+    assert _git(local, "stash", "list")
+
+
+def test_repair_clears_existing_merge_conflict(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    seed, local, _ = _repository(tmp_path)
+    (local / "README.txt").write_text("本地提交\n", encoding="utf-8")
+    _git(local, "add", "README.txt")
+    _git(local, "commit", "-m", "本地冲突提交")
+    (seed / "README.txt").write_text("远端提交\n", encoding="utf-8")
+    _git(seed, "add", "README.txt")
+    _git(seed, "commit", "-m", "远端冲突提交")
+    _git(seed, "push", "origin", "main")
+    ok, _ = update_git.fetch(local)
+    assert ok
+    target = update_git.get_fetch_commit(local)
+    merge = subprocess.run(
+        [GIT or "git", "merge", target],
+        cwd=local,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert merge.returncode != 0
+    assert update_git.get_unmerged_files(local) == ["README.txt"]
+
+    monkeypatch.setattr(update_transaction, "_install_deps", lambda _root: True)
+    monkeypatch.setattr(update_transaction, "_build_frontend", lambda _root: True)
+    monkeypatch.setattr(
+        update_transaction.integrity,
+        "validate_installed_source",
+        lambda *_args, **_kwargs: update_integrity.IntegrityResult(True, "ok"),
+    )
+    result = update_transaction.perform_update(
+        local,
+        VersionInfo("0.7.5", "1.0", ""),
+        VersionInfo("0.7.6", "1.0", ""),
+        is_repair=True,
+        yes=True,
+        diff=GitDiff(["README.txt"]),
+        target_commit=target,
+    )
+
+    assert result == 0
+    assert update_git.get_current_commit(local) == target
+    assert update_git.get_unmerged_files(local) == []
+    assert update_integrity.find_conflict_markers(local) == []
+    assert (local / "README.txt").read_text(encoding="utf-8") == "远端提交\n"
