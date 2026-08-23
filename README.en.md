@@ -303,9 +303,11 @@ python update.py
 ```
 
 Enter a menu number to check and install updates, inspect status, restore a backup, or repair tracked source. No command suffix is required.
+The repository-root `update.py` is the only recommended entrypoint. Its implementation is split by responsibility under the `update/` package, and `python -m update` invokes the same application instead of maintaining a second updater.
 Normal updates are verified fast-forwards only. Local-ahead or diverged histories are never overwritten, and an up-to-date checkout never implies a source reset. The updater pins the exact inspected remote commit and creates a cold backup under `.backup/` before changing Git HEAD. It rejects the entire operation when a remote commit touches `.env`, API keys, Providers, statistics, Assets, runtime state, or the private developer directory. Front-end changes reuse the cross-platform `setup.py` toolchain to rebuild on Windows or Linux.
+Before reporting success, the updater requires a clean Git index, no conflict markers, successful Python compilation, a valid frontend artifact, and a successful `start_web.py --preflight`. Any failure restores the previous commit and the original local changes, so source containing `<<<<<<<` is never handed to the launcher.
 
-Choose source repair only when tracked source is damaged or the normal updater explicitly cannot continue. Repair creates a Git recovery reference first and preserves deployment environment variables, keys, Providers, and statistics.
+Choose source repair only when tracked source is damaged or the normal updater explicitly cannot continue. Repair creates a Git recovery reference first and preserves deployment environment variables, keys, Providers, and statistics. It realigns tracked source to the verified remote commit; the previous source remains in `.backup/` but is not reapplied over the repaired copy.
 
 ---
 
