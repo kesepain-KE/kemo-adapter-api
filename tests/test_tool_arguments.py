@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
@@ -15,18 +16,22 @@ from core.models import (
 from core.provider_contract import ProviderEvent, ProviderEventKind, ProviderResult
 from core.stores import ExecutionRecord, InMemoryExecutionStore, InternalStatus
 from core.tool_arguments import MISSING, parse_tool_arguments, validate_tool_call_output
-from providers.codexmanager.errors import CodexManagerErrorMapper
-from providers.codexmanager.protocol import CodexManagerProtocolMapper
-from providers.codexmanager.streaming import CodexManagerStreamMapper
-from providers.codexmanager.usage import CodexManagerUsageMapper
-from providers.deepseek.errors import DeepSeekErrorMapper
-from providers.deepseek.protocol import DeepSeekProtocolMapper
-from providers.deepseek.streaming import DeepSeekStreamMapper
-from providers.deepseek.usage import DeepSeekUsageMapper
-from providers.opencode.errors import OpenCodeErrorMapper
-from providers.opencode.protocol import OpenCodeProtocolMapper
-from providers.opencode.streaming import OpenCodeStreamMapper
-from providers.opencode.usage import OpenCodeUsageMapper
+
+
+def _provider_components(provider: str) -> SimpleNamespace:
+    try:
+        package = f"providers.{provider}"
+        return SimpleNamespace(
+            errors=import_module(f"{package}.errors"),
+            protocol=import_module(f"{package}.protocol"),
+            streaming=import_module(f"{package}.streaming"),
+            usage=import_module(f"{package}.usage"),
+        )
+    except ModuleNotFoundError as exc:
+        missing = str(exc.name or "")
+        if missing == "providers" or missing.startswith("providers."):
+            pytest.skip(f"部署端 Provider 包 {provider} 未随源码仓库提交")
+        raise
 
 
 def test_parser_distinguishes_missing_empty_object_and_non_object() -> None:
@@ -45,6 +50,24 @@ def test_parser_distinguishes_missing_empty_object_and_non_object() -> None:
     assert non_object.parse_error["kind"] == "non_object"
 
 
+def test_parser_rejects_oversized_valid_prefix_without_truncating() -> None:
+    prefix = '{"x":1}'
+    oversized = prefix + (" " * (1_000_000 - len(prefix))) + "TRAILING"
+
+    parsed = parse_tool_arguments(oversized)
+
+    assert parsed.arguments == {}
+    assert parsed.parse_error["kind"] == "arguments_too_large"
+    assert parsed.arguments_raw is None
+
+
+def test_parser_rejects_deep_json_before_python_parser_variation() -> None:
+    parsed = parse_tool_arguments("[" * 8000 + "0" + "]" * 8000)
+
+    assert parsed.arguments == {}
+    assert parsed.parse_error["kind"] == "invalid_json"
+
+
 @pytest.mark.parametrize("provider", ["codexmanager", "opencode", "deepseek"])
 @pytest.mark.parametrize(
     ("arguments", "expected_error"),
@@ -55,9 +78,12 @@ def test_provider_protocol_mappers_preserve_argument_state(
     arguments: str | None,
     expected_error: str | None,
 ) -> None:
+    components = _provider_components(provider)
     if provider == "codexmanager":
-        mapper = CodexManagerProtocolMapper(
-            CodexManagerUsageMapper(), CodexManagerErrorMapper(), provider_id=provider
+        mapper = components.protocol.CodexManagerProtocolMapper(
+            components.usage.CodexManagerUsageMapper(),
+            components.errors.CodexManagerErrorMapper(),
+            provider_id=provider,
         )
         item: dict[str, object] = {
             "id": "item",
@@ -68,8 +94,10 @@ def test_provider_protocol_mappers_preserve_argument_state(
             item["arguments"] = arguments
         result = mapper.build_tool_call_item(item, index=0)
     elif provider == "opencode":
-        mapper = OpenCodeProtocolMapper(
-            OpenCodeUsageMapper(), OpenCodeErrorMapper(), provider_id=provider
+        mapper = components.protocol.OpenCodeProtocolMapper(
+            components.usage.OpenCodeUsageMapper(),
+            components.errors.OpenCodeErrorMapper(),
+            provider_id=provider,
         )
         function: dict[str, object] = {"name": "file"}
         if arguments is not None:
@@ -78,7 +106,9 @@ def test_provider_protocol_mappers_preserve_argument_state(
             {"id": "call", "function": function}, item_id="item"
         )
     else:
-        mapper = DeepSeekProtocolMapper(DeepSeekUsageMapper(), DeepSeekErrorMapper())
+        mapper = components.protocol.DeepSeekProtocolMapper(
+            components.usage.DeepSeekUsageMapper(), components.errors.DeepSeekErrorMapper()
+        )
         function = {"name": "file"}
         if arguments is not None:
             function["arguments"] = arguments
@@ -97,6 +127,8 @@ def test_provider_protocol_mappers_preserve_argument_state(
 def test_provider_stream_mappers_mark_missing_arguments_without_cross_request_state(
     provider: str,
 ) -> None:
+    components = _provider_components(provider)
+
     async def source() -> object:
         if provider == "codexmanager":
             yield {
@@ -144,22 +176,32 @@ def test_provider_stream_mappers_mark_missing_arguments_without_cross_request_st
 
     async def collect() -> list[object]:
         if provider == "codexmanager":
-            protocol = CodexManagerProtocolMapper(
-                CodexManagerUsageMapper(), CodexManagerErrorMapper(), provider_id=provider
+            protocol = components.protocol.CodexManagerProtocolMapper(
+                components.usage.CodexManagerUsageMapper(),
+                components.errors.CodexManagerErrorMapper(),
+                provider_id=provider,
             )
-            mapper = CodexManagerStreamMapper(
-                CodexManagerUsageMapper(), protocol, CodexManagerErrorMapper()
+            mapper = components.streaming.CodexManagerStreamMapper(
+                components.usage.CodexManagerUsageMapper(),
+                protocol,
+                components.errors.CodexManagerErrorMapper(),
             )
         elif provider == "opencode":
-            usage = OpenCodeUsageMapper()
-            protocol = OpenCodeProtocolMapper(
-                usage, OpenCodeErrorMapper(), provider_id=provider
+            usage = components.usage.OpenCodeUsageMapper()
+            protocol = components.protocol.OpenCodeProtocolMapper(
+                usage, components.errors.OpenCodeErrorMapper(), provider_id=provider
             )
-            mapper = OpenCodeStreamMapper(usage, protocol, OpenCodeErrorMapper())
+            mapper = components.streaming.OpenCodeStreamMapper(
+                usage, protocol, components.errors.OpenCodeErrorMapper()
+            )
         else:
-            usage = DeepSeekUsageMapper()
-            protocol = DeepSeekProtocolMapper(usage, DeepSeekErrorMapper())
-            mapper = DeepSeekStreamMapper(usage, protocol, DeepSeekErrorMapper())
+            usage = components.usage.DeepSeekUsageMapper()
+            protocol = components.protocol.DeepSeekProtocolMapper(
+                usage, components.errors.DeepSeekErrorMapper()
+            )
+            mapper = components.streaming.DeepSeekStreamMapper(
+                usage, protocol, components.errors.DeepSeekErrorMapper()
+            )
         return [event async for event in mapper.convert(source())]  # type: ignore[arg-type]
 
     events = asyncio.run(collect())
@@ -168,11 +210,14 @@ def test_provider_stream_mappers_mark_missing_arguments_without_cross_request_st
 
 
 def test_opencode_stream_argument_buffers_are_request_local() -> None:
-    usage = OpenCodeUsageMapper()
-    protocol = OpenCodeProtocolMapper(
-        usage, OpenCodeErrorMapper(), provider_id="opencode"
+    components = _provider_components("opencode")
+    usage = components.usage.OpenCodeUsageMapper()
+    protocol = components.protocol.OpenCodeProtocolMapper(
+        usage, components.errors.OpenCodeErrorMapper(), provider_id="opencode"
     )
-    mapper = OpenCodeStreamMapper(usage, protocol, OpenCodeErrorMapper())
+    mapper = components.streaming.OpenCodeStreamMapper(
+        usage, protocol, components.errors.OpenCodeErrorMapper()
+    )
 
     async def source(value: str):
         yield {

@@ -16,6 +16,7 @@ from typing import Any
 
 MISSING = object()
 _MAX_RAW_ARGUMENTS = 1_000_000
+_MAX_ARGUMENT_DEPTH = 64
 _MAX_SCHEMA_DEPTH = 32
 _MAX_SCHEMA_NODES = 4096
 _MAX_SCHEMA_ARRAY_ITEMS = 4096
@@ -26,6 +27,7 @@ _PARSE_ERROR_KINDS = frozenset(
         "empty_arguments",
         "invalid_arguments_type",
         "non_object",
+        "arguments_too_large",
         "invalid_json",
     }
 )
@@ -45,6 +47,32 @@ def _error(kind: str, message: str, *, exc: json.JSONDecodeError | None = None) 
     return result
 
 
+def _raw_json_nesting_exceeds(raw: str, *, limit: int) -> bool:
+    """Detect excessive JSON container nesting without invoking the JSON parser."""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif char in "]}":
+            depth = max(0, depth - 1)
+    return False
+
+
 def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
     """Parse one Provider value without treating missing data as ``{}``.
 
@@ -61,16 +89,38 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
         )
     if isinstance(value, Mapping):
         arguments = dict(value)
+        try:
+            arguments_raw = json.dumps(
+                arguments, ensure_ascii=False, separators=(",", ":")
+            )
+        except (TypeError, ValueError, RecursionError):
+            return ParsedToolArguments(
+                arguments={},
+                arguments_raw=None,
+                parse_error=_error(
+                    "arguments_too_large", "工具参数对象无法在安全边界内序列化"
+                ),
+            )
+        if len(arguments_raw) > _MAX_RAW_ARGUMENTS:
+            return ParsedToolArguments(
+                arguments={},
+                arguments_raw=None,
+                parse_error=_error("arguments_too_large", "工具参数原始内容超过大小上限"),
+            )
         return ParsedToolArguments(
             arguments=arguments,
-            arguments_raw=json.dumps(
-                arguments, ensure_ascii=False, separators=(",", ":")
-            )[:_MAX_RAW_ARGUMENTS],
+            arguments_raw=arguments_raw,
             parse_error=None,
         )
     if isinstance(value, str):
-        arguments_raw = value[:_MAX_RAW_ARGUMENTS]
-        if not value.strip():
+        if len(value) > _MAX_RAW_ARGUMENTS:
+            return ParsedToolArguments(
+                arguments={},
+                arguments_raw=None,
+                parse_error=_error("arguments_too_large", "工具参数原始内容超过大小上限"),
+            )
+        arguments_raw = value
+        if not arguments_raw.strip():
             return ParsedToolArguments(
                 arguments={},
                 arguments_raw=arguments_raw,
@@ -83,10 +133,29 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
             parse_error=_error("invalid_arguments_type", "工具参数字段类型无效"),
         )
     else:
-        arguments_raw = str(value)[:_MAX_RAW_ARGUMENTS]
+        arguments_raw = str(value)
+        if len(arguments_raw) > _MAX_RAW_ARGUMENTS:
+            return ParsedToolArguments(
+                arguments={},
+                arguments_raw=None,
+                parse_error=_error("arguments_too_large", "工具参数原始内容超过大小上限"),
+            )
+
+    if _raw_json_nesting_exceeds(arguments_raw, limit=_MAX_ARGUMENT_DEPTH):
+        return ParsedToolArguments(
+            arguments={},
+            arguments_raw=arguments_raw,
+            parse_error=_error("invalid_json", "工具参数 JSON 嵌套层级超过解析上限"),
+        )
 
     try:
         parsed = json.loads(arguments_raw)
+    except RecursionError:
+        return ParsedToolArguments(
+            arguments={},
+            arguments_raw=arguments_raw,
+            parse_error=_error("invalid_json", "工具参数 JSON 嵌套层级超过解析上限"),
+        )
     except json.JSONDecodeError as exc:
         return ParsedToolArguments(
             arguments={},
