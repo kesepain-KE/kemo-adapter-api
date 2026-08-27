@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 from core.assets import AssetStore
@@ -26,6 +26,7 @@ from core.models import (
     MessageItem,
     SSEEvent,
     TextContent,
+    ToolCallItem,
     Usage,
     VideoContent,
 )
@@ -40,6 +41,7 @@ from core.provider_contract import (
 from core.registry import ProviderRegistry
 from core.runtime_state import ExecutionLease, GatewayRuntimeState
 from core.stores import ExecutionRecord, ExecutionStore, InternalStatus
+from core.tool_arguments import validate_tool_call_output
 from storage.statistics import InvocationHandle, StatisticsStore
 
 
@@ -188,6 +190,30 @@ class GatewayExecutor:
             metadata=result.metadata,
             extensions=result.extensions,
         )
+        invalid_calls = validate_tool_call_output(response.output, request.tools or [])
+        if invalid_calls and response.status in {
+            "completed",
+            "requires_action",
+            "incomplete",
+        }:
+            safe_details = {
+                "reason": "invalid_tool_arguments",
+                "invalid_tool_calls": invalid_calls,
+            }
+            response = KemoResponse(
+                id=response.id,
+                request_id=response.request_id,
+                status="incomplete",
+                model=response.model,
+                output=[
+                    item for item in response.output if not isinstance(item, ToolCallItem)
+                ],
+                usage=response.usage,
+                incomplete_details=safe_details,
+                provider_response_id=response.provider_response_id,
+                metadata=response.metadata,
+                extensions=response.extensions,
+            )
         self._validate_response_contract(request, response, context)
         return response
 
@@ -257,6 +283,29 @@ class GatewayExecutor:
                 sort_keys=True,
             )
         return fingerprints
+
+    @staticmethod
+    def _valid_stream_tool_call(
+        request: KemoRequest,
+        provider_event: ProviderEvent,
+    ) -> bool:
+        """Only publish a completed tool event when its call is executable.
+
+        Argument fragments may be streamed before the terminal response, but a
+        ``tool_call.completed`` event is an execution boundary for clients.  Do
+        not publish malformed or Schema-invalid calls; the terminal response
+        conversion will report the safe ``invalid_tool_arguments`` diagnostic.
+        """
+
+        if provider_event.kind != ProviderEventKind.TOOL_COMPLETED:
+            return True
+        if not isinstance(provider_event.item, dict):
+            return False
+        try:
+            item = ToolCallItem.model_validate(provider_event.item)
+        except Exception:
+            return False
+        return not validate_tool_call_output([item], request.tools or [])
 
     async def execute(
         self,
@@ -520,6 +569,7 @@ class GatewayExecutor:
     ) -> None:
         completed_media: dict[str, MessageItem] = {}
         completed_media_fingerprints: dict[str, str] = {}
+        pending_tool_events: list[ProviderEvent] = []
         try:
             package = self.registry.resolve_registered(request.model)
             async for provider_event in package.stream(request, context):
@@ -548,7 +598,15 @@ class GatewayExecutor:
                     ProviderEventKind.CANCELLED,
                 }:
                     statistics_handle.mark_response()
+                if provider_event.kind == ProviderEventKind.TOOL_COMPLETED:
+                    # A tool_call.completed event is an execution boundary.  Hold
+                    # the whole batch until the provider terminal response has
+                    # been validated so one malformed parallel call cannot leak
+                    # earlier valid calls to the client.
+                    pending_tool_events.append(provider_event)
+                    continue
                 terminal_response = None
+                terminal_provider_event = provider_event
                 if provider_event.kind in {
                     ProviderEventKind.COMPLETED,
                     ProviderEventKind.INCOMPLETE,
@@ -565,9 +623,65 @@ class GatewayExecutor:
                         raise RuntimeError(
                             "流式媒体完成事件与统一终态中的媒体 Item 不一致"
                         )
+                    expected_kind = {
+                        "completed": ProviderEventKind.COMPLETED,
+                        "requires_action": ProviderEventKind.COMPLETED,
+                        "incomplete": ProviderEventKind.INCOMPLETE,
+                        "failed": ProviderEventKind.FAILED,
+                        "cancelled": ProviderEventKind.CANCELLED,
+                    }[terminal_response.status]
+                    if expected_kind != provider_event.kind:
+                        terminal_provider_event = replace(
+                            provider_event,
+                            kind=expected_kind,
+                        )
+
+                    if terminal_response.status == "requires_action":
+                        terminal_calls = [
+                            item
+                            for item in terminal_response.output
+                            if isinstance(item, ToolCallItem)
+                        ]
+                        pending_by_call_id: dict[str, ProviderEvent] = {}
+                        for pending in pending_tool_events:
+                            if not self._valid_stream_tool_call(request, pending):
+                                continue
+                            try:
+                                pending_item = ToolCallItem.model_validate(pending.item)
+                            except Exception:
+                                continue
+                            pending_by_call_id.setdefault(
+                                pending_item.call_id,
+                                pending,
+                            )
+                        for item in terminal_calls:
+                            source = pending_by_call_id.get(item.call_id)
+                            source = source or ProviderEvent(
+                                kind=ProviderEventKind.TOOL_COMPLETED,
+                                item_id=item.id,
+                                call_id=item.call_id,
+                                name=item.name,
+                                item=item.model_dump(mode="python"),
+                                provider_response_id=provider_event.provider_response_id,
+                            )
+                            call_event = EventAssembler.assemble(
+                                replace(
+                                    source,
+                                    kind=ProviderEventKind.TOOL_COMPLETED,
+                                    item_id=item.id,
+                                    call_id=item.call_id,
+                                    name=item.name,
+                                    item=item.model_dump(mode="python"),
+                                ),
+                                request_id=request.request_id,
+                                response_id=record.response_id,
+                                sequence=len(record.events),
+                            )
+                            await self.store.append_event(record, call_event)
+                    pending_tool_events.clear()
 
                 event = EventAssembler.assemble(
-                    provider_event,
+                    terminal_provider_event,
                     request_id=request.request_id,
                     response_id=record.response_id,
                     sequence=len(record.events),

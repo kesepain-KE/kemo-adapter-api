@@ -18,13 +18,24 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.5-blue" alt="Gateway version 0.7.5"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.6-blue" alt="Gateway version 0.7.6"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 0.7.6 稳定性修复
+
+本版本只收紧已有工具调用和流式响应边界：
+
+- Provider 工具参数在执行前必须是完整 JSON 对象并通过 Schema 校验；非法参数返回明确的 `incomplete` 终态。
+- 流式 `tool_call.completed` 会等统一终态校验后再发布；并行调用按批次原子处理，避免同批部分泄露。
+- Schema 校验增加递归深度、节点数量和数组项上限，防止异常输入造成递归崩溃或无界消耗。
+- 既有多密钥故障转移、热更新失败回滚和诊断脱敏规则保持不变。
+
+网关协议版本仍为 `1.0`，前端管理包同步为 `0.7.6`。
 
 ## 如果每个厂商都在发明自己的协议
 

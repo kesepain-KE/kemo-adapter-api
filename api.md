@@ -281,6 +281,12 @@ Provider 执行，相同请求可以在保留期内重连或查询终态。网�
   不应由底层传输代码自动决定。
 - HTTP 错误正文中的显式 `retryable=true/false` 优先于状态码默认分类；显式为 `false` 时不得重试。
 
+### 工具调用终态安全
+
+- `tool_call.completed` 只有在参数已经解析为完整 JSON 对象并通过本次请求工具 Schema 校验后才会发布；残缺、非对象或结构不匹配的参数不会进入执行边界。
+- 同一 Provider 响应中的并行工具调用按批次原子处理。任一调用非法时，网关不会先发布同批其他调用，而是返回 `response.incomplete` 及有限的校验原因。
+- Schema 校验受递归深度、节点总数和数组项数限制。超过限制会返回明确的参数/契约错误，不会递归崩溃或无限扫描。
+
 这些默认值分别由 `SSE_HEARTBEAT_SECONDS`、`EXECUTION_RETENTION_HOURS`、
 `MODEL_EXECUTION_TIMEOUT_SECONDS`、`MAX_CONCURRENT_EXECUTIONS` 和
 `MAX_SSE_EVENTS_PER_RESPONSE` 配置；它们属于启动环境变量，修改后必须重启网关。

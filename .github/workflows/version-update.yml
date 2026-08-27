@@ -48,10 +48,18 @@ jobs:
       - name: Run temporary Git repository integration tests
         run: python -m pytest tests/test_update_git_integration.py -q
 
+      - name: Run Provider execution safety tests
+        run: >-
+          python -m pytest -q
+          tests/test_tool_arguments.py
+          tests/test_transport_stability.py
+          tests/test_provider_boundary.py
+          tests/test_capability_validation.py
+
       - name: Check the real remote without modifying source
         run: python update.py --check
 
       - name: Verify UTF-8 Git boundary and source syntax
         run: |
-          python -m compileall -q update.py update tests
+          python -m compileall -q update.py update core api providers web template tests
           git diff --check

@@ -18,13 +18,24 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.5-blue" alt="Gateway version 0.7.5"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.6-blue" alt="Gateway version 0.7.6"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 0.7.6 stability patch
+
+This release tightens existing tool-call and streaming boundaries:
+
+- Provider tool arguments must be complete JSON objects and pass schema validation before execution; invalid arguments end in an explicit `incomplete` response.
+- Streaming `tool_call.completed` events are published only after terminal validation; parallel calls are committed atomically as a batch.
+- Schema validation has recursion-depth, node-count, and array-item limits to prevent crashes and unbounded work on hostile input.
+- Existing multi-key failover, hot-reload rollback, and diagnostic-redaction rules remain unchanged.
+
+The Kemo Protocol remains at `1.0`, and the Web console package is also `0.7.6`.
 
 ## Every vendor has its own protocol. That is the problem.
 
