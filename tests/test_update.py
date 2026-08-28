@@ -13,10 +13,14 @@ from update import deps as update_deps
 from update import frontend as update_frontend
 from update import git as update_git
 from update import integrity as update_integrity
+from update import plan as update_plan
 from update import transaction as update_transaction
 from update import ui as update_ui
 from update import version as update_version
+from update._utils import UpdateError, git_control_dir, redact_text
 from update.git import GitDiff, GitSyncState
+from update.lock import UpdateLock
+from update.plan import UpdatePlan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -131,6 +135,94 @@ def test_git_runner_decodes_utf8_independently_of_windows_code_page(
     assert kwargs["env"]["LC_ALL"] == "C"
     assert kwargs["env"]["LANG"] == "C"
     assert kwargs["timeout"] == 7
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://operator:super-secret@example.invalid:bad/repo.git",
+        "ssh://operator:super-secret@example.invalid/repo.git",
+        "git+ssh://operator:super-secret@example.invalid/repo.git?token=another-secret",
+        "https://operator:super-secret@[broken/repo.git?session_secret=another-secret",
+    ],
+)
+def test_update_redaction_never_leaks_credentials_for_ssh_or_malformed_urls(
+    raw: str,
+) -> None:
+    safe = redact_text(raw)
+
+    assert "super-secret" not in safe
+    assert "another-secret" not in safe
+    assert "***@" in safe or "token=***" in safe or "access_token=***" in safe
+
+
+def test_git_control_dir_supports_worktree_git_file(tmp_path: Path) -> None:
+    control = tmp_path / "git-metadata" / "worktree"
+    control.mkdir(parents=True)
+    (tmp_path / ".git").write_text(
+        f"gitdir: {control.as_posix()}\n", encoding="utf-8"
+    )
+
+    assert git_control_dir(tmp_path) == control.resolve()
+
+
+def test_update_marker_and_lock_stay_outside_git_status(tmp_path: Path) -> None:
+    initialized = update_git._git(["init"], tmp_path)
+    assert initialized.returncode == 0
+
+    with UpdateLock(tmp_path), update_transaction._maintenance_marker(tmp_path):
+        assert UpdateLock(tmp_path).path == tmp_path / ".git" / "kemo-update.lock"
+        assert (tmp_path / ".git" / ".update.maintenance").is_file()
+        assert not (tmp_path / ".update.maintenance").exists()
+        assert update_git.has_local_changes(tmp_path) is False
+
+    assert not (tmp_path / ".git" / ".update.maintenance").exists()
+
+
+def test_no_argument_menu_errors_are_caught(monkeypatch, capsys) -> None:
+    def fail(_root: Path) -> int:
+        raise UpdateError("交互菜单测试错误")
+
+    monkeypatch.setattr(update_cli, "interactive_menu", fail)
+
+    assert update_cli.main([], project_root=PROJECT_ROOT) == 1
+    assert "交互菜单测试错误" in capsys.readouterr().err
+
+
+def test_repair_dry_run_still_rejects_protected_paths(monkeypatch) -> None:
+    current = update_version.VersionInfo("0.7.8", "1.0", "")
+    called: list[Path] = []
+    monkeypatch.setattr(update_checker, "check", lambda _root: (0, current, current))
+    monkeypatch.setattr(
+        update_checker,
+        "reject_protected_remote_changes",
+        lambda root: called.append(root) or True,
+    )
+
+    assert update_cli.repair(PROJECT_ROOT, yes=True, dry_run=True) == 4
+    assert called == [PROJECT_ROOT]
+
+
+def test_update_plan_reports_protocol_compatibility() -> None:
+    local = update_version.VersionInfo("0.7.8", "1.0", "")
+    remote = update_version.VersionInfo("0.8.0", "2.0", "")
+    inspection = UpdatePlan(
+        PROJECT_ROOT,
+        local,
+        remote,
+        GitSyncState("behind", 0, 1),
+        "a" * 40,
+        GitDiff(["update.py"]),
+        GitDiff([]),
+        _healthy(),
+        "直连",
+        False,
+        "协议主版本不兼容",
+    )
+
+    rendered = update_plan.render(inspection)
+    assert any(line.startswith("协议状态：不兼容") for line in rendered)
+    assert inspection.safe_to_apply is False
 
 
 def test_remote_version_uses_shared_git_utf8_boundary(monkeypatch) -> None:

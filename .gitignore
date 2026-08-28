@@ -19,6 +19,8 @@ providers/*
 
 # 更新冷备份
 .backup/
+.update.lock
+.update.maintenance
 
 # 前端构建产物（克隆后自行构建）
 web/frontend/node_modules/

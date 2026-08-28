@@ -7,6 +7,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+APP_NAME = "kemo-adapter-api"
+DEFAULT_BRANCH = "main"
+DEFAULT_REPO_URL = "https://github.com/kesepain-KE/kemo-adapter-api.git"
+DEFAULT_REPOSITORY_SLUG = "kesepain-KE/kemo-adapter-api"
+VERSION_URL_TEMPLATE = (
+    "https://raw.githubusercontent.com/kesepain-KE/kemo-adapter-api/"
+    "{branch}/version.json"
+)
+BACKUP_KEEP = 10
+
 # 这些路径属于部署者、运行时或私有 Provider，不允许远端更新覆盖。
 PROTECTED_PATTERNS = (
     ".env",
@@ -22,6 +32,8 @@ PROTECTED_PATTERNS = (
     "*.bak.*",
     "*.log",
     "*.pid",
+    ".update.lock",
+    ".update.maintenance",
 )
 PROTECTED_EXCEPTIONS = frozenset({"providers/__init__.py"})
 

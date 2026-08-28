@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.7-blue" alt="Gateway version 0.7.7"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.8-blue" alt="Gateway version 0.7.8"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -26,16 +26,17 @@
 
 ---
 
-## 0.7.7 Provider lifecycle and hot-config snapshot
+## 0.7.8 updater plan preview and safety boundaries
 
-This release completes runtime Provider package lifecycle management and hot-config snapshot boundaries:
+This release completes the deployment updater control plane without changing the public Kemo protocol:
 
-- When a Provider directory is removed, already-admitted executions finish normally while new requests and the console are immediately refused routing to the deleted provider (package reference counting plus retirement).
-- The hot-config snapshot treats the Provider directory itself as a fingerprint marker: deleting or adding a directory invalidates the snapshot and triggers a reload even without config.json/secrets.json.
-- The Web console stays usable when Provider diagnostics fail: `key_statuses()` exceptions return an empty list with `key_statuses_status=unavailable` instead of failing the whole admin page.
-- Concurrent hot reloads are deduplicated, close runs at most once, and the control plane is serialized; the 0.7.6 tool-argument and atomic streaming rules remain unchanged.
+- The interactive menu can preview an update plan and inspect source state; `--apply --dry-run` shows the plan without changing the worktree, config, or runtime data.
+- `--repo-url` / `--branch` apply only to the current operation and never rewrite local `origin`; `--remote-version-url` is a read-only fallback when Git is unavailable.
+- Write operations hold a cross-platform lock and a short-lived `.update.maintenance` marker; backup identifiers stay unique even when two operations start in the same second.
+- Git and command diagnostics are redacted so tokens, passwords, and credential-bearing URLs are not printed; `providers/__init__.py` truncates and redacts secrets in upstream HTML error pages.
+- The 0.7.7 Provider lifecycle reference counting, directory fingerprint snapshots, and diagnostic fallback remain unchanged.
 
-The Kemo Protocol remains at `1.0`, and the Web console package is also `0.7.7`.
+The Kemo Protocol remains at `1.0`, and the Web console package is also `0.7.8`.
 
 ## Every vendor has its own protocol. That is the problem.
 
@@ -313,9 +314,26 @@ The restart module drains in-flight requests before restarting. Before stopping 
 python update.py
 ```
 
-Enter a menu number to check and install updates, inspect status, restore a backup, or repair tracked source. No command suffix is required.
+Enter a menu number to check and install updates, inspect status, restore a backup, repair tracked source, preview a plan, or inspect the current state. No command suffix is required.
 The repository-root `update.py` is the only recommended entrypoint. Its implementation is split by responsibility under the `update/` package, and `python -m update` invokes the same application instead of maintaining a second updater.
+Automation and remote terminals can use explicit commands:
+
+```powershell
+python update.py --check                 # read-only remote/version check
+python update.py --apply --dry-run       # preview without changing the worktree, config, or runtime data (refreshes Git check refs)
+python update.py --apply --yes           # apply after external confirmation
+python update.py --status                # version, commit, and source state
+python update.py --list-backups          # list cold backups
+python update.py --restore-backup latest # restore the newest source backup
+```
+
+`--repo-url` and `--branch` apply only to the current operation and never rewrite the local `origin`.
+`--remote-version-url` is a read-only fallback for checking a version when Git is unavailable; it
+does not authorize source writes. Git output is decoded through a UTF-8 boundary on both Windows and
+Linux. Command diagnostics are redacted so tokens, passwords, and credential-bearing URLs are not
+printed.
 Normal updates are verified fast-forwards only. Local-ahead or diverged histories are never overwritten, and an up-to-date checkout never implies a source reset. The updater pins the exact inspected remote commit and creates a cold backup under `.backup/` before changing Git HEAD. It rejects the entire operation when a remote commit touches `.env`, API keys, Providers, statistics, Assets, runtime state, or the private developer directory. Front-end changes reuse the cross-platform `setup.py` toolchain to rebuild on Windows or Linux.
+The updater keeps backup identifiers unique even when two operations start within the same second. During a write it publishes a short-lived `.update.maintenance` marker and holds a cross-platform lock so two updater processes cannot write concurrently.
 Before reporting success, the updater requires a clean Git index, no conflict markers, successful Python compilation, a valid frontend artifact, and a successful `start_web.py --preflight`. Any failure restores the previous commit and the original local changes, so source containing `<<<<<<<` is never handed to the launcher.
 
 Choose source repair only when tracked source is damaged or the normal updater explicitly cannot continue. Repair creates a Git recovery reference first and preserves deployment environment variables, keys, Providers, and statistics. It realigns tracked source to the verified remote commit; the previous source remains in `.backup/` but is not reapplied over the repaired copy.

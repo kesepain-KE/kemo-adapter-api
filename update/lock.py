@@ -9,6 +9,8 @@ import time
 import uuid
 from pathlib import Path
 
+from update._utils import git_control_dir
+
 
 class UpdateLockError(RuntimeError):
     """另一个更新进程已经持有锁。"""
@@ -57,12 +59,19 @@ def _release_os_lock(fd: int) -> None:
 
 
 class UpdateLock:
-    """依赖操作系统文件锁，进程崩溃时由系统自动释放。"""
+    """依赖操作系统文件锁，进程崩溃时由系统自动释放。
+
+    有 Git 的源码目录继续把锁放在 ``.git``，避免它被 ``git stash
+    --include-untracked`` 当成用户文件；从压缩包或无 Git 的目录运行时则
+    使用根目录的 ``.update.lock``。文件本身只保存诊断元数据，真正的锁由
+    打开的文件描述符持有。
+    """
 
     def __init__(self, project_root: Path) -> None:
-        git_dir = project_root / ".git"
-        state_dir = git_dir if git_dir.is_dir() else project_root
-        self.path = state_dir / "kemo-update.lock"
+        control_dir = git_control_dir(project_root)
+        state_dir = control_dir or project_root.resolve()
+        lock_name = "kemo-update.lock" if control_dir is not None else ".update.lock"
+        self.path = state_dir / lock_name
         self._token = uuid.uuid4().hex
         self._fd: int | None = None
 

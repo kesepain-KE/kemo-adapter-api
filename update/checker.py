@@ -5,21 +5,47 @@ from __future__ import annotations
 from pathlib import Path
 
 from update import git, version
+from update._utils import redact_text
+from update.constants import DEFAULT_BRANCH
 
 
 def check(
     project_root: Path,
     local: version.VersionInfo | None = None,
+    *,
+    branch: str = DEFAULT_BRANCH,
+    remote_url: str | None = None,
+    remote_version_url: str | None = None,
 ) -> tuple[int, version.VersionInfo | None, version.VersionInfo | None]:
-    """只读检查远端，并报告 HEAD 与精确 FETCH_HEAD 的关系。"""
+    """只读检查远端，并报告 HEAD 与精确 FETCH_HEAD 的关系。
+
+    ``remote_url`` 和 ``branch`` 只用于本次 fetch，不会改写 origin；
+    ``remote_version_url`` 是无 Git 环境下的只读版本检查备用通道，不能
+    单独授权写入源码。
+    """
 
     local = local or version.read_local(project_root)
     print(f"[KEMO] 本地版本: {local.version}  (protocol {local.protocol_version})")
     if local.notes:
         print(f"[KEMO] 本地说明: {local.notes}")
     print("[KEMO] 正在检测远程更新...")
-    ok, mirror_label = git.fetch(project_root)
+    if branch == DEFAULT_BRANCH and remote_url is None:
+        ok, mirror_label = git.fetch(project_root)
+    else:
+        ok, mirror_label = git.fetch(
+            project_root,
+            branch=branch,
+            remote_url=remote_url,
+        )
     if not ok:
+        if remote_version_url:
+            fallback = version.read_remote_url(remote_version_url)
+            if fallback is not None:
+                print(f"[KEMO] 远程版本（只读）：{fallback.version}  (protocol {fallback.protocol_version})")
+                if fallback.notes:
+                    print(f"[KEMO] 更新说明：{redact_text(fallback.notes)}")
+                print("[WARN] 当前无法完成 Git fetch；该结果只能用于查看，不能执行源码更新。")
+                return 0, local, fallback
         print(f"[ERROR] 无法连接远程仓库: {mirror_label}")
         return 1, local, None
     print(f"[KEMO] 远程源: {mirror_label}")

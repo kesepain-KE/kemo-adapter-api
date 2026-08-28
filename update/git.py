@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import NamedTuple
 
+from update._utils import redact_text
 from update.constants import PROTECTED_EXCEPTIONS, PROTECTED_PATTERNS
 
 
@@ -125,30 +127,56 @@ def _mirror_url(remote_url: str, mirror_prefix: str) -> str:
     return f"{prefix}/{remote_url}"
 
 
-def fetch(project_root: Path) -> tuple[bool, str]:
-    """git fetch，自动尝试多镜像源。返回 (成功, 使用的镜像描述)。"""
-    remote_url = _resolve_remote_url(project_root)
+def fetch(
+    project_root: Path,
+    *,
+    branch: str = "main",
+    remote_url: str | None = None,
+) -> tuple[bool, str]:
+    """拉取指定分支，并返回 ``(成功, 使用的源描述)``。
+
+    默认仍从本地 ``origin`` 读取仓库地址；测试、镜像和私有部署可以传入
+    临时 URL，而不会改写仓库的 origin 配置。非 HTTP(S) 地址（例如本地
+    bare 仓库）只尝试直连，避免无意义地拼接公共镜像前缀。
+    """
+
+    branch = branch.strip() or "main"
+    if (
+        branch.startswith("-")
+        or branch.endswith("/")
+        or ".." in branch
+        or not re.fullmatch(r"[A-Za-z0-9._/@-]+", branch)
+    ):
+        return False, "远程分支名称无效"
+    remote_url = remote_url or _resolve_remote_url(project_root)
     if not remote_url:
         return False, "无法获取远程仓库地址"
 
     last_error = ""
 
-    for mirror_prefix in _iter_mirrors(project_root):
+    mirror_candidates = list(_iter_mirrors(project_root))
+    if not remote_url.lower().startswith(("http://", "https://")):
+        mirror_candidates = [""]
+
+    for mirror_prefix in mirror_candidates:
         url = _mirror_url(remote_url, mirror_prefix)
         label = "直连" if not mirror_prefix else f"镜像源({mirror_prefix})"
 
         # 使用临时 remote 来 fetch（不影响 origin 配置）
         r = _git(
-            ["fetch", url, "main"],
+            ["fetch", url, branch],
             project_root,
             timeout=60,
         )
         if r.returncode == 0:
-            # 更新 origin/HEAD 引用
-            _git(["update-ref", "refs/remotes/origin/main", "FETCH_HEAD"], project_root)
+            # 更新 origin/<branch> 引用；不改写 origin URL。
+            _git(
+                ["update-ref", f"refs/remotes/origin/{branch}", "FETCH_HEAD"],
+                project_root,
+            )
             return True, label
 
-        last_error = r.stderr.strip() or f"exit code {r.returncode}"
+        last_error = redact_text(r.stderr.strip() or f"exit code {r.returncode}")
         # 如果是环境变量指定的镜像源失败，不再降级尝试
         if os.environ.get("GIT_MIRROR", "").strip():
             break

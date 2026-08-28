@@ -11,7 +11,7 @@ from pathlib import Path
 
 BACKUP_ROOT_NAME = ".backup"
 KEEP_BACKUPS = 10
-_BACKUP_ID_RE = re.compile(r"^\d{8}-\d{6}$")
+_BACKUP_ID_RE = re.compile(r"^\d{8}-\d{6}(?:-\d{2})?$")
 
 # 备份时排除的目录和文件
 _EXCLUDE_DIRS = frozenset({
@@ -38,6 +38,7 @@ _EXCLUDE_SUFFIXES = frozenset({
     ".log",
     ".pid",
 })
+_EXCLUDE_FILES = frozenset({".env", ".update.lock", ".update.maintenance"})
 
 
 def _should_exclude(path: Path, project_root: Path) -> bool:
@@ -52,7 +53,7 @@ def _should_exclude(path: Path, project_root: Path) -> bool:
     # Provider 包与凭据属于部署端私有生态；仓库只管理命名空间文件。
     if parts[0] == "providers" and rel != "providers/__init__.py":
         return True
-    if rel == ".env" or rel == "api/keys.json":
+    if rel in _EXCLUDE_FILES or rel == "api/keys.json":
         return True
     if rel.startswith("core/runtime/"):
         return True
@@ -80,12 +81,20 @@ def create_snapshot(project_root: Path) -> tuple[bool, str, str | None]:
     """创建仅含可恢复源码的冷备份，并返回稳定备份标识。"""
     ts = _timestamp()
     backup_root = _backup_dir(project_root)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    # 秒级时间戳在快速连续更新时可能碰撞；保留旧格式，并为同秒备份
+    # 追加短序号，避免把一次安全更新误判为失败。
+    candidate = ts
+    for suffix in range(1, 100):
+        if not (backup_root / candidate).exists():
+            break
+        candidate = f"{ts}-{suffix:02d}"
+    else:
+        return False, f"无法生成唯一备份标识: .backup/{ts}/", None
+    ts = candidate
     dst = backup_root / ts
     staging = backup_root / f".creating-{ts}-{os.getpid()}"
 
-    backup_root.mkdir(parents=True, exist_ok=True)
-    if dst.exists():
-        return False, f"备份标识已存在，请稍后重试: .backup/{ts}/", None
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -97,7 +106,7 @@ def create_snapshot(project_root: Path) -> tuple[bool, str, str | None]:
                 rel = src.relative_to(project_root)
                 target = staging / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, target)
+                shutil.copy2(src, target, follow_symlinks=False)
                 count += 1
         staging.replace(dst)
     except Exception as e:

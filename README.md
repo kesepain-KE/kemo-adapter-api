@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.7-blue" alt="Gateway version 0.7.7"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.8-blue" alt="Gateway version 0.7.8"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -26,16 +26,17 @@
 
 ---
 
-## 0.7.7 Provider 生命周期与热配置快照
+## 0.7.8 更新器计划预览与安全边界
 
-本版本补齐运行中的 Provider 包生命周期管理与热配置快照边界：
+本版本补齐部署端更新控制面，不改 Kemo 公开协议：
 
-- Provider 目录被删除时，已准入执行继续完成，新请求与管理台立即拒绝路由到已不存在的厂商（包引用计数 + 退休机制）。
-- 热配置快照把 Provider 目录本身作为指纹标记：目录整体删除或新增即使没有 config.json/secrets.json 也会触发重载。
-- Web 控制台对 Provider 诊断失败保持可用：`key_statuses()` 异常时返回空列表并标记 `unavailable`，不让单个陈旧包拖垮管理页。
-- 并发热重载去重、关闭只执行一次、控制面串行化；0.7.6 的工具参数边界与流式原子发布规则保持不变。
+- 交互菜单新增预览更新计划和查看源码状态；`--apply --dry-run` 只展示计划，不改工作树、配置或运行数据。
+- `--repo-url` / `--branch` 只对本次操作生效，不改写本地 `origin`；`--remote-version-url` 仅用于 Git 不可用时的只读版本查看。
+- 更新写入期间使用跨平台锁和短生命周期 `.update.maintenance` 标记；同秒备份自动生成不冲突标识。
+- Git 与命令错误自动脱敏，不把 Token、密码或带凭据 URL 写入终端；`providers/__init__.py` 截断并遮罩上游错误页中的密钥。
+- 0.7.7 的 Provider 生命周期引用计数、热配置目录指纹和诊断容错保持不变。
 
-网关协议版本仍为 `1.0`，前端管理包同步为 `0.7.7`。
+网关协议版本仍为 `1.0`，前端管理包同步为 `0.7.8`。
 
 ## 如果每个厂商都在发明自己的协议
 
@@ -290,13 +291,28 @@ python restart.py --status
 python update.py
 ```
 
-运行后输入数字即可检查并安装更新、只检查、查看/恢复备份或修复源码，不需要记忆命令参数。
+直接运行后输入数字即可检查并安装更新、只检查、查看/恢复备份、修复源码、预览更新计划或查看状态，不需要记忆命令参数。
 根目录 `update.py` 是唯一推荐入口，实际功能按职责拆分在 `update/` 包内；`python -m update` 与它使用同一套实现，不再维护两份更新逻辑。
+自动化或远程终端可以使用显式命令：
+
+```powershell
+python update.py --check                 # 只检查远程版本和 Git 状态
+python update.py --apply --dry-run       # 预览更新，不改工作树、配置或运行数据（会刷新 Git 检查引用）
+python update.py --apply --yes           # 已确认时执行安全更新
+python update.py --status                # 查看版本、提交和源码完整性
+python update.py --list-backups          # 列出更新前备份
+python update.py --restore-backup latest # 恢复最近一次源码备份
+```
+
+`--repo-url` 和 `--branch` 只对本次操作生效，不会改写本地 `origin`；`--remote-version-url`
+仅用于 Git 不可用时的只读版本查看，不能单独授权写入源码。更新器统一使用 UTF-8 读取 Git
+输出，兼容 Windows 中文系统和 Linux；命令错误会自动脱敏，不把 Token、密码或带凭据 URL
+写入终端日志。
 普通更新只接受安全快进：本地领先或与远端分叉时不会覆盖本地提交；无新提交时也不会隐式重置源码。
-更新前会锁定已检查的精确远端提交并创建 `.backup/` 冷备份，备份失败时不会改变 Git HEAD。
+更新前会锁定已检查的精确远端提交并创建 `.backup/` 冷备份；同一秒内重复更新会自动生成不冲突的备份标识，备份失败时不会改变 Git HEAD。
 远端提交如果触碰 `.env`、API 密钥、Provider、统计、Asset、运行时或私有开发目录，更新器会拒绝整次更新。
 前端变化时会复用 `setup.py` 的 Windows/Linux 一站式工具链重新构建。
-更新结束前必须依次通过未合并文件检查、Git 冲突标记扫描、Python 编译、前端产物检查和 `start_web.py --preflight` 启动预检。任一步失败都会回到更新前提交并恢复原有本地修改，不会把含有 `<<<<<<<` 的源码交给启动器。
+更新期间会写入短生命周期 `.update.maintenance` 标记并使用跨平台更新锁，避免两个更新进程并行写入。更新结束前必须依次通过未合并文件检查、Git 冲突标记扫描、Python 编译、前端产物检查和 `start_web.py --preflight` 启动预检。任一步失败都会回到更新前提交并恢复原有本地修改，不会把含有 `<<<<<<<` 的源码交给启动器。
 
 “修复网关源码”只应在源码损坏或普通更新明确提示无法更新时选择。修复前会创建 Git 恢复引用，
 且与普通更新一样不会覆盖部署端的环境变量、密钥、Provider 和统计数据。修复模式会重新对齐已跟踪源码；原有源码会保留在 `.backup/`，但不会再次覆盖修复后的干净版本。
