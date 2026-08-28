@@ -63,8 +63,13 @@ class LiveConfigManager:
         ]
         providers_root = self.project_root / "providers"
         if providers_root.exists():
-            for directory in providers_root.iterdir():
+            for directory in sorted(providers_root.iterdir(), key=lambda item: item.name):
                 if directory.is_dir() and not directory.name.startswith("_"):
+                    # Include the directory itself as a marker.  A Provider
+                    # may rely entirely on startup settings and therefore
+                    # have no config.json/secrets.json; removing that
+                    # directory must still invalidate the live snapshot.
+                    paths.append(directory)
                     paths.extend((directory / "config.json", directory / "secrets.json"))
         return paths
 
@@ -124,7 +129,11 @@ class LiveConfigManager:
 
     def _load(self, paths: list[Path]) -> LiveConfigSnapshot:
         contents: dict[Path, tuple[dict[str, Any], bytes]] = {
-            path: self._read_json(path) for path in paths
+            path: self._read_json(path)
+            for path in paths
+            # Directory entries are fingerprint markers only; they are not
+            # JSON sources and must never be opened as files.
+            if not path.is_dir()
         }
         api_runtime = contents[self.project_root / "api" / "runtime.json"][0]
         api_keys_raw = contents[self.project_root / "api" / "keys.json"][0]
@@ -148,7 +157,7 @@ class LiveConfigManager:
         provider_settings: dict[str, dict[str, Any]] = {}
         providers_root = self.project_root / "providers"
         if providers_root.exists():
-            for directory in providers_root.iterdir():
+            for directory in sorted(providers_root.iterdir(), key=lambda item: item.name):
                 if not directory.is_dir() or directory.name.startswith("_"):
                     continue
                 config = contents.get(directory / "config.json", ({}, b""))[0]

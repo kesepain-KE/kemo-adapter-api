@@ -61,8 +61,10 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
-def _public_provider_key_statuses(package: object) -> list[dict[str, object]]:
-    """Return only redacted Provider key status fields to the browser."""
+def _public_provider_key_statuses_result(
+    package: object,
+) -> tuple[list[dict[str, object]], bool]:
+    """Return redacted Provider key statuses and whether diagnostics failed."""
 
     def nonnegative_int(value: object) -> int:
         try:
@@ -72,10 +74,22 @@ def _public_provider_key_statuses(package: object) -> list[dict[str, object]]:
 
     getter = getattr(package, "key_statuses", None)
     if not callable(getter):
-        return []
-    raw = getter()
+        return [], False
+    try:
+        raw = getter()
+    except Exception:
+        # Provider diagnostics are an optional observability surface.  A
+        # provider being removed or upgraded must never make the entire Web
+        # console fail with HTTP 500 merely because its old in-memory package
+        # cannot produce key status data anymore.
+        logger.warning(
+            "Provider key diagnostics unavailable for %s (%s)",
+            getattr(package, "provider_id", "unknown"),
+            "provider_diagnostics_error",
+        )
+        return [], True
     if not isinstance(raw, (list, tuple)):
-        return []
+        return [], True
     allowed = {
         "key_id",
         "key_preview",
@@ -116,7 +130,14 @@ def _public_provider_key_statuses(package: object) -> list[dict[str, object]]:
         # Keep this explicit allow-list in the implementation: adding a field
         # to a Provider diagnostic must never accidentally expose it to Web.
         result.append({name: safe[name] for name in allowed if name in safe})
-    return result
+    return result, False
+
+
+def _public_provider_key_statuses(package: object) -> list[dict[str, object]]:
+    """Return only redacted Provider key status fields to the browser."""
+
+    statuses, _ = _public_provider_key_statuses_result(package)
+    return statuses
 
 
 def _public_provider_diagnostics(package: object) -> dict[str, object]:
@@ -133,11 +154,15 @@ def _public_provider_diagnostics(package: object) -> dict[str, object]:
         models = sorted(str(model)[:256] for model in getattr(package, "models", ()))
     except Exception:
         models = []
-    return {
+    key_statuses, key_statuses_error = _public_provider_key_statuses_result(package)
+    result = {
         "provider_id": provider_id,
         "models": models,
-        "key_statuses": _public_provider_key_statuses(package),
+        "key_statuses": key_statuses,
     }
+    if key_statuses_error:
+        result["key_statuses_status"] = "unavailable"
+    return result
 
 
 def _bearer_token(authorization: str | None) -> str | None:
@@ -483,11 +508,15 @@ async def provider_key_statuses(
     package = request.app.state.registry.providers.get(provider_id)
     if package is None:
         raise HTTPException(status_code=404, detail="Provider 不存在")
-    return {
+    key_statuses, key_statuses_error = _public_provider_key_statuses_result(package)
+    result = {
         "provider_id": provider_id,
         "revision": request.app.state.live_config.current.revision,
-        "keys": _public_provider_key_statuses(package),
+        "keys": key_statuses,
     }
+    if key_statuses_error:
+        result["key_statuses_status"] = "unavailable"
+    return result
 
 
 @router.put("/providers/{provider_id}/keys")
@@ -902,11 +931,16 @@ async def provider_capabilities(
     models: list[dict[str, object]] = []
     errors: list[dict[str, str]] = []
     for model in sorted(package.models):
+        model_package = None
         try:
-            declaration = await package.capabilities(model)
+            model_package = request.app.state.registry.acquire_registered(model)
+            declaration = await model_package.capabilities(model)
             models.append(declaration.model_dump(mode="json"))
         except Exception as exc:
             errors.append({"model": model, "error": type(exc).__name__})
+        finally:
+            if model_package is not None:
+                await request.app.state.registry.release_registered(model_package)
     return {
         "provider_id": provider_id,
         "models": models,
@@ -921,11 +955,16 @@ async def probe_model(
     principal: Principal = Depends(require_admin),
     _csrf: None = Depends(require_write_csrf),
 ) -> dict[str, object]:
+    package = None
     try:
-        package = request.app.state.registry.resolve(model)
+        package = request.app.state.registry.acquire_active(model)
         declaration = await package.capabilities(model)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=f"模型不存在或当前已禁用: {model}") from exc
+    except Exception:
+        if package is not None:
+            await request.app.state.registry.release_registered(package)
+        raise
 
     request_id = f"probe_{uuid4().hex}"
     started_ns = time.perf_counter_ns()
@@ -955,8 +994,12 @@ async def probe_model(
         result_status = "failed"
         error_code = "PROBE_FAILED"
     finally:
-        if lease is not None:
-            await lease.release()
+        try:
+            if lease is not None:
+                await lease.release()
+        finally:
+            if package is not None:
+                await request.app.state.registry.release_registered(package)
 
     return {
         "model": model,

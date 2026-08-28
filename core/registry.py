@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import importlib
 import logging
@@ -66,13 +67,37 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, ProviderPackage] = {}
         self._models: dict[str, ProviderPackage] = {}
+        # Provider code and manifests are loaded at process start.  If a
+        # provider directory is removed while the gateway is running, keep the
+        # already-created package only for executions that were admitted before
+        # the removal.  It must not remain in the active registry: otherwise
+        # new requests and the Web console can continue routing to a provider
+        # that no longer exists on disk.
+        self._retired_providers: dict[str, ProviderPackage] = {}
+        self._retired_models: dict[str, ProviderPackage] = {}
+        self._retired_package_ids: set[int] = set()
+        self._retired_closing_ids: set[int] = set()
+        self._package_references: dict[int, int] = {}
+        # Only packages loaded by ``discover`` are tied to the on-disk
+        # providers directory.  Tests and embedders may register in-memory
+        # packages explicitly; those must not be retired just because their
+        # live-config root has no matching directory.
+        self._managed_provider_ids: set[str] = set()
         self._bootstrap_settings: Mapping[str, Any] = {}
         self._live_revision = "empty"
         self._disabled_providers: frozenset[str] = frozenset()
         self._disabled_models: frozenset[str] = frozenset()
         self._applied_provider_settings: dict[str, dict[str, Any]] = {}
+        # Live reloads and shutdown can both await Provider code.  Serialize
+        # those control-plane transitions so two concurrent requests cannot
+        # reload the same package twice or retire it while shutdown is closing
+        # it.  Retirement cleanup has its own lock because releases arrive
+        # from producer tasks outside this control-plane lock.
+        self._config_lock = asyncio.Lock()
+        self._retirement_lock = asyncio.Lock()
+        self._closed = False
 
-    def register(self, package: ProviderPackage) -> None:
+    def register(self, package: ProviderPackage, *, managed: bool = False) -> None:
         if not package.provider_id or package.provider_id.startswith("_"):
             raise ValueError("provider_id 必须是非下划线开头的稳定标识")
         if package.provider_id in self._providers:
@@ -84,11 +109,18 @@ class ProviderRegistry:
             if not model.startswith(prefix) or len(model) == len(prefix):
                 raise ValueError(f"模型必须以 {prefix} 开头且包含模型名: {model}")
         self._providers[package.provider_id] = package
+        if managed:
+            self._managed_provider_ids.add(package.provider_id)
         for model in package.models:
             self._models[model] = package
 
     def resolve(self, model: str) -> ProviderPackage:
-        package = self.resolve_registered(model)
+        try:
+            package = self._models[model]
+        except KeyError as exc:
+            if model in self._retired_models:
+                raise LookupError(f"Provider 已删除，模型不可用: {model}") from exc
+            raise LookupError(f"没有注册模型: {model}") from exc
         if package.provider_id in self._disabled_providers:
             raise LookupError(f"Provider 已禁用: {package.provider_id}")
         if model in self._disabled_models:
@@ -97,10 +129,89 @@ class ProviderRegistry:
 
     def resolve_registered(self, model: str) -> ProviderPackage:
         """供已创建执行继续运行或取消，不应用新请求禁用策略。"""
-        try:
-            return self._models[model]
-        except KeyError as exc:
-            raise LookupError(f"没有注册模型: {model}") from exc
+        package = self._models.get(model) or self._retired_models.get(model)
+        if package is None:
+            raise LookupError(f"没有注册模型: {model}")
+        if id(package) in self._retired_closing_ids:
+            raise LookupError(f"Provider 已删除，模型不可用: {model}")
+        return package
+
+    def acquire_registered(self, model: str) -> ProviderPackage:
+        """Acquire a package reference for one admitted execution.
+
+        A package can be retired between request validation and execution
+        startup.  Holding this reference makes the hand-off atomic from the
+        registry's point of view: retirement may remove the package from new
+        routing, but it cannot close the instance while this execution still
+        owns it.
+        """
+
+        package = self.resolve_registered(model)
+        return self._retain_package(package)
+
+    def acquire_active(self, model: str) -> ProviderPackage:
+        """Acquire a reference for a new request after enablement checks."""
+
+        package = self.resolve(model)
+        return self._retain_package(package)
+
+    def _retain_package(self, package: ProviderPackage) -> ProviderPackage:
+        package_id = id(package)
+        self._package_references[package_id] = (
+            self._package_references.get(package_id, 0) + 1
+        )
+        return package
+
+    async def release_registered(self, package: ProviderPackage) -> None:
+        """Release an execution reference and reap an idle retired package."""
+
+        package_id = id(package)
+        references = self._package_references.get(package_id, 0)
+        if references <= 0:
+            # Ignore an untracked release.  This protects shutdown/error paths
+            # that may defensively release an already-released handle and,
+            # importantly, prevents an unretained stale package from being
+            # closed accidentally.
+            return
+        if references == 1:
+            self._package_references.pop(package_id, None)
+        else:
+            self._package_references[package_id] = references - 1
+            return
+        if package_id in self._retired_package_ids:
+            await self._close_retired_package(package)
+
+    async def _close_retired_package(self, package: ProviderPackage) -> None:
+        async with self._retirement_lock:
+            package_id = id(package)
+            if package_id not in self._retired_package_ids:
+                return
+            if self._package_references.get(package_id, 0) > 0:
+                return
+            if package_id in self._retired_closing_ids:
+                return
+            self._retired_closing_ids.add(package_id)
+            try:
+                try:
+                    await package.close()
+                except Exception:
+                    # Retirement cleanup must not turn a completed request
+                    # into an error merely because a stale Provider client
+                    # closes noisily.
+                    logger.warning(
+                        "Retired Provider close failed for %s (%s)",
+                        getattr(package, "provider_id", "unknown"),
+                        type(package).__name__,
+                    )
+            finally:
+                self._retired_closing_ids.discard(package_id)
+                self._retired_package_ids.discard(package_id)
+                for provider_id, registered in list(self._retired_providers.items()):
+                    if registered is package:
+                        self._retired_providers.pop(provider_id, None)
+                for model, registered in list(self._retired_models.items()):
+                    if registered is package:
+                        self._retired_models.pop(model, None)
 
     @property
     def providers(self) -> Mapping[str, ProviderPackage]:
@@ -192,7 +303,7 @@ class ProviderRegistry:
                     f"Provider ID 必须与目录名一致: 目录={short_name}, "
                     f"provider_id={package.provider_id}"
                 )
-            self.register(package)
+            self.register(package, managed=True)
             self._applied_provider_settings[short_name] = package_settings
 
     @staticmethod
@@ -206,10 +317,32 @@ class ProviderRegistry:
         return merged
 
     async def apply_live_config(self, snapshot: LiveConfigSnapshot) -> None:
+        async with self._config_lock:
+            if self._closed:
+                return
+            await self._apply_live_config_unlocked(snapshot)
+
+    async def _apply_live_config_unlocked(self, snapshot: LiveConfigSnapshot) -> None:
         if snapshot.revision == self._live_revision:
             return
+        # ``LiveConfigManager`` fingerprints the provider directory set.  A
+        # removed directory therefore reaches this method as a snapshot that
+        # no longer contains that provider id.  Reconcile removals only after
+        # all live configuration reloads succeed so a failed hot update keeps
+        # the previous active registry intact.
+        removed_provider_ids = [
+            provider_id
+            for provider_id in self._providers
+            if provider_id in self._managed_provider_ids
+            and provider_id not in snapshot.provider_settings
+        ]
         pending: list[tuple[str, ProviderPackage, dict[str, Any], dict[str, Any]]] = []
         for provider_id, package in self._providers.items():
+            if provider_id in removed_provider_ids:
+                # There is no candidate configuration to reload for a
+                # directory that disappeared.  Retire it below instead of
+                # attempting to resurrect its old static settings.
+                continue
             static = self._bootstrap_settings.get(provider_id, {})
             dynamic = snapshot.provider_settings.get(provider_id, {})
             merged = self._merge_settings(static, dynamic)
@@ -249,10 +382,48 @@ class ProviderRegistry:
 
         for provider_id, _, _, merged in pending:
             self._applied_provider_settings[provider_id] = merged
+        for provider_id in removed_provider_ids:
+            package = self._providers.pop(provider_id, None)
+            if package is None:
+                continue
+            self._retired_providers[provider_id] = package
+            self._retired_package_ids.add(id(package))
+            self._applied_provider_settings.pop(provider_id, None)
+            for model in package.models:
+                if self._models.get(model) is package:
+                    self._models.pop(model, None)
+                    self._retired_models[model] = package
+            await self._close_retired_package(package)
         self._disabled_providers = snapshot.disabled_providers
         self._disabled_models = snapshot.disabled_models
         self._live_revision = snapshot.revision
 
     async def close(self) -> None:
-        for package in self._providers.values():
-            await package.close()
+        async with self._config_lock:
+            if self._closed:
+                return
+            self._closed = True
+            async with self._retirement_lock:
+                packages = list(self._providers.values()) + list(
+                    self._retired_providers.values()
+                )
+                seen: set[int] = set()
+                for package in packages:
+                    if id(package) in seen:
+                        continue
+                    seen.add(id(package))
+                    try:
+                        await package.close()
+                    except Exception:
+                        logger.warning(
+                            "Provider close failed for %s (%s)",
+                            getattr(package, "provider_id", "unknown"),
+                            type(package).__name__,
+                        )
+                self._providers.clear()
+                self._models.clear()
+                self._retired_providers.clear()
+                self._retired_models.clear()
+                self._retired_package_ids.clear()
+                self._retired_closing_ids.clear()
+                self._package_references.clear()

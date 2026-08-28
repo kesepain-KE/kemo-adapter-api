@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.6-blue" alt="Gateway version 0.7.6"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.7-blue" alt="Gateway version 0.7.7"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -26,16 +26,16 @@
 
 ---
 
-## 0.7.6 稳定性修复
+## 0.7.7 Provider 生命周期与热配置快照
 
-本版本只收紧已有工具调用和流式响应边界：
+本版本补齐运行中的 Provider 包生命周期管理与热配置快照边界：
 
-- Provider 工具参数在执行前必须是完整 JSON 对象并通过 Schema 校验；非法参数返回明确的 `incomplete` 终态。
-- 流式 `tool_call.completed` 会等统一终态校验后再发布；并行调用按批次原子处理，避免同批部分泄露。
-- Schema 校验增加递归深度、节点数量和数组项上限，防止异常输入造成递归崩溃或无界消耗。
-- 既有多密钥故障转移、热更新失败回滚和诊断脱敏规则保持不变。
+- Provider 目录被删除时，已准入执行继续完成，新请求与管理台立即拒绝路由到已不存在的厂商（包引用计数 + 退休机制）。
+- 热配置快照把 Provider 目录本身作为指纹标记：目录整体删除或新增即使没有 config.json/secrets.json 也会触发重载。
+- Web 控制台对 Provider 诊断失败保持可用：`key_statuses()` 异常时返回空列表并标记 `unavailable`，不让单个陈旧包拖垮管理页。
+- 并发热重载去重、关闭只执行一次、控制面串行化；0.7.6 的工具参数边界与流式原子发布规则保持不变。
 
-网关协议版本仍为 `1.0`，前端管理包同步为 `0.7.6`。
+网关协议版本仍为 `1.0`，前端管理包同步为 `0.7.7`。
 
 ## 如果每个厂商都在发明自己的协议
 

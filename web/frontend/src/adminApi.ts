@@ -2,6 +2,7 @@ export interface AdminProvider {
   provider_id: string
   models: string[]
   key_statuses?: ProviderKeyStatus[]
+  key_statuses_status?: 'unavailable'
   [key: string]: unknown
 }
 
@@ -20,6 +21,7 @@ export interface ProviderKeysResponse {
   provider_id: string
   revision: string
   keys: ProviderKeyStatus[]
+  key_statuses_status?: 'unavailable'
 }
 
 export interface AdminConsoleData {

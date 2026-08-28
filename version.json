@@ -1,6 +1,6 @@
 {
-  "version": "0.7.6",
+  "version": "0.7.7",
   "protocol_version": "1.0",
   "build": null,
-  "notes": "修复 Provider 工具参数流式终态校验、并行调用原子发布与递归 Schema 限制；保留多密钥故障转移、热更新回滚和诊断脱敏"
+  "notes": "Provider 包生命周期引用计数与退休机制、热配置快照目录指纹标记、Web 控制台诊断容错；保留工具参数执行边界与流式原子发布"
 }

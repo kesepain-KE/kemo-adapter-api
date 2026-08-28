@@ -59,8 +59,9 @@ async def _load_capabilities(
     registry: ProviderRegistry,
 ) -> ModelCapabilities:
     ensure_model_allowed(principal, model)
+    package = None
     try:
-        package = registry.resolve(model)
+        package = registry.acquire_active(model)
     except LookupError as exc:
         raise HTTPException(
             status_code=404,
@@ -76,6 +77,9 @@ async def _load_capabilities(
                 "message": "Provider 暂时无法提供模型能力声明",
             },
         ) from exc
+    finally:
+        if package is not None:
+            await registry.release_registered(package)
     if declared.model != model:
         raise HTTPException(
             status_code=502,
@@ -100,7 +104,7 @@ async def _visible_models(
             if principal.allowed_models is not None and model not in principal.allowed_models:
                 continue
             try:
-                package = registry.resolve(model)
+                package = registry.acquire_active(model)
             except LookupError:
                 continue
             try:
@@ -120,6 +124,8 @@ async def _visible_models(
                         )
                     )
                 continue
+            finally:
+                await registry.release_registered(package)
             if task_filter is not None and declared.task != task_filter:
                 continue
             if not can_access_model_task(principal, declared.task):

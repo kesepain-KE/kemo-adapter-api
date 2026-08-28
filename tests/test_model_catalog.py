@@ -144,6 +144,11 @@ def test_compatible_list_and_both_capability_routes_share_policy(tmp_path: Path)
             "/model/models/broken-model/capabilities",
             headers=auth("all-token"),
         )
+        unknown = client.get(
+            "/model/capabilities",
+            headers=auth("all-token"),
+            params={"model": "missing-model"},
+        )
 
     assert compatible.json() == {
         "object": "list",
@@ -161,6 +166,8 @@ def test_compatible_list_and_both_capability_routes_share_policy(tmp_path: Path)
     assert broken.status_code == 502
     assert broken.json()["error"]["code"] == "CAPABILITIES_UNAVAILABLE"
     assert "secret provider failure" not in broken.text
+    assert unknown.status_code == 404
+    assert unknown.json()["error"]["code"] == "MODEL_NOT_FOUND"
 
 
 def test_catalog_excludes_globally_disabled_models(tmp_path: Path) -> None:

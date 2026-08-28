@@ -180,7 +180,18 @@ class RetrievalExecutor:
     async def _embed_once(
         self, request: EmbeddingRequest, context: RequestContext
     ) -> EmbeddingResponse:
-        package = self.registry.resolve(request.model)
+        package = self.registry.acquire_active(request.model)
+        try:
+            return await self._embed_once_with_package(request, context, package)
+        finally:
+            await self.registry.release_registered(package)
+
+    async def _embed_once_with_package(
+        self,
+        request: EmbeddingRequest,
+        context: RequestContext,
+        package: Any,
+    ) -> EmbeddingResponse:
         try:
             capabilities = await package.capabilities(request.model)
         except Exception as exc:
@@ -263,7 +274,18 @@ class RetrievalExecutor:
     async def _rerank_once(
         self, request: RerankRequest, context: RequestContext
     ) -> RerankResponse:
-        package = self.registry.resolve(request.model)
+        package = self.registry.acquire_active(request.model)
+        try:
+            return await self._rerank_once_with_package(request, context, package)
+        finally:
+            await self.registry.release_registered(package)
+
+    async def _rerank_once_with_package(
+        self,
+        request: RerankRequest,
+        context: RequestContext,
+        package: Any,
+    ) -> RerankResponse:
         try:
             capabilities = await package.capabilities(request.model)
         except Exception as exc:

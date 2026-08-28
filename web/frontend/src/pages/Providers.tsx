@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Boxes, ChevronLeft, ChevronRight, KeyRound, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
+import { Boxes, ChevronLeft, ChevronRight, KeyRound, Plus, Power, RefreshCw, Trash2, TriangleAlert, X } from 'lucide-react'
 import { useAdmin } from '../AdminContext'
 import {
   adminApi,
@@ -89,6 +89,7 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
   const [detailRevision, setDetailRevision] = useState(0)
   const [detailLoading, setDetailLoading] = useState(false)
   const [keyStatuses, setKeyStatuses] = useState<Record<string, ProviderKeyStatus[]>>({})
+  const [keyStatusUnavailable, setKeyStatusUnavailable] = useState<Record<string, boolean>>({})
   const [keyDraft, setKeyDraft] = useState('')
   const [keyBusy, setKeyBusy] = useState(false)
   const [keyDeleteBusy, setKeyDeleteBusy] = useState('')
@@ -124,11 +125,19 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
         })
         setCapabilities(next)
         const statuses: Record<string, ProviderKeyStatus[]> = {}
-        data.providers.forEach(provider => { statuses[provider.provider_id] = provider.key_statuses ?? [] })
+        const unavailable: Record<string, boolean> = {}
+        data.providers.forEach(provider => {
+          statuses[provider.provider_id] = provider.key_statuses ?? []
+          unavailable[provider.provider_id] = provider.key_statuses_status === 'unavailable'
+        })
         keySnapshots.forEach(result => {
-          if (result.status === 'fulfilled') statuses[result.value.provider_id] = result.value.keys
+          if (result.status === 'fulfilled') {
+            statuses[result.value.provider_id] = result.value.keys
+            unavailable[result.value.provider_id] = result.value.key_statuses_status === 'unavailable'
+          }
         })
         setKeyStatuses(statuses)
+        setKeyStatusUnavailable(unavailable)
         if (declarations.some(result => result.status === 'rejected')) {
           setDetailError('部分 Provider 的能力声明读取失败；失败项未显示推测能力。')
         }
@@ -162,6 +171,9 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
     .filter(item => selectedModelIds.has(item.id))
     .sort((left, right) => (right.tokens.total_tokens ?? -1) - (left.tokens.total_tokens ?? -1))
   const selectedKeys = selected ? (keyStatuses[selected.provider_id] ?? []) : []
+  const selectedKeyStatusUnavailable = selected
+    ? keyStatusUnavailable[selected.provider_id] === true
+    : false
   const keyPageCount = Math.max(1, Math.ceil(selectedKeys.length / PROVIDER_KEY_PAGE_SIZE))
   const currentKeyPage = Math.min(keyPage, keyPageCount - 1)
   const visibleKeys = selectedKeys.slice(
@@ -195,6 +207,10 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
       setKeyAddError('')
       const result = await adminApi.addProviderKey(token, selected.provider_id, data.revision, apiKey)
       setKeyStatuses(current => ({ ...current, [selected.provider_id]: result.keys }))
+      setKeyStatusUnavailable(current => ({
+        ...current,
+        [selected.provider_id]: result.key_statuses_status === 'unavailable',
+      }))
       setKeyPage(Math.max(0, Math.ceil(result.keys.length / PROVIDER_KEY_PAGE_SIZE) - 1))
       setKeyDraft('')
       setKeyAddOpen(false)
@@ -219,6 +235,10 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
       setKeyAddError('')
       const result = await adminApi.removeProviderKey(token, selected.provider_id, data.revision, item.key_id)
       setKeyStatuses(current => ({ ...current, [selected.provider_id]: result.keys }))
+      setKeyStatusUnavailable(current => ({
+        ...current,
+        [selected.provider_id]: result.key_statuses_status === 'unavailable',
+      }))
       setKeyPage(page => Math.min(page, Math.max(0, Math.ceil(result.keys.length / PROVIDER_KEY_PAGE_SIZE) - 1)))
       await refresh()
       setMessage(`${selected.provider_id} 已删除密钥 ${item.key_id}。`)
@@ -290,9 +310,9 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
           <div className="provider-key-pool">
             <header className="provider-key-pool-head">
               <div><span>密钥池</span><strong>上游密钥状态</strong></div>
-              <small>{selectedKeys.length ? `共 ${selectedKeys.length} 个 · 每页 ${PROVIDER_KEY_PAGE_SIZE} 个` : '尚未配置上游密钥'}</small>
+              <small>{selectedKeyStatusUnavailable ? '状态暂时不可读取' : selectedKeys.length ? `共 ${selectedKeys.length} 个 · 每页 ${PROVIDER_KEY_PAGE_SIZE} 个` : '尚未配置上游密钥'}</small>
             </header>
-            {selectedKeys.length ? <>
+            {selectedKeyStatusUnavailable ? <div className="provider-key-empty"><TriangleAlert size={18}/><span>密钥状态暂时不可读取，请刷新或检查 Provider 连接。</span></div> : selectedKeys.length ? <>
               <div className="provider-key-list">
                 {visibleKeys.map(item => {
                   const view = providerKeyStatusView(item)

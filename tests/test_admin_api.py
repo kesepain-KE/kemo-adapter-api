@@ -16,6 +16,7 @@ from web.backend.service import RuntimeConfigWriter
 
 
 ADMIN_HEADERS = {"Authorization": "Bearer admin-token"}
+OWNER_HEADERS = {"Authorization": "Bearer owner-token"}
 CALLER_HEADERS = {"Authorization": "Bearer caller-token"}
 
 
@@ -511,6 +512,29 @@ def test_admin_console_allowlists_provider_diagnostics(tmp_path: Path) -> None:
     assert "diagnostic-secret" not in response.text
     assert "nested-secret" not in response.text
     assert "unexpected_secret" not in response.text
+
+
+def test_console_survives_provider_key_diagnostics_failure(tmp_path: Path) -> None:
+    class BrokenKeyDiagnosticsProvider(FakeProvider):
+        def key_statuses(self):
+            raise RuntimeError("stale provider package")
+
+    root = admin_project(tmp_path)
+    app = create_app(Settings(), live_config_root=root, discover_providers=False)
+    app.state.registry.register(BrokenKeyDiagnosticsProvider())
+
+    with TestClient(app) as client:
+        response = client.get("/admin/api/console", headers=ADMIN_HEADERS)
+        key_statuses = client.get(
+            "/admin/api/providers/fake/keys", headers=OWNER_HEADERS
+        )
+
+    assert response.status_code == 200
+    assert response.json()["providers"][0]["key_statuses"] == []
+    assert response.json()["providers"][0]["key_statuses_status"] == "unavailable"
+    assert key_statuses.status_code == 200
+    assert key_statuses.json()["keys"] == []
+    assert key_statuses.json()["key_statuses_status"] == "unavailable"
 
 
 def test_system_inspection_endpoints_require_admin_scope(tmp_path: Path, monkeypatch) -> None:

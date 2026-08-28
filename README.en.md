@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.6-blue" alt="Gateway version 0.7.6"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.7-blue" alt="Gateway version 0.7.7"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -26,16 +26,16 @@
 
 ---
 
-## 0.7.6 stability patch
+## 0.7.7 Provider lifecycle and hot-config snapshot
 
-This release tightens existing tool-call and streaming boundaries:
+This release completes runtime Provider package lifecycle management and hot-config snapshot boundaries:
 
-- Provider tool arguments must be complete JSON objects and pass schema validation before execution; invalid arguments end in an explicit `incomplete` response.
-- Streaming `tool_call.completed` events are published only after terminal validation; parallel calls are committed atomically as a batch.
-- Schema validation has recursion-depth, node-count, and array-item limits to prevent crashes and unbounded work on hostile input.
-- Existing multi-key failover, hot-reload rollback, and diagnostic-redaction rules remain unchanged.
+- When a Provider directory is removed, already-admitted executions finish normally while new requests and the console are immediately refused routing to the deleted provider (package reference counting plus retirement).
+- The hot-config snapshot treats the Provider directory itself as a fingerprint marker: deleting or adding a directory invalidates the snapshot and triggers a reload even without config.json/secrets.json.
+- The Web console stays usable when Provider diagnostics fail: `key_statuses()` exceptions return an empty list with `key_statuses_status=unavailable` instead of failing the whole admin page.
+- Concurrent hot reloads are deduplicated, close runs at most once, and the control plane is serialized; the 0.7.6 tool-argument and atomic streaming rules remain unchanged.
 
-The Kemo Protocol remains at `1.0`, and the Web console package is also `0.7.6`.
+The Kemo Protocol remains at `1.0`, and the Web console package is also `0.7.7`.
 
 ## Every vendor has its own protocol. That is the problem.
 

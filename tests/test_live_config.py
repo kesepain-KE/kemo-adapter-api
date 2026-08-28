@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,9 +20,15 @@ from tests.test_provider_boundary import FakeProvider
 class ReloadableFakeProvider(FakeProvider):
     def __init__(self) -> None:
         self.applied_settings: list[dict] = []
+        self.closed = False
+        self.close_calls = 0
 
     async def reload_config(self, settings) -> None:
         self.applied_settings.append(dict(settings))
+
+    async def close(self) -> None:
+        self.closed = True
+        self.close_calls += 1
 
 
 class FirstReloadableProvider(ReloadableFakeProvider):
@@ -30,6 +37,24 @@ class FirstReloadableProvider(ReloadableFakeProvider):
     @property
     def models(self) -> frozenset[str]:
         return frozenset({"first-model"})
+
+
+class BlockingReloadProvider(FirstReloadableProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reload_started = asyncio.Event()
+        self.reload_release = asyncio.Event()
+
+    async def reload_config(self, settings) -> None:
+        self.reload_started.set()
+        await self.reload_release.wait()
+        await super().reload_config(settings)
+
+
+class FailingCloseProvider(FirstReloadableProvider):
+    async def close(self) -> None:
+        self.close_calls += 1
+        raise RuntimeError("close failed")
 
 
 class FailingReloadProvider(ReloadableFakeProvider):
@@ -193,6 +218,150 @@ def test_registry_rolls_back_already_reloaded_provider_when_later_provider_fails
         assert first.applied_settings[-1]["mode"] == "old"
         assert registry._live_revision == "old"
         assert registry._applied_provider_settings["first"]["mode"] == "old"
+
+    asyncio.run(scenario())
+
+
+def test_registry_retires_provider_removed_from_live_provider_set() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        provider = FirstReloadableProvider()
+        registry.register(provider, managed=True)
+        package = registry.acquire_registered("first-model")
+
+        loaded = LiveConfigSnapshot(
+            revision="loaded",
+            provider_settings={"first": {"mode": "active"}},
+        )
+        await registry.apply_live_config(loaded)
+        assert "first" in registry.providers
+        assert registry.resolve_registered("first-model") is provider
+
+        removed = LiveConfigSnapshot(
+            revision="removed",
+            provider_settings={},
+        )
+        await registry.apply_live_config(removed)
+
+        # The provider disappears from all active/catalog views and cannot
+        # receive new work, while an already-created execution can still
+        # resolve its package for completion/cancellation.
+        assert "first" not in registry.providers
+        assert registry.resolve_registered("first-model") is provider
+        assert provider.closed is False
+
+        await registry.release_registered(package)
+        assert provider.closed is True
+        assert provider.close_calls == 1
+        # A defensive duplicate release must not close the retired package a
+        # second time or mutate another package's reference count.
+        await registry.release_registered(package)
+        assert provider.close_calls == 1
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve_registered("first-model")
+
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_retires_provider_when_its_real_directory_is_removed(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        root = project(tmp_path)
+        fake_directory = root / "providers" / "fake"
+        first_directory = root / "providers" / "first"
+        fake_directory.rename(first_directory)
+        (first_directory / "config.json").unlink()
+        (first_directory / "secrets.json").unlink()
+
+        manager = LiveConfigManager(root)
+        initial = await manager.refresh()
+        assert "first" in initial.provider_settings
+
+        registry = ProviderRegistry()
+        provider = FirstReloadableProvider()
+        registry.register(provider, managed=True)
+        await registry.apply_live_config(initial)
+        held = registry.acquire_registered("first-model")
+
+        shutil.rmtree(first_directory)
+        removed = await manager.refresh()
+        assert "first" not in removed.provider_settings
+        await registry.apply_live_config(removed)
+
+        assert "first" not in registry.providers
+        with pytest.raises(LookupError, match="Provider 已删除"):
+            registry.resolve("first-model")
+        assert registry.resolve_registered("first-model") is provider
+        assert provider.closed is False
+
+        await registry.release_registered(held)
+        assert provider.closed is True
+        assert provider.close_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_registry_closes_retired_provider_without_references() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        provider = FirstReloadableProvider()
+        registry.register(provider, managed=True)
+        await registry.apply_live_config(
+            LiveConfigSnapshot(revision="loaded", provider_settings={"first": {}})
+        )
+
+        await registry.apply_live_config(
+            LiveConfigSnapshot(revision="removed", provider_settings={})
+        )
+
+        assert provider.closed is True
+        assert provider.close_calls == 1
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve_registered("first-model")
+
+    asyncio.run(scenario())
+
+
+def test_registry_serializes_concurrent_live_config_apply() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        provider = BlockingReloadProvider()
+        registry.register(provider)
+        snapshot = LiveConfigSnapshot(
+            revision="concurrent", provider_settings={"first": {"mode": "new"}}
+        )
+
+        first = asyncio.create_task(registry.apply_live_config(snapshot))
+        await provider.reload_started.wait()
+        second = asyncio.create_task(registry.apply_live_config(snapshot))
+        await asyncio.sleep(0)
+        assert second.done() is False
+
+        provider.reload_release.set()
+        await asyncio.gather(first, second)
+        assert provider.applied_settings == [{"mode": "new"}]
+
+    asyncio.run(scenario())
+
+
+def test_registry_ignores_retired_provider_close_failure() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        provider = FailingCloseProvider()
+        registry.register(provider, managed=True)
+        await registry.apply_live_config(
+            LiveConfigSnapshot(revision="loaded", provider_settings={"first": {}})
+        )
+        await registry.apply_live_config(
+            LiveConfigSnapshot(revision="removed", provider_settings={})
+        )
+
+        assert provider.close_calls == 1
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve_registered("first-model")
 
     asyncio.run(scenario())
 
