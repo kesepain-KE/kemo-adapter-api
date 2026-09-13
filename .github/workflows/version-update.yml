@@ -42,6 +42,9 @@ jobs:
       - name: Validate release metadata
         run: python -m tests --suite version -q
 
+      - name: Validate the Kemo 1.0 shared wire contract
+        run: python -m tests.contracts.kemo_v1 -q
+
       - name: Run update unit safety tests
         run: python -m tests --suite update-unit -q
 
