@@ -19,6 +19,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from core.models import Usage
+from storage.read_cache import ReadCache
 
 
 DIMENSIONS = frozenset({"provider", "model", "gateway_key"})
@@ -58,7 +59,12 @@ class StatisticsStore:
     raised into the execution path.
     """
 
-    def __init__(self, root: Path, *, timezone_name: str = "Asia/Shanghai") -> None:
+    def __init__(
+        self, root: Path, *, timezone_name: str = "Asia/Shanghai",
+        read_cache_ttl_seconds: float = 30.0,
+        read_cache_max_entries: int = 128,
+        read_cache_max_bytes: int = 8 * 1024 * 1024,
+    ) -> None:
         self.root = root.resolve()
         self.daily_root = self.root / "daily"
         self.timezone_name = timezone_name
@@ -68,13 +74,59 @@ class StatisticsStore:
         self._dropped_events = 0
         self._last_error: str | None = None
         self._initialized_paths: set[Path] = set()
+        self._read_cache = ReadCache(
+            ttl_seconds=read_cache_ttl_seconds,
+            max_entries=read_cache_max_entries,
+            max_bytes=read_cache_max_bytes,
+        )
+
+    async def _worker(self, function, *args):
+        """Keep the lock until SQLite work ends, even if the caller cancels.
+
+        Cancelling to_thread does not stop the underlying thread. Releasing
+        the lock early could let a reader cache data before a write commits.
+        """
+        task = asyncio.create_task(asyncio.to_thread(function, *args))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            # Retrieve a possible worker exception before propagating cancellation.
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
+
+    async def _write(self, function, *args):
+        # Called with _lock held. Invalidate both before and after: failed or
+        # cancelled writes may have changed storage and must never leave a hit.
+        self._read_cache.clear()
+        try:
+            return await self._worker(function, *args)
+        finally:
+            self._read_cache.clear()
+
+    async def _read(self, name: str, function, *args):
+        async with self._lock:
+            key = (name, *args)
+            cached = self._read_cache.get(key)
+            if cached is not None:
+                return cached
+            value = await self._worker(function, *args)
+            self._read_cache.put(key, value)
+            return value
 
     async def initialize(self) -> None:
         """Create today's database and validate the configured timezone."""
         day = datetime.now(self.timezone).date().isoformat()
         try:
             async with self._lock:
-                await asyncio.to_thread(self._initialize_database, self._path_for_day(day))
+                await self._write(self._initialize_database, self._path_for_day(day))
             self._mark_success()
         except Exception as exc:
             self._mark_failure(exc)
@@ -112,7 +164,7 @@ class StatisticsStore:
         )
         try:
             async with self._lock:
-                await asyncio.to_thread(
+                await self._write(
                     self._begin_sync,
                     handle,
                     now_utc.isoformat(),
@@ -148,7 +200,7 @@ class StatisticsStore:
         )
         try:
             async with self._lock:
-                await asyncio.to_thread(
+                await self._write(
                     self._finish_sync,
                     handle,
                     datetime.now(timezone.utc).isoformat(),
@@ -176,7 +228,7 @@ class StatisticsStore:
         day = datetime.now(self.timezone).date().isoformat()
         try:
             async with self._lock:
-                await asyncio.to_thread(
+                await self._write(
                     self._record_replay_sync,
                     self._path_for_day(day),
                     day,
@@ -191,8 +243,7 @@ class StatisticsStore:
 
     async def daily(self, value: str | date) -> dict[str, object]:
         day = self._normalize_day(value)
-        async with self._lock:
-            return await asyncio.to_thread(self._daily_sync, day)
+        return await self._read("daily", self._daily_sync, day)
 
     async def rankings(
         self, value: str | date, dimension: str, *, limit: int = 20
@@ -202,13 +253,11 @@ class StatisticsStore:
             raise ValueError(f"unsupported ranking dimension: {dimension}")
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
-        async with self._lock:
-            return await asyncio.to_thread(self._rankings_sync, day, dimension, limit)
+        return await self._read("rankings", self._rankings_sync, day, dimension, limit)
 
     async def hourly(self, value: str | date) -> dict[str, object]:
         day = self._normalize_day(value)
-        async with self._lock:
-            return await asyncio.to_thread(self._hourly_sync, day)
+        return await self._read("hourly", self._hourly_sync, day)
 
     async def series(self, start: str | date, end: str | date) -> dict[str, object]:
         start_day = self._normalize_day(start)
@@ -217,13 +266,11 @@ class StatisticsStore:
             raise ValueError("end date must not precede start date")
         if (date.fromisoformat(end_day) - date.fromisoformat(start_day)).days > 366:
             raise ValueError("date range must not exceed 366 days")
-        async with self._lock:
-            return await asyncio.to_thread(self._series_sync, start_day, end_day)
+        return await self._read("series", self._series_sync, start_day, end_day)
 
     async def gateway_key_usage(self) -> dict[str, dict[str, object]]:
         """Aggregate real all-time usage for every recorded gateway key id."""
-        async with self._lock:
-            return await asyncio.to_thread(self._gateway_key_usage_sync)
+        return await self._read("gateway_keys", self._gateway_key_usage_sync)
 
     async def recent_invocations(
         self,
@@ -245,15 +292,10 @@ class StatisticsStore:
             raise ValueError("hour must be between 0 and 23")
         if day is not None:
             self._path_for_day(day)
-        async with self._lock:
-            return await asyncio.to_thread(
-                self._recent_invocations_sync,
-                outcome,
-                limit,
-                day,
-                hour,
-                offset,
-            )
+        return await self._read(
+            "invocations", self._recent_invocations_sync,
+            outcome, limit, day, hour, offset,
+        )
 
     def _path_for_day(self, day: str) -> Path:
         parsed = date.fromisoformat(day)
