@@ -22,6 +22,8 @@ python -m tests
 ```sh
 python -m tests --list
 python -m tests -q
+python -m tests --suite kemo-contract -q
+python -m tests.contracts.kemo_v1 --peer-root E:\code\kemo-agent -q
 python -m tests --suite templates -q
 python -m tests --suite protocol --suite providers -q
 python -m tests --suite web -q
@@ -47,6 +49,7 @@ tests/
 │  ├─ admin.py       管理测试身份与临时项目
 │  ├─ llm.py         模拟文本 Provider 与请求
 │  └─ retrieval.py   模拟检索 Provider 与请求
+├─ contracts/        跨项目公开契约；kemo_v1 是与 kemo-agent 镜像的线协议 Fixture
 ├─ api/              公开 API、模型目录、资产、检索、状态
 ├─ web/              管理端 API、只读配置
 ├─ runtime/          启动、热配置、重启控制、状态检测
@@ -61,6 +64,27 @@ tests/
 ```
 
 `tests/providers/` 使用模拟 Provider，不等于根目录的 `providers/` 厂商包。
+
+## Kemo 1.0 共享契约
+
+`tests/contracts/kemo_v1` 是网关与 kemo-agent 共用的离线线协议基准。两个仓库只镜像脱敏的
+`manifest.json` 和 `wire.json`，各自使用本项目的公开模型与传输代码验证；测试不会跨仓库导入
+生产模块，也不会访问真实 Provider、读取 `.env` 或修改用户数据。
+
+只验证当前仓库：
+
+```sh
+python -m tests --suite kemo-contract -q
+```
+
+同时检出 kemo-agent 时，再核对两个 Fixture 是否逐字节一致：
+
+```powershell
+python -m tests.contracts.kemo_v1 --peer-root E:\code\kemo-agent -q
+```
+
+Linux 或不同目录下把 `--peer-root` 改成实际路径。协议模型、SSE、Asset、工具、多模态、Usage、
+Embedding、Rerank 或能力声明发生变化时，必须先通过此门禁，再运行对应领域回归。
 
 ## 两类可选测试
 
@@ -104,6 +128,7 @@ python -m pytest tests/providers/test_provider_boundary.py -q -k registry
 5. 路径使用 `tests.support.paths.PROJECT_ROOT`，不要按各个文件层级分别推算根目录。
 6. 添加新功能目录时同步 suites.py 与 pytest.ini，运行 architecture 分组；普通目录内新增 test_*.py 自动收集。
 7. 不删除断言、缩减参数化、降低校验或无理由 skip 来通过重构验证。
+8. 修改 Kemo 线路对象时，两边 Fixture、清单摘要和固定摘要必须同步；禁止只修改一侧或用放宽模型掩盖回归。
 
 重构后先 `--collect-only` 核对，再运行实际测试。源码、本地厂商和进程测试分别报告数量，
 不要把可选测试未运行说成通过。

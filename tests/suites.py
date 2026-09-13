@@ -14,6 +14,7 @@ class Suite:
 
 
 DEFAULT_SUITES = {
+    "kemo-contract": Suite("Kemo 1.0 共享线协议 Fixture", ("tests/contracts/kemo_v1",)),
     "api": Suite("公开 API", ("tests/api",)),
     "web": Suite("管理端 API", ("tests/web",)),
     "runtime": Suite("启动、热配置、重启控制", ("tests/runtime",)),
