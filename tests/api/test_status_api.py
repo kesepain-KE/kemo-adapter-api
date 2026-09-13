@@ -10,8 +10,8 @@ from api.server import create_app
 from api.routes.status import _safe_log_item, _safe_log_message
 from core.config import Settings
 from core.models import Usage, UsageMeasurement
-from tests.test_live_config import project
-from tests.test_provider_boundary import FakeProvider
+from tests.support.project import project
+from tests.support.llm import FakeProvider
 
 
 STATUS_HEADERS = {"Authorization": "Bearer status-only-token"}

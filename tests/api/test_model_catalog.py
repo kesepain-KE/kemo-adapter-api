@@ -8,9 +8,9 @@ from api.server import create_app
 from core.config import PrincipalConfig, Settings
 from core.models import ModelCapabilities
 from core.provider_contract import ProviderPackage
-from tests.test_live_config import project, write_json
-from tests.test_provider_boundary import FakeProvider, request
-from tests.test_retrieval_api import FakeRetrievalProvider
+from tests.support.project import project, write_json
+from tests.support.llm import FakeProvider, request
+from tests.support.retrieval import FakeRetrievalProvider
 
 
 class BrokenCapabilitiesProvider(ProviderPackage):

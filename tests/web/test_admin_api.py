@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.support.admin import ADMIN_HEADERS, OWNER_HEADERS, CALLER_HEADERS, admin_project
+
 import json
 from pathlib import Path
 
@@ -9,42 +11,10 @@ from fastapi.testclient import TestClient
 from api.server import create_app
 from core.config import PrincipalConfig, Settings
 from core.provider_contract import ProviderProbeResult
-from tests.test_live_config import project, write_json
-from tests.test_provider_boundary import FakeProvider
-from tests.test_provider_boundary import request as provider_request
+from tests.support.project import project, write_json
+from tests.support.llm import FakeProvider
+from tests.support.llm import request as provider_request
 from web.backend.service import RuntimeConfigWriter
-
-
-ADMIN_HEADERS = {"Authorization": "Bearer admin-token"}
-OWNER_HEADERS = {"Authorization": "Bearer owner-token"}
-CALLER_HEADERS = {"Authorization": "Bearer caller-token"}
-
-
-def admin_project(tmp_path: Path) -> Path:
-    root = project(tmp_path)
-    write_json(
-        root / "api" / "keys.json",
-        {
-            "keys": {
-                "admin-token": {
-                    "tenant_id": "admin",
-                    "subject_id": "console",
-                    "scopes": ["admin:web"],
-                },
-                "owner-token": {
-                    "tenant_id": "admin",
-                    "subject_id": "owner-console",
-                    "scopes": ["owner"],
-                },
-                "caller-token": {
-                    "tenant_id": "tenant",
-                    "subject_id": "agent",
-                    "scopes": ["model:invoke"],
-                },
-            }
-        },
-    )
-    return root
 
 
 def no_auth_project(tmp_path: Path) -> Path:

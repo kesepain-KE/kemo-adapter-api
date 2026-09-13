@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.support.project import project, write_json
+
 import asyncio
 import json
 from pathlib import Path
@@ -14,7 +16,7 @@ from core.executor import GatewayExecutor
 from core.live_config import LiveConfigManager, LiveConfigSnapshot
 from core.registry import ProviderRegistry
 from core.stores import InMemoryExecutionStore
-from tests.test_provider_boundary import FakeProvider
+from tests.support.llm import FakeProvider
 
 
 class ReloadableFakeProvider(FakeProvider):
@@ -68,38 +70,6 @@ class FailingReloadProvider(ReloadableFakeProvider):
         if settings.get("mode") == "bad":
             raise ValueError("candidate rejected")
         await super().reload_config(settings)
-
-
-def write_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value), encoding="utf-8")
-
-
-def project(tmp_path: Path) -> Path:
-    write_json(tmp_path / "api" / "runtime.json", {"gateway_api": {"enabled": True}})
-    write_json(
-        tmp_path / "api" / "keys.json",
-        {
-            "keys": {
-                "live-token": {
-                    "tenant_id": "tenant-live",
-                    "subject_id": "agent-live",
-                    "scopes": ["model:invoke"],
-                }
-            }
-        },
-    )
-    write_json(
-        tmp_path / "core" / "live_control.json",
-        {
-            "highest_priority_system_prompt": "policy-v1",
-            "disabled_providers": [],
-            "disabled_models": [],
-        },
-    )
-    write_json(tmp_path / "providers" / "fake" / "config.json", {"base_url": "v1"})
-    write_json(tmp_path / "providers" / "fake" / "secrets.json", {"api_key": "secret"})
-    return tmp_path
 
 
 def test_live_config_refreshes_only_supported_runtime_controls(tmp_path: Path) -> None:

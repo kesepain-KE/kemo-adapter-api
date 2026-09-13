@@ -23,7 +23,7 @@ from update.lock import UpdateLock
 from update.plan import UpdatePlan
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from tests.support.paths import PROJECT_ROOT
 
 
 def _load_root_entry():

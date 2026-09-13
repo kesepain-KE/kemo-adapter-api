@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from api.server import create_app
 from core.config import PrincipalConfig, Settings
-from tests.test_live_config import project
+from tests.support.project import project
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"kemo-test-png"

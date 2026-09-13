@@ -22,7 +22,7 @@ from core.restart_control import (
 )
 from restart import _child_environment, _prospective_environment
 from core.runtime_state import GatewayDrainingError, GatewayPhase, GatewayRuntimeState
-from tests.test_admin_api import ADMIN_HEADERS, admin_project
+from tests.support.admin import ADMIN_HEADERS, admin_project
 from web.backend.auth_service import WebAuthService
 
 

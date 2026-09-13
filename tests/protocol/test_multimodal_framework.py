@@ -20,7 +20,7 @@ from core.provider_contract import (
     ProviderResult,
     RequestContext,
 )
-from tests.test_live_config import project
+from tests.support.project import project
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"framework-image"

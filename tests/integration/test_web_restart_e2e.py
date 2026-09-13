@@ -17,7 +17,7 @@ import pytest
 from core.restart_control import process_exists, read_json, terminate_process
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from tests.support.paths import PROJECT_ROOT
 RUN_RESTART_E2E = os.getenv("KEMO_RUN_RESTART_E2E", "").strip() == "1"
 HTTP = build_opener(ProxyHandler({}))
 
@@ -55,14 +55,10 @@ def _copy_runtime_project(destination: Path) -> None:
         destination / "providers" / "__init__.py",
     )
     (destination / "storage").mkdir()
-    shutil.copy2(
-        PROJECT_ROOT / "storage" / "__init__.py",
-        destination / "storage" / "__init__.py",
-    )
-    shutil.copy2(
-        PROJECT_ROOT / "storage" / "statistics.py",
-        destination / "storage" / "statistics.py",
-    )
+    # Copy source modules only, including new helpers such as read_cache.py.
+    # Never copy daily databases, uploaded assets or execution history.
+    for source in (PROJECT_ROOT / "storage").glob("*.py"):
+        shutil.copy2(source, destination / "storage" / source.name)
     (destination / "api" / "runtime.json").write_text(
         '{"gateway_api":{"enabled":true}}\n', encoding="utf-8"
     )

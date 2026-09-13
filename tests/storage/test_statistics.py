@@ -15,9 +15,9 @@ from core.registry import ProviderRegistry
 from core.retrieval_executor import RetrievalExecutor
 from core.stores import InMemoryExecutionStore
 from storage.statistics import StatisticsStore
-from tests.test_live_config import project
-from tests.test_provider_boundary import FakeProvider, request
-from tests.test_retrieval_api import (
+from tests.support.project import project
+from tests.support.llm import FakeProvider, request
+from tests.support.retrieval import (
     FakeRetrievalProvider,
     embedding_body,
     rerank_body,

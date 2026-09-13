@@ -14,7 +14,7 @@ from core.runtime_state import (
     GatewayOverloadedError,
     GatewayRuntimeState,
 )
-from tests.test_provider_boundary import FakeProvider, request as provider_request
+from tests.support.llm import FakeProvider, request as provider_request
 
 
 def test_sse_heartbeat_keeps_idle_stream_alive_without_protocol_event() -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from tests.support.paths import PROJECT_ROOT
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 

@@ -432,10 +432,10 @@ def test_explicit_403_key_failure_can_fail_over() -> None:
 def test_key_preview_keeps_only_edges_and_never_returns_short_secret() -> None:
     secret = "sk-live-0123456789abcdef"
     preview = preview_provider_key(secret)
-    assert preview == f"{secret[:5]}…{secret[-5:]}"
+    assert preview == f"{secret[:5]}…{secret[-3:]}"
     assert secret not in preview
-    assert preview_provider_key("short") == "sh…rt"
-    assert preview_provider_key("x") == "•••"
+    assert preview_provider_key("short") == "***"
+    assert preview_provider_key("x") == "***"
     assert preview_provider_key("") is None
 
 
@@ -450,7 +450,7 @@ def test_generic_router_exposes_preview_and_disabled_keys_without_secret() -> No
 
     statuses = package.key_statuses()
     assert [item["key_id"] for item in statuses] == ["primary", "backup"]
-    assert statuses[0]["key_preview"] == f"{secret[:5]}…{secret[-5:]}"
+    assert statuses[0]["key_preview"] == f"{secret[:5]}…{secret[-3:]}"
     assert statuses[1]["status"] == "disabled"
     serialized = repr(statuses)
     assert secret not in serialized
@@ -480,7 +480,7 @@ def test_generic_router_rebuilds_packages_when_key_pool_changes() -> None:
         assert result.metadata["key"] == "new-upstream-secret"
         statuses = package.key_statuses()
         assert [item["key_id"] for item in statuses] == ["backup"]
-        assert statuses[0]["key_preview"] == "new-u…ecret"
+        assert statuses[0]["key_preview"] == "new-u…ret"
         await package.close()
 
     asyncio.run(scenario())
