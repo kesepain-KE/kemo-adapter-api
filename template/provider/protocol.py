@@ -14,8 +14,8 @@ from .errors import ExampleErrorMapper
 from .usage import ExampleUsageMapper
 
 
-# 只有厂商文档明确支持的字段才允许透传。
-PASSTHROUGH_PROVIDER_OPTIONS = frozenset({"service_tier", "region"})
+# 默认没有通用厂商选项；目标协议和类型校验明确后才逐项加入。
+PASSTHROUGH_PROVIDER_OPTIONS: frozenset[str] = frozenset()
 
 # 旧客户端兼容字段可以由本包消费，但不能覆盖对应的统一协议字段。
 CONSUMED_PROVIDER_OPTIONS = frozenset({"reasoning_effort"})

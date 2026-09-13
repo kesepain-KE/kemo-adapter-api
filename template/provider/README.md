@@ -3,6 +3,10 @@
 提供创建新厂商 Provider 包的保守骨架。本目录是唯一 Provider 模板源，不依赖部署端是否存在
 某个测试厂商。
 
+按步骤创建见 [创建厂商配方](../../ADD_DIY/create-provider.md)；增加模型或思考档位见
+[模型维护](../../ADD_DIY/model-maintenance.md)；单模型多模态见 [多模态配方](../../ADD_DIY/multimodal.md)。
+本模板默认关闭流式与未验证的高级能力，额度为空；函数存在不代表能力已验证。
+
 ## 使用方式
 
 ```bash
@@ -18,7 +22,7 @@ Copy-Item -Recurse template/provider providers/deepseek_v2
 
 复制后立即删除 `__pycache__` 和 `.pyc`。将 `manifest.json.example`、`config.json.example`、
 `secrets.json.example` 改为对应 JSON 文件；需要额外 SDK 时才创建 `requirements.txt`。将
-`test_contract.py` 必须替换为目标厂商的脱敏 Golden Fixture。所有运行路径
+`test_contract.py` 的模拟 DTO 必须替换为目标厂商的脱敏 Golden Fixture，保留通用门禁测试。所有运行路径
 中的 `Example`、`example`、`.invalid`、`vendor_`、TODO 和 `NotImplementedError` 必须清除。
 
 ### 复制后先做这八步
@@ -29,7 +33,7 @@ Copy-Item -Recurse template/provider providers/deepseek_v2
 4. 只在 `secrets.json` 填上游密钥，至少保留一项，实际服务至少启用一项；
 5. 先把所有未验证能力设为 `false`，不要照抄厂商宣传；
 6. 按真实端点实现 `client.py`、`protocol.py`、`streaming.py`、`usage.py` 和 `errors.py`；
-7. 用脱敏响应替换 `test_contract.py`，先运行测试；
+7. 用脱敏响应替换 `test_contract.py` 的模拟厂商数据，保留一致性和边界测试，再运行；
 8. 最后再执行 Provider 自有 `probe.py`，真实探测须有用户费用授权。
 
 新增模型时不复制模板，只同步 `provider.models`、`capabilities.py`、`manifest.json`、协议映射
@@ -120,6 +124,7 @@ Kemo SSE 事件（输出给 kemo-agent）
 | `config.json` | 可热更新的 Endpoint、超时等 API 配置 |
 | `secrets.json` | 可热更新的厂商密钥池，不上传 Git |
 | `test_contract.py` | 脱敏 Golden Fixture 和 Provider 契约回归测试 |
+| `catalog_contract.py` | 检查全部模型的目录、能力字段与 manifest 一致；不读密钥、不联网 |
 
 ## 实现路径
 
@@ -148,16 +153,16 @@ KemoRequest.reasoning        → 厂商 thinking/reasoning_effort 参数
 ```
 
 每个 LLM 模型必须在 `capabilities.py` 与 `manifest.json` 中显式填写 `reasoning`，但不要求所有
-模型都支持思考。默认使用 `supported=False, efforts=[]`。一旦声明支持推理，为兼容
-kemo-agent，`efforts` 必须暴露 `minimal|low|medium|high|max` 五个 Kemo 逻辑档位。
-厂商只有三档、两档或开关时，可以把多个逻辑档位折叠到同一真实值或厂商默认值，但必须在
-`extensions.reasoning_effort_map` 与 `extensions.reasoning_policy` 中公开；不能把不存在的值
-原样发送给上游。`none` 表示关闭，不属于能力档位；厂商的 `xhigh` 可作为 Kemo `max` 的
-上游映射值。
+模型都支持思考。默认使用 `supported=False, efforts=[]`。确认支持后优先完成
+`minimal|low|medium|high|max` 五档映射，厂商档位较少时允许经验证的折叠，并在
+`extensions.reasoning_effort_map` 与 `extensions.reasoning_policy` 中公开。
+只验证部分档位就只声明该集合；只有开关且没有强度映射时允许 `supported=True, efforts=[]`。
+不得为凑五档盲透传。`none` 表示关闭，不属于能力档位；厂商的 `xhigh` 可作为 Kemo `max` 的
+上游映射值。统一口径见 `ADD_DIY/model-maintenance.md`。
 
 必须在本文件夹的 `protocol.py` 中逐档映射到厂商真实字段和值，不能直接假定名称相同。
 `KemoRequest.reasoning` 优先；兼容旧客户端的 `provider_options.reasoning_effort` 也必须经过同一
-能力列表检查。五个逻辑档位和至少一个非法档位都要加入脱敏 Fixture。
+能力列表检查。每个已声明档位和至少一个非法档位都要加入脱敏 Fixture；公开五档就必须验证五档。
 
 密钥格式、路由和删除边界以上方“密钥模板标准”为唯一说明：不要在本节复制第二种格式。
 协议层只消费网关在进程内注入的当前密钥，不读取或回传密钥池原文。

@@ -11,10 +11,11 @@ MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         task="llm",
         input_modalities=["text"],
         output_modalities=["text"],
-        streaming=True,
+        # 骨架的流解析测试不代表目标厂商已支持流式；验证后才改为 True。
+        streaming=False,
         # 每个模型必须显式声明。默认不支持；确认支持后，面向 kemo-agent
-        # 统一暴露 minimal/low/medium/high/max 五档。厂商档位较少时允许
-        # 多个 Kemo 档位折叠到同一个真实值，但必须在 extensions 中公布映射。
+        # 优先验证 minimal/low/medium/high/max 五档，允许显式折叠；
+        # 只验证部分就只公开部分，只有开关无映射时 efforts=[]，不能猜。
         reasoning=ReasoningCapabilities(
             supported=False,
             efforts=[],
@@ -26,7 +27,8 @@ MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         structured_output=False,
         metadata={"source": "provider_package", "upstream_model": "model-name"},
         extensions={
-            "limits": {"max_input_tokens": 128000, "max_output_tokens": 8192},
+            # 未知额度保持空对象，不把示例数字当成厂商真实限制。
+            "limits": {},
             "operations": {
                 "conversation": {"supported": True},
                 "vision": {"supported": False},
@@ -38,12 +40,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
                 "video_understanding": {"supported": False},
                 "video_generation": {"supported": False},
             },
-            "asset_limits": {
-                "image_bytes": 20 * 1024 * 1024,
-                "audio_bytes": 100 * 1024 * 1024,
-                "video_bytes": 1024 * 1024 * 1024,
-                "file_bytes": 100 * 1024 * 1024,
-            },
+            "asset_limits": {},
             "probe": {
                 "supported": True,
                 "mode": "minimal_inference",

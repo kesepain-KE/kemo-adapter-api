@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,11 +20,36 @@ from core.provider_contract import (
 )
 
 from .media import parse_media_block, store_output_media
+from .catalog_contract import validate_catalog
+from .capabilities import MODEL_CAPABILITIES
 from .errors import ExampleErrorMapper
 from .provider import ExampleProvider, resolve_api_key
 
 
 GATEWAY_MODEL = "example-model-name"
+
+
+def test_full_catalog_matches_manifest_and_runtime() -> None:
+    """复制后自动检查所有模型，不只检查 GATEWAY_MODEL 这一条。"""
+    directory = Path(__file__).parent
+    path = directory / "manifest.json"
+    if not path.exists():
+        path = directory / "manifest.json.example"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    provider = ExampleProvider(FakeClient())  # type: ignore[arg-type]
+    validate_catalog(provider.provider_id, provider.models, MODEL_CAPABILITIES, manifest)
+
+
+@pytest.mark.parametrize("model", sorted(MODEL_CAPABILITIES))
+def test_each_registered_model_resolves_to_its_upstream_name(model: str) -> None:
+    async def scenario() -> None:
+        client = FakeClient()
+        provider = ExampleProvider(client)  # type: ignore[arg-type]
+        req = request("catalog-mapping").model_copy(update={"model": model})
+        await provider.execute(req, context("catalog-mapping"))
+        assert client.payloads[-1]["model"] == MODEL_CAPABILITIES[model].metadata["upstream_model"]
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -237,12 +263,12 @@ def test_reasoning_declaration_uses_only_verified_kemo_efforts() -> None:
             assert reasoning.summary is False
             assert reasoning.persisted_state is False
         else:
-            assert reasoning.efforts == logical
+            assert set(reasoning.efforts) <= set(logical)
             effort_map = declaration.extensions["reasoning_effort_map"]
-            assert list(effort_map) == logical
+            assert set(effort_map) == set(reasoning.efforts)
             policy = declaration.extensions["reasoning_policy"]
             assert policy["mode"] in {"native", "mapped", "provider_default"}
-            assert policy["logical_efforts"] == logical
+            assert policy["logical_efforts"] == reasoning.efforts
 
     asyncio.run(scenario())
 
@@ -276,12 +302,13 @@ def test_probe_is_real_minimal_inference() -> None:
     asyncio.run(scenario())
 
 
-def test_unknown_provider_option_is_rejected() -> None:
+@pytest.mark.parametrize("option", ["unsafe_header", "service_tier", "region"])
+def test_unknown_provider_option_is_rejected(option: str) -> None:
     async def scenario() -> None:
         provider = ExampleProvider(FakeClient())  # type: ignore[arg-type]
         with pytest.raises(ProviderException) as captured:
             await provider.execute(
-                request("invalid-option", provider_options={"unsafe_header": "secret"}),
+                request("invalid-option", provider_options={option: "example-value"}),
                 context("invalid-option"),
             )
         assert captured.value.error.code == "VALIDATION_ERROR"

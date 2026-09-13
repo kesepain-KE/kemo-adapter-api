@@ -1,0 +1,11 @@
+{
+  "keys": {
+    "EXAMPLE_ONLY_REPLACE_LOCALLY_DO_NOT_DEPLOY": {
+      "key_id": "demo-agent",
+      "tenant_id": "demo-tenant",
+      "subject_id": "demo-subject",
+      "scopes": ["model:invoke"],
+      "allowed_models": ["example-demo-model"]
+    }
+  }
+}

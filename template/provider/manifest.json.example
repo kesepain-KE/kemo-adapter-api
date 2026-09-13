@@ -7,7 +7,8 @@
       "upstream_model": "model-name",
       "input_modalities": ["text"],
       "output_modalities": ["text"],
-      "streaming": true,
+      "streaming": false,
+      "structured_output": false,
       "reasoning": {
         "supported": false,
         "efforts": [],
@@ -19,9 +20,14 @@
         "parallel_calls": false,
         "multimodal_results": false
       },
-      "limits": {
-        "max_input_tokens": 128000,
-        "max_output_tokens": 8192
+      "limits": {},
+      "asset_limits": {},
+      "reasoning_effort_map": {},
+      "reasoning_policy": {
+        "mode": "unsupported",
+        "logical_efforts": [],
+        "upstream_parameter": null,
+        "collapsed": false
       },
       "operations": {
         "conversation": {"supported": true},
