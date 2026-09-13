@@ -4,6 +4,18 @@
 开始任何写操作前，先读根目录 `agent_control.md`，再按下表读取对应文件；不得仅凭旧对话或
 通用 OpenAI 兼容经验修改网关。
 
+**建议阅读顺序：本页 → [任务导航](tasks.md) → 一份对应配方 → [验证矩阵](verification.md)。**
+不要一次性照着全部配方修改。操作前可使用 [任务卡](../template/examples/task-card.md)。
+
+| 逐步配方 | 内容 |
+| --- | --- |
+| [创建厂商](create-provider.md) | 安全复制、文件填写顺序、保留测试、重启后复查 |
+| [模型维护](model-maintenance.md) | 增加模型、只改一个能力、推理五档与回退规则 |
+| [单模型多模态](multimodal.md) | 九种操作、媒体输入输出、Asset、反向测试 |
+| [密钥操作](keys-and-secrets.md) | 上游密钥池与调用方 Token 分开处理、轮换及白名单 |
+| [离线样例](../template/examples/README.md) | 可执行的完整请求、能力声明和模拟映射 |
+| [发布配方](release.md) | 同步版本、核对说明、分组全量验证、保留用户提交权 |
+
 ## 小模型先读：四步和四个配方
 
 先判断任务，再只改对应位置。不要把整个 Provider 目录或样例文件覆盖到已有实现。
@@ -42,12 +54,14 @@
 | --- | --- | --- |
 | 创建厂商或增加模型 | `provider-package.md`、`verification.md` | `providers/<provider_id>/` |
 | 修改厂商请求、响应、流或工具调用 | `provider-package.md`、`architecture.md`、`verification.md` | 目标 Provider 包 |
-| 修改 Token、缓存、推理或媒体计量 | `provider-package.md`、`architecture.md` | 目标 Provider 的 `usage.py` |
+| 修改 Token 用量、缓存 Token、推理或媒体计量 | `provider-package.md`、`architecture.md` | 目标 Provider 的 `usage.py` |
+| 优化网关统计查询缓存 | `architecture.md`、`../storage/README.md`、`verification.md` | `storage/`，不改 Provider 计量 |
 | 修改厂商 Base URL、Header 或密钥 | `keys-and-secrets.md`、`architecture.md` | 目标 Provider 的配置文件 |
 | 修改网关调用密钥或模型白名单 | `keys-and-secrets.md` | `api/keys.json` |
 | 修改最高系统提示词或禁用策略 | `architecture.md` | `core/live_control.json` |
 | 修改 `.env` | `keys-and-secrets.md`、`architecture.md` | `.env`，修改后必须重启 |
 | 修改核心或公开协议 | `architecture.md`、`verification.md`、`api.md` | `core/`、`api/`、协议文档 |
+| 更新版本、准备提交 | `release.md`、`verification.md` | 版本元数据、文档及验证；提交/推送须另有授权 |
 
 ## 固定执行顺序
 
@@ -71,7 +85,7 @@
 - 完整网关模型名固定为 `<provider_id>-<厂商原始模型名>`；斜杠格式已废弃。
 - Kemo 的标准推理档位是 `minimal|low|medium|high|max` 五档；`xhigh` 只在 Provider 明确
   映射到厂商真实值时作为兼容输入，不能直接原样发送给上游。
-- `providers/*` 默认被 Git 忽略，属于部署端热加载内容。需要随仓库发布某个 Provider 时，
+- `providers/*` 默认被 Git 忽略，属于部署端加载内容；新目录和代码改动仍需重启。需要随仓库发布某个 Provider 时，
   必须先获得用户明确同意，再单独调整 `.gitignore`；不得悄悄改变发布范围。
 
 ## 绝对禁止

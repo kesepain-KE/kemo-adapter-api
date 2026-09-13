@@ -27,18 +27,19 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 
 | 能力 | 配置文件 | 代码验证位置 | 生效时机 | 修改方式 |
 |------|----------|-------------|----------|----------|
-| 对外 API 启停 | `api/runtime.json` → `gateway_api.enabled` | `middleware.py:_resolve_principal()` 检查，`service.py:update_gateway()` 写入 | 下一请求 | 编辑 JSON 或 `POST /admin/api/system/gateway` |
+| 对外 API 启停 | `api/runtime.json` → `gateway_api.enabled` | `middleware.py:_resolve_principal()` 检查，`service.py:update_gateway()` 写入 | 下一请求 | 编辑 JSON 或 `PUT /admin/api/runtime/gateway` |
 | API 密钥增删改 | `api/keys.json` → `keys` 对象 | `live_config.py:_load()` 解析，`middleware.py` 逐 Token HMAC 匹配 | 下一请求 | 编辑 JSON 或 Secret Manager 原子替换 |
-| 禁用/启用 Provider | `core/live_control.json` → `disabled_providers` | `registry.py:resolve()` 检查黑名单 | 下一请求 | 编辑 JSON 或 `POST /admin/api/system/control` |
+| 禁用/启用 Provider | `core/live_control.json` → `disabled_providers` | `registry.py:resolve()` 检查黑名单 | 下一请求 | 编辑 JSON 或 `PUT /admin/api/runtime/control` |
 | 禁用/启用模型 | `core/live_control.json` → `disabled_models` | `registry.py:resolve()` 检查黑名单 | 下一请求 | 同上 |
-| 最高权限系统提示词 | `core/live_control.json` → `highest_priority_system_prompt` | `executor.py:make_context()` 注入到 RequestContext | 下一请求 | 编辑 JSON 或 `POST /admin/api/system/control` |
-| 厂商 API 地址/密钥/超时 | `providers/<id>/config.json` + `secrets.json` | `live_config.py:_load()` 读取并深合并，`package.reload_config()` 原子替换 Client | 下一请求 | 编辑 JSON 或 `POST /admin/api/providers/{id}/config` |
+| 最高权限系统提示词 | `core/live_control.json` → `highest_priority_system_prompt` | `executor.py:make_context()` 注入到 RequestContext | 下一请求 | 编辑 JSON 或 `PUT /admin/api/runtime/control` |
+| 厂商 API 地址/超时 | `providers/<id>/config.json` | `live_config.py:_load()` 读取并深合并，`package.reload_config()` 原子替换 Client | 下一请求 | 编辑 JSON 或 `PUT /admin/api/runtime/providers/{provider_id}`；已有密钥池不提交 api_key |
+| 厂商密钥池 | `providers/<id>/secrets.json` → `api_keys` | 统一密钥路由与热配置 | 下一请求 | 按密钥配方原子修改 JSON，或使用网页 Provider 密钥池 |
 
 ### 热插拔实现细节
 
 - **运行时配置按 revision 控制**：文件指纹（mtime + size）跳过无变化重载。写入损坏或 Schema 无效时拒绝该版本并继续使用最后一个有效快照（`live_config.py:_load()` 异常保护）。
 - **配置文件应使用原子写入**：先写临时文件再 `os.replace()`，避免部分写入（`service.py:_atomic_json()`）。
-- **Provider API 配置热更新**必须采用新 Client 接收新请求、旧 Client 排空在途请求的方式（`deepseek/provider.py:reload_config()`），不能在轮换 Key 或 Endpoint 时中断进行中的流。
+- **Provider API 配置热更新**必须采用新 Client 接收新请求、旧 Client 排空在途请求的方式（`template/provider/provider.py:reload_config()`），不能在轮换 Key 或 Endpoint 时中断进行中的流。
 - **内建对已创建执行的无损保护**：`registry.resolve_registered()` 绕过禁用检查，已在运行中的 LLM 响应和检索请求不受 `disabled_providers`/`disabled_models` 影响。正在使用旧 API Key 的 Provider 请求仍由旧 Client 完成。
 
 ### 生效条件
@@ -53,6 +54,7 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 | 新增模型注册 | 模型在 `discover()` → `register()` 中注册，启动后不再调用 | `registry.py:register()` |
 | Provider Python 代码 | protocol/streaming/usage/errors/capabilities 等包内文件 | `providers/<id>/` |
 | 核心/API/Web 源码 | core/、api/、web/ 目录代码 | — |
+| 统计存储与缓存源码 | storage/ 的 Python 模块 | `statistics.py`、`read_cache.py` |
 | 环境变量（.env） | `Settings.from_env()` 只启动时调用一次 | `config.py` |
 | 依赖 | `requirements.txt` 变更 | — |
 | 协议版本 | `X-Kemo-Protocol-Version` 硬校验为 `"1.0"` | `routes/responses.py`、`routes/retrieval.py` |
@@ -98,7 +100,7 @@ Billing 对象，不得塞入 Token 字段。
   → provider streaming.py
   → ProviderEvent（无 sequence/event_id）
   → core EventAssembler
-  → core ExecutionStore（生产需持久化实现）
+  → core SQLiteExecutionStore（事务写入执行和事件）
   → SSE 客户端或断线重放
 ```
 
@@ -113,15 +115,33 @@ Billing 对象，不得塞入 Token 字段。
 - Event log：按 response_id 原子追加的事件；
 - Asset：授权主体、元数据、校验和、TTL 和 Blob 引用。
 
-当前 `InMemoryExecutionStore` 仅供开发与契约测试，不能用于多进程或重启恢复。
+当前 `api/server.py` 使用 `SQLiteExecutionStore` 保存执行与事件；`InMemoryExecutionStore`
+仅供开发与契约测试，不能用于多进程或重启恢复。维护 Provider 时不要替换执行存储，也不要删除运行数据库。
+
+## 统计读缓存不是模型缓存
+
+`storage/statistics.py` 负责调用开始、终态、用量和统计查询；`storage/read_cache.py` 只缓存查询结果。
+默认 128 项、8 MiB JSON 载荷、固定 30 秒 TTL，读命中不续期，统计写入前后清空缓存。
+同一进程的相同并发查询复用结果，返回独立对象，写入取消时等待工作线程结束再释放锁。
+多进程直接改库的可见性受 TTL 限制；缓存不保证跨进程同步，不用于鉴权或保存待落盘事件。
+这与 `usage.cached_input_tokens` 和界面中的 Token 缓存率是两件事，不能互相计入统计。
+详细限制与验证入口见 [统计存储](../storage/README.md)。
+
+## 测试依赖方向
+
+`python -m tests` → `tests/runner.py` → `tests/suites.py` 声明的功能测试组。
+共享构造器位于 `tests/support/`，不得从另一个 `test_*.py` 导入。
+本地未发布厂商和临时项目真实重启通过显式套件单独执行、单独报告；不要以默认通过代表全部可选项通过。
 
 ## 重启状态机
 
-`restart.py` 只协调由 `start_web.py` 启动的单实例网关。默认流程为：启动前检查、进入 Drain、
-等待活动执行归零、停止旧实例、同端口启动新实例、验证 `/healthz`。Drain 期间只拒绝新的
-`POST /model/responses`；已有 Response 的查询和取消、管理端以及健康检查仍可用。
+`restart.py` 只协调由 `start_web.py` 启动的单实例网关。默认流程为：预检新配置、进入 Drain、
+等待活动执行归零、停止旧实例、按新 `.env` 的 HOST/PORT 启动实例、验证 `/healthz`。
+端口变更后必须在新地址验证，不能只检查旧端口。Drain 期间拒绝新的模型执行（LLM、Embedding、Rerank），
+已有 Response 的查询和取消、管理端以及健康检查仍可用。新实例失败时尽力恢复旧环境，不保证所有外部故障都可恢复。
 
 重启请求和状态保存在被 Git 忽略的 `core/runtime/`，只记录 PID、实例 ID、阶段和脱敏原因，
 不得记录环境变量值或密钥。`POST /admin/api/system/restart` 只允许 `owner` scope；普通
-`admin:web` 只能管理运行时配置，不能重启进程。当前内存执行存储无法跨进程恢复，因此默认
-Drain 超时会撤销重启；`force=true` 或 CLI `--force` 可能中断仍在执行的请求，必须显式使用。
+`admin:web` 只能管理运行时配置，不能重启进程。持久化记录不意味着正在进行的厂商网络连接
+能跨进程继续，因此默认 Drain 超时会撤销重启；强制重启可能中断请求，必须明确授权，
+不能为了让新模型马上出现就跳过 Drain。

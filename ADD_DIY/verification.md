@@ -3,6 +3,24 @@
 本清单是智能体报告“创建成功”或“可以发布”前必须完成的最低验证。不能执行的项目必须明确
 报告原因和剩余风险，不能用静态阅读代替真实结果。
 
+## 先按任务选验证，不要盲跑真实 API
+
+| 本次任务 | 必须验证 | 不代表完成 |
+| --- | --- | --- |
+| 创建 Provider | 新包契约、目录一致性、对应任务与错误映射、编译 | 模板 FakeClient 通过不等于上游可调用 |
+| 增加模型 | 三处集合、新模型映射、旧模型回归、scope/白名单可见性 | 只在 manifest 加一行 |
+| 修改模型能力/推理 | 声明同步、每项新增能力的正反例、每档映射、关闭与优先级 | 能力 API 返回 true |
+| 单模型多模态 | 九操作中目标操作的请求/响应、Asset、未声明模态拒绝、旧模型不变 | 文本可达性探测通过 |
+| 修改上游 Key | JSON 格式、保留其他项、至少一个启用项、热加载状态 | 保存成功或池中某把 Key 可用 |
+| 修改调用 Token/白名单 | 身份和 scopes 不扩大、目录过滤、允许/拒绝用例 | owner 页面看得到模型 |
+| 修改本仓库模板/引导文档 | 模板门禁、教学样例、文档链接与 JSON 示例、相关核心回归 | 文档篇幅变长 |
+| 修改统计读缓存 | TTL、LRU 容量、参数隔离、写入失效、并发、取消、跨实例落盘读取 | 命中率高或只跑一次查询 |
+| 修改密钥预览 | 后端前五后三、短值全隐藏、结构化内容不预览、鉴权与 no-store、前端构建 | 前端拿到完整值后再截取 |
+| 整包发布/核心改动 | 全量测试、编译、前端生产构建、Git 检查 | 只跑某一个模板测试 |
+
+只改 Provider/文档不要求修改或构建 UI；发布整包仍必须构建前端。
+任何需要但未执行的真实测试必须在报告中注明，不能用离线样例替代。
+
 ## 1. 目录与占位符
 
 新 Provider 最少包含：
@@ -45,9 +63,9 @@ providers/<provider_id>/
 - 流式、工具、并行工具、推理、结构化输出和多模态均以真实测试结果声明；
 - 未验证能力必须是 `false` 或不声明，不能按厂商宣传页推断；
 - 每个 LLM 模型在 `capabilities.py` 与 `manifest.json` 的 `reasoning` 声明一致；不支持时
-  `supported=false, efforts=[]`，支持时必须暴露 `minimal|low|medium|high|max` 五个逻辑档位；
-- 五个逻辑档位必须在 `protocol.py` 中逐档映射到厂商真实参数；厂商档位较少或只有开关时
-  显式折叠并通过 `reasoning_policy` 标注；每档均有 Fixture，非法档位会被拒绝，不能直接盲透传
+  `supported=false, efforts=[]`；优先验证五档，只公开有证据的集合；只有开关无强度映射可用空档位；
+- 每个公开档位必须在 `protocol.py` 中逐档映射到厂商真实参数；厂商档位较少或只有开关时
+  经验证的折叠通过 `reasoning_policy` 标注；每档均有 Fixture，非法档位会被拒绝，不能直接盲透传
   `provider_options.reasoning_effort`；
 - Embedding 维度、输入类型、批量上限和归一化语义真实；
 - Rerank 的 index、`top_n`、分数方向和返回原文行为真实；
@@ -99,17 +117,37 @@ providers/<provider_id>/
 
 ## 7. 必须执行的验证
 
-在项目根目录执行：
+修改模板/操作配方时先在项目根目录执行（Windows/Linux 相同）：
+
+```sh
+python -m tests --suite templates -q
+python -m tests --suite protocol --suite providers --suite runtime -q
+python -m compileall -q template
+git diff --check
+```
+
+`catalog_contract.validate_catalog()` 会定位缺失模型、manifest 字段漂移和推理档位映射缺口，
+但不会验证厂商协议本身。应保留复制后 test_contract.py 的通用断言，另补真实脱敏 Fixture。
+
+整包发布或核心改动时，在项目根目录执行：
 
 ```powershell
-python -m compileall core api web/backend template/provider
-python -m pytest -q
-Set-Location web/frontend
-npm run build
+python -m compileall -q core api storage web/backend template tests update setup.py start_web.py restart.py
+python -m tests -q
+pnpm --dir web/frontend run build
+python -m tests --suite restart-e2e -q
+git diff --check
 ```
 
 使用网关实际部署的 Python 环境；若 `python` 不是目标解释器，先定位并替换为对应解释器绝对
 路径，不能为了通过检查临时安装到另一个环境。
+
+统一入口及分组说明见 [tests/README.md](../tests/README.md)。默认运行源码与模板测试，
+不自动扫描本机 `providers/`；若本次改了实际厂商，另外运行其契约文件，或显式选择
+`python -m tests --suite local-providers -q`。真实进程替换测试使用 `--suite restart-e2e`，
+需要已构建前端，在临时项目中运行，不重启用户正在使用的网关。
+完整发布步骤及版本来源见 [发布配方](release.md)。Windows 实测不能代替 Linux 实测；
+尚未运行远程 CI 时明确报告“Linux 待 CI”，不能写成双平台已经全部通过。
 
 新 Provider 还必须执行自己的 `test_contract.py` 和脱敏 Golden Fixture。真实探测仅在用户授权
 费用和目标环境后执行。验证后检查 `git diff --check`，并确认 `git status --short` 中没有密钥、

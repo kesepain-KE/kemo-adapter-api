@@ -4,6 +4,9 @@ Provider 是厂商差异的唯一归属。网关核心只认识 `core.models` �
 `core.provider_contract.ProviderPackage`，不得知道具体厂商的请求字段、流事件、Token 规则或
 错误正文。
 
+需要逐步照做时，不必通读本篇技术参考：从 [任务导航](tasks.md) 选择
+[创建厂商](create-provider.md)、[模型维护](model-maintenance.md) 或 [多模态](multimodal.md) 配方。
+
 ## 0. 最短执行清单
 
 给小参数智能体的固定流程：
@@ -40,7 +43,7 @@ video_generation；这些操作共享 `/model/responses`，但 Provider 必须�
 ## 2. 新厂商创建流程
 
 1. 确认稳定 `provider_id`。文件夹名、`provider_id` 和 manifest 必须完全一致；
-2. 复制 `template/provider/` 到 `providers/<provider_id>/`，不要使用已删除的
+2. 按 `create-provider.md` 安全复制并完成验证后放入 `providers/<provider_id>/`，不要使用已删除的
    `providers/_template`；
 3. 删除复制出的 `__pycache__`、`.pyc`，将必要 `.example` 文件改为真实文件名；
 4. 替换所有 `Example`、`example`、`.invalid`、`vendor_` 和运行路径中的 TODO；
@@ -83,7 +86,7 @@ Git。网关从当前游标开始按配置顺序选择密钥，并在发起一�
 
 1. 记录厂商原始模型名和任务类型；
 2. 生成公开名 `<provider_id>-<原始模型名>`；
-3. 加入 `provider.models`；
+3. 加入 `provider.models`；如果它从 `MODEL_CAPABILITIES` 派生，不要重复维护第二份集合；
 4. 在 `capabilities.py` 填写真实模态、工具、流式、推理和限制；
 5. 在 `manifest.json` 写完全相同的模型键，并在 `protocol.py` 映射真实上游参数；
 6. 增加脱敏 Fixture，运行契约测试；Python 或 manifest 改动后重启。
@@ -152,18 +155,19 @@ ReasoningCapabilities(
 )
 ```
 
-只有获得厂商文档和真实 Fixture 证明后才能设为 `supported=True`。一旦支持推理，为兼容
-kemo-agent，`efforts` 必须填写 `minimal|low|medium|high|max` 五个 Kemo 逻辑档位；`none`
-表示关闭，不放入能力列表。厂商实际档位较少时允许显式折叠，例如 `minimal→low`、
-`max→high`；只有开关或固定推理时允许五档都映射到厂商默认行为，但必须使用
+只有获得厂商文档和真实 Fixture 证明后才能设为 `supported=True`。优先完成
+`minimal|low|medium|high|max` 五档映射；厂商档位较少时允许经验证的折叠，例如
+`minimal→low`、`max→high`。只验证部分时只声明对应集合，只有开关而没有强度映射时允许
+`supported=True, efforts=[]`。若已验证五档全部映射到默认行为，必须使用
 `extensions.reasoning_policy.mode=provider_default` 标明，不得伪装成五种真实强度。
+`none` 表示关闭，不放入能力列表。统一执行口径见 [模型维护](model-maintenance.md)。
 
 在 `protocol.py` 中必须建立 Kemo 档位到厂商真实参数的显式映射，即使两边字符串碰巧相同也要
 逐项写清楚。请求启用推理后，核心会拒绝能力列表之外的档位；旧客户端通过
 `provider_options.reasoning_effort` 传入时，Provider 也必须执行同一检查，不能绕过能力声明。
 统一字段 `KemoRequest.reasoning` 始终优先。
 
-五个 Kemo 逻辑档位都要有脱敏请求 Fixture；还要覆盖一个非法档位并确认返回
+每个已声明的 Kemo 逻辑档位都要有脱敏请求 Fixture；还要覆盖一个非法档位并确认返回
 `REASONING_EFFORT_UNSUPPORTED` 或 Provider 的统一 `VALIDATION_ERROR`。厂商响应中的推理正文、
 摘要、可回放状态和 `reasoning_tokens` 分别映射，不能因为支持其中一项就自动声明其余能力。
 `persisted_state=True` 只用于厂商明确要求工具续轮回放 reasoning 或不透明状态的模型。此时契约测试
