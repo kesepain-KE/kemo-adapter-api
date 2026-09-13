@@ -2,7 +2,8 @@
 
 本目录是网关与 kemo-agent 共同执行的线协议回归基准。两边的 `fixtures/manifest.json` 和
 `fixtures/wire.json` 必须逐字节一致；测试实现可以分别适配生产者和消费者，但不能各自维护
-另一套请求、响应或 SSE 样例。
+另一套请求、响应或 SSE 样例。仓库根目录的 `.gitattributes` 强制 `fixtures/*.json` 以 LF 检出，
+避免 Windows 上 `core.autocrlf` 改写换行导致固定摘要失配；镜像此契约的仓库需要同样的规则。
 
 覆盖边界：文本、动态推理档位、多轮工具结果、多模态内容、能力声明、模型目录、Asset、
 Embedding、Rerank、终态响应、Usage 和 SSE 顺序/去重。全部样例均为离线假数据，不读取配置、
