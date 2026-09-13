@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.8-blue" alt="Gateway version 0.7.8"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.0-blue" alt="Gateway version 0.8.0"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -26,17 +26,23 @@
 
 ---
 
-## 0.7.8 updater plan preview and safety boundaries
+## 0.8.0 guided workflows, unified tests, and bounded statistics caching
 
-This release completes the deployment updater control plane without changing the public Kemo protocol:
+This release improves maintainability and the management console without changing the public Kemo protocol:
 
-- The interactive menu can preview an update plan and inspect source state; `--apply --dry-run` shows the plan without changing the worktree, config, or runtime data.
-- `--repo-url` / `--branch` apply only to the current operation and never rewrite local `origin`; `--remote-version-url` is a read-only fallback when Git is unavailable.
-- Write operations hold a cross-platform lock and a short-lived `.update.maintenance` marker; backup identifiers stay unique even when two operations start in the same second.
-- Git and command diagnostics are redacted so tokens, passwords, and credential-bearing URLs are not printed; `providers/__init__.py` truncates and redacts secrets in upstream HTML error pages.
-- The 0.7.7 Provider lifecycle reference counting, directory fingerprint snapshots, and diagnostic fallback remain unchanged.
+- **Task-specific agent guidance:** separate recipes for creating Providers, adding models, updating capabilities, single-model multimodal support, reasoning levels, and key rotation. Existing implementations must not be overwritten with templates.
+- **Offline template checks:** validate model catalogs, manifests, capabilities, and reasoning mappings, with paired request examples for nine operations. Passing a template test does not prove real upstream support.
+- **One test entry point:** `python -m tests` runs source and template suites grouped by responsibility. Local Provider and real restart tests are opt-in; shared builders no longer import test cases.
+- **Bounded statistics read cache:** daily/hourly metrics, trends, rankings, key totals, and log pages reuse short-lived results, capped at 128 entries and 8 MiB of serialized payload with a 30-second TTL. Writes invalidate cached results immediately; invocation and SSE persistence remains transactional.
+- **Console and safe previews:** clearer cards, read-only gateway configuration, and backend-generated first-five/last-three credential masks. Short credentials remain fully hidden; complete credentials and arbitrary private JSON are not returned by these views.
 
-The Kemo Protocol remains at `1.0`, and the Web console package is also `0.7.8`.
+Existing updater plan previews, backups, safe fast-forward checks, Provider hot configuration, and in-flight request protection remain available.
+Gateway and console versions are **`0.8.0`**; the Kemo Protocol remains **`1.0`**.
+Existing key files require no migration. Source and frontend changes require a rebuild and restart.
+
+Gateway statistics writes invalidate the cache immediately. External database edits may remain unseen until the remaining 30-second TTL expires.
+This is not an authentication cache or a model token-cache metric, and no fixed disk IOPS improvement is promised.
+See [statistics storage boundaries](storage/README.md) and [release verification](ADD_DIY/release.md).
 
 ## Every vendor has its own protocol. That is the problem.
 
@@ -308,6 +314,15 @@ python restart.py --status
 
 The restart module drains in-flight requests before restarting. Before stopping the old process, an isolated Python process preflights the new environment, frontend artifact, and backend imports. The replacement then validates the new `.env` HOST/PORT through health checks before reporting success; if startup fails, it makes a best-effort rollback to the old startup environment. The web console also provides confirmation, progress feedback, and status polling. When authentication settings are unchanged, the two-hour Web session is handed off securely so a graceful restart does not immediately log the browser out.
 
+### Read-only gateway configuration
+
+System Settings → Gateway Configuration shows the settings loaded by the current process: network, Web access policy, concurrency/timeouts, SSE, and media limits.
+This page has no save or secret-reveal action. `GET /admin/api/system/gateway-config` requires management permissions and has no write endpoint.
+The backend generates credential previews using the first five and last three characters, separated by `…`.
+Empty values and credentials of ten characters or fewer remain `***`. Multiple keys receive separate previews.
+Provider previews read only standard key fields, never arbitrary private JSON or headers; this endpoint does not return complete credentials.
+Refreshing does not reload `.env`; environment changes still require a restart. Launcher logging, browser opening, and restart-script parameters are outside this view.
+
 ### Self-update
 
 ```powershell
@@ -366,7 +381,29 @@ output through `RequestContext.assets`, while public responses expose only an As
 SHA-256—not a local gateway path. Vendor endpoints, formats, and usage accounting remain entirely inside each
 Provider package.
 
-See [ADD_DIY/provider-package.md](ADD_DIY/provider-package.md) for the creation workflow.
+### Guided recipes for automation agents
+
+Start with the [task selector](ADD_DIY/tasks.md) and fill in the target directory and scope before editing.
+The detailed recipes are in Chinese and designed for agents with limited context or reasoning capacity:
+
+- [Create a provider](ADD_DIY/create-provider.md): stage safely, implement in order, retain contract tests, then register.
+- [Add models or update capabilities](ADD_DIY/model-maintenance.md): synchronize the catalog, modify one model, map reasoning levels.
+- [Single-model multimodality](ADD_DIY/multimodal.md): nine operations, input/output media, Assets, and negative tests.
+- [Keys and allowlists](ADD_DIY/keys-and-secrets.md): distinguish upstream pools from gateway caller tokens and preserve unrelated entries.
+- [Executable teaching examples](template/examples/README.md): paired requests/capabilities, simulated five-level mapping, and incremental updates.
+
+The provider skeleton does not advertise unverified advanced features or invent numerical limits.
+Catalog and teaching-example tests run offline without real keys; passing them does not prove upstream availability.
+Prefer all five reasoning levels when verified mappings exist, but expose only verified levels rather than inventing support.
+See the [provider reference](ADD_DIY/provider-package.md) and [task-specific verification matrix](ADD_DIY/verification.md).
+
+### Single test entry point
+
+Run `python -m tests` from the repository root for the source suite, or `python -m tests --list` to list groups.
+Use `python -m tests --suite templates -q` for templates and
+`python -m tests --suite protocol --suite providers -q` for protocol and key-routing tests.
+Local unpublished providers and real process-replacement tests are opt-in. Shared test builders live in
+`tests/support/`; test modules do not import other test modules. See [tests/README.md](tests/README.md).
 
 ---
 

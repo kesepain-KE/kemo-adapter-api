@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.7.8-blue" alt="Gateway version 0.7.8"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.0-blue" alt="Gateway version 0.8.0"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
@@ -26,17 +26,19 @@
 
 ---
 
-## 0.7.8 更新器计划预览与安全边界
+## 0.8.0 智能体引导、统一测试与统计读缓存
 
-本版本补齐部署端更新控制面，不改 Kemo 公开协议：
+本版本聚焦可维护性和管理体验，不改变 Kemo 公开协议：
 
-- 交互菜单新增预览更新计划和查看源码状态；`--apply --dry-run` 只展示计划，不改工作树、配置或运行数据。
-- `--repo-url` / `--branch` 只对本次操作生效，不改写本地 `origin`；`--remote-version-url` 仅用于 Git 不可用时的只读版本查看。
-- 更新写入期间使用跨平台锁和短生命周期 `.update.maintenance` 标记；同秒备份自动生成不冲突标识。
-- Git 与命令错误自动脱敏，不把 Token、密码或带凭据 URL 写入终端；`providers/__init__.py` 截断并遮罩上游错误页中的密钥。
-- 0.7.7 的 Provider 生命周期引用计数、热配置目录指纹和诊断容错保持不变。
+- **按任务引导智能体**：创建厂商、增加模型、修改能力、单模型多模态、推理档位和密钥轮换分别提供步骤、样例与完成判据，避免直接用模板覆盖已有实现。
+- **模板增加离线门禁**：检查模型集合、manifest、能力声明与推理映射一致性；九种操作提供配对请求样例。模板通过只证明结构，不代表目标厂商真实可用。
+- **统一测试入口**：`python -m tests` 默认运行源码与模板测试，内部按职责分组；本地厂商与真实重启测试显式选择，共享构造器不再依赖其他测试文件。
+- **有界统计读缓存**：日/小时统计、趋势、排行、密钥累计用量与日志分页复用短时结果，最多 128 项、8 MiB 序列化载荷、30 秒 TTL。统计写入后立即失效，调用记录与 SSE 仍按原有事务落盘。
+- **管理界面与安全预览**：优化卡片层次，增加只读网关配置；认证与密钥、Provider 密钥池显示后端生成的前五后三掩码，短值完全隐藏，不回传完整凭据或任意私有 JSON。
 
-网关协议版本仍为 `1.0`，前端管理包同步为 `0.7.8`。
+原有更新器计划预览、备份与安全快进，以及 Provider 热配置和在途请求保护继续保留。
+网关与前端管理包统一为 **`0.8.0`**，协议版本仍为 **`1.0`**。
+升级不要求迁移现有密钥文件；源码和前端变更需要重新构建并重启生效。
 
 ## 如果每个厂商都在发明自己的协议
 
@@ -285,6 +287,14 @@ python restart.py --status
 
 重启模块会先进入 Drain，等待在途请求结束。停止旧实例前会在独立 Python 进程中预检新环境、前端产物和后端导入；新实例会按新 `.env` 的 HOST/PORT 通过健康检查后才宣布成功。若新实例启动失败，会尽力用旧启动环境恢复服务。管理控制台也提供二次确认、耗时反馈和状态轮询；认证配置未改变时，两小时 Web 会话会安全交接到新实例，不会因平滑重启立即掉线。
 
+### 只读网关配置
+
+系统设置 → 网关配置展示当前进程已加载的网络、Web 访问策略、并发/超时、SSE 和媒体限制。
+该页只读，没有保存或密钥查看按钮；`GET /admin/api/system/gateway-config` 需要管理权限，且不提供写入接口。
+认证与密钥栏由后端生成“前 5 字符 + … + 后 3 字符”掩码；长度不超过 10 的短值、空值保持 `***`。
+多把密钥分别显示掩码；Provider 私有配置只提取标准密钥字段，不预览请求头或任意 JSON，完整凭据不会随此接口返回。
+刷新只重新读取当前进程配置，不会加载修改后的 `.env`；环境变量变更仍需重启。启动器日志、自动打开浏览器及重启脚本参数不在本页展示范围内。
+
 ### 项目自更新
 
 ```powershell
@@ -343,11 +353,37 @@ python update.py --restore-backup latest # 恢复最近一次源码备份
 `RequestContext.assets` 读取输入或登记输出，公开响应只返回 Asset ID、真实 MIME 和 SHA-256，
 不能返回网关本地路径。具体厂商端点、格式和 Token 计量仍完全留在自己的 Provider 目录。
 
-创建流程见 [ADD_DIY/provider-package.md](ADD_DIY/provider-package.md)。
+### 给智能体的逐步操作配方
+
+低参数模型建议从 [任务导航](ADD_DIY/tasks.md) 开始：先确认目标目录与操作范围，
+再按一种任务执行，不用一次读完所有技术文档。
+
+- [创建厂商](ADD_DIY/create-provider.md)：安全暂存、填写顺序、保留测试、验证后注册。
+- [增加模型与更新能力](ADD_DIY/model-maintenance.md)：三处目录同步、单模型修改、推理档位映射。
+- [单模型多模态](ADD_DIY/multimodal.md)：九种操作、媒体输入输出、Asset 与反向用例。
+- [修改密钥和白名单](ADD_DIY/keys-and-secrets.md)：区分上游密钥池与调用方 Token，保留其他配置。
+- [可运行教学样例](template/examples/README.md)：配对请求/声明、五档模拟映射、增量修改。
+
+模板默认关闭未验证的高级能力，未知额度不填示例数字。模板目录检查与样例测试不连接上游、
+不读取真实密钥；“离线通过”不能报告成“厂商真实可用”。
+技术参考仍见 [Provider 契约](ADD_DIY/provider-package.md)，验收按 [任务验证矩阵](ADD_DIY/verification.md)。
+
+### 统一测试入口
+
+在项目根目录运行 `python -m tests` 即可执行默认源码测试，`python -m tests --list` 查看分组。
+例如 `python -m tests --suite templates -q` 只测厂商模板，
+`python -m tests --suite protocol --suite providers -q` 检查协议与密钥路由。
+本机未发布厂商和真实进程替换测试需显式选择，不混入源码默认测试。
+目录职责、单用例运行及完整命令见 [tests/README.md](tests/README.md)。
 
 ---
 
 ## 网关不只是连接
+
+统计查询使用有界内存读缓存，调用记录仍按 SQLite 事务落盘。
+网关自身写入会立即使缓存失效；其他进程直接修改数据库时，旧结果最多保留到 30 秒 TTL 到期。
+该缓存不用于鉴权，不等于模型 Token 缓存率，也不承诺固定的磁盘 IOPS 降幅。
+缓存范围、容量与一致性边界见 [统计存储说明](storage/README.md)。
 
 Kemo Gateway 并不试图成为一个包罗万象的网关。
 
