@@ -2,7 +2,8 @@
 
 The public configuration keeps the legacy ``api_key`` field working while
 allowing ``api_keys`` to contain an ordered pool.  The pool never exposes key
-material; only stable identifiers and redacted health counters are returned.
+material in full; only edge-masked previews, stable identifiers and redacted
+health counters are returned.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from core.provider_contract import (
     ProviderResult,
     RequestContext,
 )
+from core.secret_preview import mask_secret
 
 
 T = TypeVar("T")
@@ -30,25 +32,8 @@ _MAX_RESPONSE_BINDINGS = 4096
 
 
 def preview_provider_key(secret: str | None) -> str | None:
-    """Return a short, non-reversible display preview for an upstream key.
-
-    Normal provider keys are displayed as their first and last five characters
-    with the middle replaced by an ellipsis.  Very short values use at most two
-    characters from each side so the original value is never returned in full.
-    An empty value (used by legacy callers that do not retain key material) is
-    represented as ``None`` rather than an empty string.
-    """
-
-    value = str(secret or "")
-    if not value:
-        return None
-    if len(value) <= 2:
-        return "•••"
-    if len(value) <= 10:
-        side = min(2, max(1, len(value) // 2))
-        right = min(side, max(1, len(value) - side))
-        return f"{value[:side]}…{value[-right:]}"
-    return f"{value[:5]}…{value[-5:]}"
+    """Display first five / last three characters; absent credentials stay None."""
+    return mask_secret(secret) if secret else None
 
 
 @dataclass(slots=True)
