@@ -20,6 +20,10 @@
 3. **只改允许的位置**：按下表执行；上游厂商密钥写 `secrets.json`，网关调用 Token 写 `api/keys.json`。不要把它们和 `.env` 中的 Web/状态凭据混用。
 4. **验证并报告**：按 `ADD_DIY/verification.md` 的任务矩阵执行测试；最后说明离线验证、真实测试、是否热更新或待重启。只有修改前端或发布整包时才必须前端构建。
 
+修改任何 Kemo 公开线路对象时，先运行 `python -m tests --suite kemo-contract -q`；同时检出
+kemo-agent 时再用 `python -m tests.contracts.kemo_v1 --peer-root <kemo-agent路径> -q` 核对共享
+Fixture。不能只修一端测试或让两端各自维护不同样例。
+
 | 目标 | 只改这些文件 | 重启 | 绝对不要做 |
 | --- | --- | --- | --- |
 | 新增 Provider | 复制 `template/provider/` 到 `providers/<id>/`，再改模板列出的文件 | 是 | 不改 `core/`，不改其他 Provider |

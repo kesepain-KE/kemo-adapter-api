@@ -16,6 +16,7 @@
 | 修改本仓库模板/引导文档 | 模板门禁、教学样例、文档链接与 JSON 示例、相关核心回归 | 文档篇幅变长 |
 | 修改统计读缓存 | TTL、LRU 容量、参数隔离、写入失效、并发、取消、跨实例落盘读取 | 命中率高或只跑一次查询 |
 | 修改密钥预览 | 后端前五后三、短值全隐藏、结构化内容不预览、鉴权与 no-store、前端构建 | 前端拿到完整值后再截取 |
+| 修改 Kemo 公开协议 | 两端共享 Fixture、固定摘要、有效/无效正反例、对应领域回归 | 只让网关或 Agent 单侧测试通过 |
 | 整包发布/核心改动 | 全量测试、编译、前端生产构建、Git 检查 | 只跑某一个模板测试 |
 
 只改 Provider/文档不要求修改或构建 UI；发布整包仍必须构建前端。
@@ -116,6 +117,18 @@ providers/<provider_id>/
 - 新请求使用新配置，在途请求不被关闭；Python、manifest、依赖和新增模型仍需重启。
 
 ## 7. 必须执行的验证
+
+修改 `core/models.py`、公开请求/响应、能力声明、Asset、Usage、工具、多模态、Embedding、Rerank
+或 SSE 线路字段时，先执行 Kemo 1.0 共享契约门禁：
+
+```powershell
+python -m tests --suite kemo-contract -q
+python -m tests.contracts.kemo_v1 --peer-root E:\code\kemo-agent -q
+```
+
+第二条命令中的路径是示例，必须指向实际 kemo-agent 仓库。两边的 `wire.json`、`manifest.json`
+和 `fixture_loader.py` 固定摘要要同步；不能通过删除无效用例、放宽 Schema 或仅改一侧 Fixture
+消除失败。此门禁只验证离线协议兼容，不替代真实代理、断网恢复或 Provider Golden Fixture。
 
 修改模板/操作配方时先在项目根目录执行（Windows/Linux 相同）：
 
