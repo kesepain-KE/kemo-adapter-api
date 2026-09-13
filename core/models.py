@@ -13,11 +13,24 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_REASONING_EFFORT_LENGTH = 64
+
+
+def _reasoning_effort(value: str, *, allow_none: bool = False) -> str:
+    effort = value.strip().casefold()
+    if (
+        not effort
+        or len(effort) > _MAX_REASONING_EFFORT_LENGTH
+        or any(ord(character) < 32 for character in effort)
+        or (effort == "none" and not allow_none)
+    ):
+        raise ValueError("推理档位必须是有效的 Kemo 逻辑标识")
+    return effort
 
 
 def _now() -> datetime:
@@ -53,7 +66,7 @@ class ErrorObject(StrictModel):
     code: str
     message: str
     retryable: bool = False
-    retry_after_ms: int | None = None
+    retry_after_ms: int | None = Field(default=None, ge=0)
     provider_status: int | None = None
     provider_request_id: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
@@ -79,11 +92,11 @@ class StageUsage(StrictModel):
     stage: str
     provider: str
     model: str
-    input_tokens: int | None = None
-    cached_input_tokens: int | None = None
-    output_tokens: int | None = None
-    reasoning_tokens: int | None = None
-    total_tokens: int | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
     measurement: UsageMeasurement = Field(default_factory=UsageMeasurement)
     media: MediaUsage = Field(default_factory=MediaUsage)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -91,12 +104,12 @@ class StageUsage(StrictModel):
 
 
 class Usage(StrictModel):
-    input_tokens: int | None = None
-    cached_input_tokens: int | None = None
-    output_tokens: int | None = None
-    reasoning_tokens: int | None = None
-    visible_output_tokens: int | None = None
-    total_tokens: int | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    visible_output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
     measurement: UsageMeasurement = Field(default_factory=UsageMeasurement)
     media: MediaUsage = Field(default_factory=MediaUsage)
     stages: list[StageUsage] = Field(default_factory=list)
@@ -135,6 +148,25 @@ class ReasoningCapabilities(StrictModel):
     efforts: list[str] = Field(default_factory=list)
     summary: bool = False
     persisted_state: bool = False
+
+    @field_validator("efforts")
+    @classmethod
+    def validate_efforts(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in values:
+            effort = _reasoning_effort(raw, allow_none=True)
+            if effort == "none":
+                continue
+            if effort in normalized:
+                raise ValueError(f"reasoning.efforts 不得重复：{effort}")
+            normalized.append(effort)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_supported_efforts(self) -> "ReasoningCapabilities":
+        if not self.supported and self.efforts:
+            raise ValueError("reasoning.supported=false 时 efforts 必须为空")
+        return self
 
 
 class ToolCapabilities(StrictModel):
@@ -332,11 +364,16 @@ Item = Annotated[
 
 class ReasoningConfig(StrictModel):
     enabled: bool = False
-    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] = "none"
+    effort: str = "none"
     return_mode: Literal["none", "summary", "content", "auto"] = Field(
         default="none", alias="return"
     )
     context: Literal["none", "current_turn", "all_turns", "auto"] = "auto"
+
+    @field_validator("effort")
+    @classmethod
+    def validate_effort(cls, value: str) -> str:
+        return _reasoning_effort(value, allow_none=True)
 
 
 class GenerationConfig(StrictModel):
@@ -616,7 +653,7 @@ class RerankResponse(StrictModel):
 
 
 class KemoRequest(StrictModel):
-    protocol_version: str
+    protocol_version: Literal["1.0"]
     request_id: str = Field(min_length=1, max_length=128)
     parent_request_id: str | None = None
     attempt: int = Field(ge=1)
@@ -631,6 +668,13 @@ class KemoRequest(StrictModel):
     provider_options: dict[str, Any]
     metadata: dict[str, Any]
     extensions: dict[str, Any]
+
+    @field_validator("request_id", "parent_request_id")
+    @classmethod
+    def validate_request_ids(cls, value: str | None) -> str | None:
+        if value is not None and not _ID_RE.fullmatch(value):
+            raise ValueError("request_id 必须是 1-128 位稳定标识符")
+        return value
 
     @model_validator(mode="after")
     def validate_items(self) -> "KemoRequest":
@@ -661,7 +705,7 @@ ResponseStatus = Literal["completed", "requires_action", "incomplete", "failed",
 
 
 class KemoResponse(StrictModel):
-    protocol_version: str = "1.0"
+    protocol_version: Literal["1.0"] = "1.0"
     id: str
     request_id: str
     object: Literal["kemo.response"] = "kemo.response"
@@ -723,7 +767,7 @@ class SSEEvent(StrictModel):
     sequence: int = Field(ge=0)
     request_id: str
     response_id: str
-    timestamp: str
+    timestamp: datetime
     item_id: str | None = None
     content_index: int | None = None
     call_id: str | None = None
