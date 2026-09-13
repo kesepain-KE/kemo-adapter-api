@@ -36,6 +36,7 @@ from web.backend.schemas import (
     WebTokenAuth,
 )
 from web.backend.auth_service import WEB_PREAUTH_COOKIE, WEB_SESSION_COOKIE
+from web.backend.gateway_config import gateway_config_view
 from web.backend.restart_service import RestartAlreadyRunning
 from web.backend.service import ProviderKeyPoolConflict, RevisionConflict, RuntimeConfigWriter
 
@@ -121,12 +122,13 @@ def _public_provider_key_statuses_result(
         preview = item.get("key_preview")
         # A valid preview is always edge-masked.  Do not trust an arbitrary
         # Provider to return a field called key_preview containing the secret.
-        if (
-            isinstance(preview, str)
-            and "…" in preview
-            and len(preview) <= 32
-        ):
-            safe["key_preview"] = preview
+        if isinstance(preview, str):
+            parts = preview.split("…")
+            if preview == "***":
+                safe["key_preview"] = preview
+            elif len(parts) == 2 and 0 < len(parts[0]) <= 5 and 0 < len(parts[1]) <= 5:
+                # Also trim the suffix from legacy five/five diagnostics.
+                safe["key_preview"] = f"{parts[0]}…{parts[1][-3:]}"
         # Keep this explicit allow-list in the implementation: adding a field
         # to a Provider diagnostic must never accidentally expose it to Web.
         result.append({name: safe[name] for name in allowed if name in safe})
@@ -1010,6 +1012,18 @@ async def probe_model(
         "error_code": error_code,
         "tested_at": datetime.now(ZoneInfo("UTC")).isoformat(),
     }
+
+
+@router.get("/system/gateway-config")
+async def gateway_config(
+    request: Request,
+    response: Response,
+    _: Principal = Depends(require_admin),
+) -> dict[str, object]:
+    _no_store(response)
+    return gateway_config_view(
+        request.app.state.settings, request.app.state.live_config.current,
+    )
 
 
 @router.get("/system/restart")

@@ -324,7 +324,17 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
   return response.json() as Promise<T>
 }
 
+export interface GatewayConfigView {
+  read_only: true
+  source: 'running_process'
+  groups: Array<{
+    title: string
+    items: Array<{ name: string; label: string; value: string; sensitive: boolean }>
+  }>
+}
+
 export const adminApi = {
+  gatewayConfig: (token: string) => request<GatewayConfigView>('/system/gateway-config', token),
   webAuthMethods: () => request<WebAuthMethods>('/auth/methods', ''),
   webAuthSession: () => request<WebSessionStatus>('/auth/session', ''),
   authenticateWebToken: (token: string) => request<WebAuthSession>('/auth/token', '', {

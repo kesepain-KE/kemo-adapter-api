@@ -4,8 +4,10 @@ import { Check, CheckCircle2, Clock3, Plus, Power, RefreshCw, RotateCw, Save, Tr
 import { useAdmin } from '../AdminContext'
 import { adminApi, type RestartRequiredStatus, type VersionCheck } from '../adminApi'
 import { Badge, Card, CardHeader, EmptyState, SectionTitle, Subtabs } from '../components/UI'
+import GatewayConfig from './GatewayConfig'
+import { secretPreview } from './secretPreview'
 
-type Tab = 'runtime' | 'providers' | 'startup' | 'version'
+type Tab = 'runtime' | 'gateway' | 'providers' | 'startup' | 'version'
 type RestartUiPhase = 'idle' | 'running' | 'succeeded' | 'failed'
 type HeaderDraft = { id: string; name: string; value: string }
 type ProviderDraft = {
@@ -266,16 +268,18 @@ export default function Settings() {
   return <>
     <Subtabs items={[
       { id: 'runtime', label: '运行控制' },
+      { id: 'gateway', label: '网关配置' },
       { id: 'providers', label: 'Provider API 配置' },
       { id: 'startup', label: '启动与重启' },
       { id: 'version', label: '版本检测' },
     ]} value={tab} onChange={setTab}/>
     <SectionTitle
       title="系统设置"
-      description="运行配置即时生效；启动配置与程序文件改动需要重启"
+      description={tab === 'gateway' ? '查看网关当前加载的配置' : '运行配置即时生效；启动配置与程序文件改动需要重启'}
       action={<>{saved && <Badge tone="success"><Check size={13}/>{saved}</Badge>}{tab === 'runtime' && <button className="button" disabled={busy === 'runtime'} onClick={() => void saveRuntimeSettings()}><Save size={15}/>保存运行控制</button>}</>}
     />
     {error && <div className="global-alert" role="alert"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
+    {tab === 'gateway' && <GatewayConfig/>}
 
     {tab === 'runtime' && <div className="settings-grid">
       <Card><CardHeader title="Provider 启停" description="启停会立即影响后续新请求" action={<Badge>无需重启</Badge>}/>{providerIds.length ? <div className="control-list provider-control-list">{providerIds.map(id => { const enabled = !disabledProviders.includes(id); return <label key={id}><span><b>{id}</b><small>{data.providers.find(provider => provider.provider_id === id)?.models.length ?? 0} 个模型</small></span><button className={`toggle ${enabled ? 'on' : ''}`} aria-label={`${enabled ? '关停' : '启动'} ${id}`} onClick={() => toggleProvider(id)}><i/></button></label> })}</div> : <p>没有已加载 Provider。</p>}</Card>
@@ -287,17 +291,17 @@ export default function Settings() {
       const provider = data.providers.find(item => item.provider_id === id)
       const hasProviderKeyPool = Boolean(provider?.key_statuses?.length)
       return <Card key={id} className="provider-config-card">
-        <CardHeader title={id} description="连接信息与请求头；密钥池请在模型厂商页管理" action={<Badge>无需重启</Badge>}/>
+        <CardHeader title={id} action={<Badge>无需重启</Badge>}/>
         <div className="provider-api-fields">
-          <div className="form-field full"><label>Base URL</label><input type="url" value={draft.baseUrl} onChange={event => updateDraft(id, current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.provider.example"/></div>
-          <div className="form-field full"><label>初始默认密钥（可选）</label><input type="password" autoComplete="new-password" value={draft.apiKey} disabled={hasProviderKeyPool} onChange={event => updateDraft(id, current => ({ ...current, apiKey: event.target.value }))} placeholder={hasProviderKeyPool ? '已有密钥池，请到模型厂商页管理' : '首次配置时输入上游 API 密钥'}/><small>{hasProviderKeyPool ? '该 Provider 已有密钥池；日常添加和状态查看请前往“模型厂商 → 上游密钥”。' : '仅用于首次初始化单个上游密钥；保存后可在“模型厂商 → 上游密钥”继续添加并查看状态。密钥只写不回显。'}</small></div>
-          <div className="provider-headers full">
-            <div className="provider-headers-title"><span>默认请求头</span><button className="btn" onClick={() => updateDraft(id, current => ({ ...current, headers: [...current.headers, { id: nextHeaderId(), name: '', value: '' }] }))}><Plus size={14}/>添加请求头</button></div>
+          <div className="form-field full provider-field-card"><label htmlFor={`provider-url-${id}`}>Base URL</label><input id={`provider-url-${id}`} type="url" value={draft.baseUrl} onChange={event => updateDraft(id, current => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.provider.example"/></div>
+          {hasProviderKeyPool ? <div className="full provider-field-card provider-key-summary"><div><span>密钥池</span><div className="provider-key-previews">{provider?.key_statuses?.map(key => <strong key={key.key_id} aria-label="密钥掩码">{secretPreview(key.key_preview)}</strong>)}</div></div><Badge tone="muted">已配置</Badge></div> : <div className="form-field full provider-field-card"><label htmlFor={`provider-key-${id}`}>初始密钥<span className="provider-field-optional">可选</span></label><input id={`provider-key-${id}`} type="password" autoComplete="new-password" value={draft.apiKey} onChange={event => updateDraft(id, current => ({ ...current, apiKey: event.target.value }))} placeholder="输入上游 API 密钥"/></div>}
+          <div className="provider-headers full provider-field-card">
+            <div className="provider-headers-title"><span>请求头</span><button className="btn" onClick={() => updateDraft(id, current => ({ ...current, headers: [...current.headers, { id: nextHeaderId(), name: '', value: '' }] }))}><Plus size={14}/>添加</button></div>
             {draft.headers.length ? draft.headers.map(header => <div className="provider-header-row" key={header.id}>
-              <input aria-label="请求头名称" value={header.name} onChange={event => updateDraft(id, current => ({ ...current, headers: current.headers.map(item => item.id === header.id ? { ...item, name: event.target.value } : item) }))} placeholder="Header 名称"/>
+              <input aria-label="请求头名称" value={header.name} onChange={event => updateDraft(id, current => ({ ...current, headers: current.headers.map(item => item.id === header.id ? { ...item, name: event.target.value } : item) }))} placeholder="请求头名称"/>
               <input type="password" autoComplete="new-password" aria-label="请求头值" value={header.value} onChange={event => updateDraft(id, current => ({ ...current, headers: current.headers.map(item => item.id === header.id ? { ...item, value: event.target.value } : item) }))} placeholder="留空则保留当前值"/>
               <button className="icon-button danger" aria-label={`删除 ${header.name || '请求头'}`} onClick={() => updateDraft(id, current => ({ ...current, headers: current.headers.filter(item => item.id !== header.id) }))}><Trash2 size={15}/></button>
-            </div>) : <p className="empty-inline">未配置默认请求头</p>}
+            </div>) : <p className="empty-inline">暂无请求头</p>}
           </div>
         </div>
         <div className="card-actions provider-config-actions"><button className="btn" disabled={busy === id} onClick={() => restoreProviderSettings(id)}><Undo2 size={14}/>恢复配置</button><button className="btn primary" disabled={busy === id} onClick={() => void saveProviderSettings(id)}><Save size={14}/>保存配置</button></div>

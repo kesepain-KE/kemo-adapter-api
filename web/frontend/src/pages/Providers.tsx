@@ -45,14 +45,14 @@ function modelCapabilityLabels(model: ModelCapabilityDeclaration): string[] {
   return capabilityLabels([model])
 }
 
-function limitText(model: ModelCapabilityDeclaration): string | null {
+function modelLimits(model: ModelCapabilityDeclaration): { label: string; value: string }[] {
   const limits = model.extensions.limits
-  if (!limits || typeof limits !== 'object' || Array.isArray(limits)) return null
+  if (!limits || typeof limits !== 'object' || Array.isArray(limits)) return []
   const values = limits as Record<string, unknown>
-  const input = typeof values.max_input_tokens === 'number' ? integer(values.max_input_tokens) : null
-  const output = typeof values.max_output_tokens === 'number' ? integer(values.max_output_tokens) : null
-  if (!input && !output) return null
-  return `${input ? `最大输入 ${input}` : ''}${input && output ? ' · ' : ''}${output ? `最大输出 ${output}` : ''}`
+  const result: { label: string; value: string }[] = []
+  if (typeof values.max_input_tokens === 'number') result.push({ label: '最大输入', value: integer(values.max_input_tokens) })
+  if (typeof values.max_output_tokens === 'number') result.push({ label: '最大输出', value: integer(values.max_output_tokens) })
+  return result
 }
 
 const PROVIDER_KEY_PAGE_SIZE = 5
@@ -256,16 +256,16 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
   }
 
   return <>
-    <SectionTitle title="已加载 Provider" description="左侧选择厂商，右侧查看真实能力声明与当日调用统计" action={<button className={`btn provider-refresh ${refreshing || detailLoading ? 'is-refreshing' : ''}`} disabled={refreshing || detailLoading} onClick={() => { void refresh(); setDetailRevision(value => value + 1) }}><RefreshCw className={refreshing || detailLoading ? 'spin' : ''} size={15}/>{refreshing || detailLoading ? '刷新中' : '刷新'}</button>}/>
+    <SectionTitle title="已加载厂商" action={<button className={`btn provider-refresh ${refreshing || detailLoading ? 'is-refreshing' : ''}`} disabled={refreshing || detailLoading} onClick={() => { void refresh(); setDetailRevision(value => value + 1) }}><RefreshCw className={refreshing || detailLoading ? 'spin' : ''} size={15}/>{refreshing || detailLoading ? '刷新中' : '刷新'}</button>}/>
     {message && <div className="global-alert"><span>{message}</span><button onClick={() => setMessage('')}>×</button></div>}
     {detailError && <div className="alert"><span>{detailError}</span></div>}
     {!data.providers.length ? <EmptyState title="没有已加载的 Provider" description="请在 providers 下部署厂商包并通过系统设置执行平滑重启。"/> : <div className="provider-master-detail">
       <Card className="provider-directory">
-        <CardHeader title="厂商行列" description="选择一个 Provider 查看详情" action={<Boxes size={17}/>}/>
+        <CardHeader title="厂商列表" action={<Boxes size={17}/>}/>
         <div className="provider-directory-list">{data.providers.map(provider => {
           const disabled = data.disabled_providers.includes(provider.provider_id)
           const labels = capabilityLabels(capabilities[provider.provider_id]?.models ?? [])
-          return <button key={provider.provider_id} className={selectedId === provider.provider_id ? 'active' : ''} onClick={() => { setSelectedId(provider.provider_id); setTab('overview'); setKeyPage(0); setKeyAddOpen(false); setKeyDraft(''); setKeyAddError('') }}>
+          return <button key={provider.provider_id} aria-pressed={selectedId === provider.provider_id} className={selectedId === provider.provider_id ? 'active' : ''} onClick={() => { setSelectedId(provider.provider_id); setTab('overview'); setKeyPage(0); setKeyAddOpen(false); setKeyDraft(''); setKeyAddError('') }}>
             <span className="provider-row-head"><strong>{provider.provider_id}</strong><Badge tone={disabled ? 'muted' : 'success'}>{disabled ? '已禁用' : '已加载'}</Badge></span>
             <span className="provider-row-bubbles"><span><small>注册模型</small><b>{provider.models.length}</b></span><span><small>能力声明</small><b>{capabilities[provider.provider_id] ? labels.length : '—'}</b></span></span>
           </button>
@@ -274,27 +274,32 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
 
       {selected && <Card className="provider-detail-panel">
         <div className="provider-detail-head">
-          <div><span>Provider ID</span><h3>{selected.provider_id}</h3><p>{typeof data.provider_configs[selected.provider_id]?.base_url === 'string' ? String(data.provider_configs[selected.provider_id].base_url) : '未公开 Base URL'}</p></div>
+          <div><h3>{selected.provider_id}</h3><p>{typeof data.provider_configs[selected.provider_id]?.base_url === 'string' ? String(data.provider_configs[selected.provider_id].base_url) : '未公开 Base URL'}</p></div>
           <div className="card-actions"><button className="btn primary" onClick={onSettings}><KeyRound size={14}/>API 配置</button><button className={`btn ${data.disabled_providers.includes(selected.provider_id) ? '' : 'danger'}`} disabled={busy === selected.provider_id} onClick={() => void toggle(selected.provider_id)}><Power size={14}/>{data.disabled_providers.includes(selected.provider_id) ? '启用' : '禁用'}</button></div>
         </div>
         <Subtabs<DetailTab> items={[{ id: 'overview', label: '运行概览' }, { id: 'capabilities', label: '模型能力' }, { id: 'ranking', label: '模型排行' }, { id: 'keys', label: '上游密钥' }]} value={tab} onChange={setTab}/>
 
-        {tab === 'overview' && <>
+        {tab === 'overview' && <div className="provider-overview">
           <div className="provider-detail-metrics">
-            <div><span>实际启用模型</span><strong>{enabledModels.length}</strong><small>共注册 {selected.models.length} 个</small></div>
-            <div><span>Token 调用量</span><strong>{integer(selectedStats?.tokens.total_tokens)}</strong><small>{selectedStats?.token_coverage.total_tokens ?? 0} 个计量样本</small></div>
-            <div><span>Token 命中率</span><strong>{percent(selectedStats?.cache_hit_rate)}</strong><small>{selectedStats?.cache_eligible_samples ?? 0} 个精确样本</small></div>
-            <div><span>缓存 Token</span><strong>{integer(selectedStats?.tokens.cached_input_tokens)}</strong><small>Provider 归一化计量</small></div>
+            <div><span>启用模型</span><strong>{enabledModels.length}</strong><small>已注册 {selected.models.length}</small></div>
+            <div><span>今日 Token 用量</span><strong>{integer(selectedStats?.tokens.total_tokens)}</strong><small>计量样本 {selectedStats?.token_coverage.total_tokens ?? 0}</small></div>
+            <div><span>今日缓存命中率</span><strong>{percent(selectedStats?.cache_hit_rate)}</strong><small>精确样本 {selectedStats?.cache_eligible_samples ?? 0}</small></div>
+            <div><span>今日缓存 Token</span><strong>{integer(selectedStats?.tokens.cached_input_tokens)}</strong></div>
           </div>
-          <div className="provider-detail-section"><h4>实际启用的模型</h4>{enabledModels.length ? <div className="tags">{enabledModels.map(model => <span key={model}>{shortModel(selected.provider_id, model)}</span>)}</div> : <p>当前厂商没有可接收新请求的模型。</p>}</div>
-          <div className="provider-detail-section"><h4>厂商总能力声明 <Badge>{totalCapabilities.length}</Badge></h4>{totalCapabilities.length ? <div className="tags capability-tags">{totalCapabilities.map(value => <span key={value}>{value}</span>)}</div> : <p>Provider 尚未返回可展示的能力声明。</p>}</div>
-        </>}
+          <div className="provider-detail-section"><h4>已启用模型</h4>{enabledModels.length ? <div className="tags">{enabledModels.map(model => <span key={model} title={model}>{shortModel(selected.provider_id, model)}</span>)}</div> : <p>暂无启用模型</p>}</div>
+          <div className="provider-detail-section"><h4>厂商能力 <Badge>{totalCapabilities.length}</Badge></h4>{totalCapabilities.length ? <div className="tags capability-tags">{totalCapabilities.map(value => <span key={value}>{value}</span>)}</div> : <p>暂无能力声明</p>}</div>
+        </div>}
 
         {tab === 'capabilities' && <div className="capability-model-list">
           {selectedCapabilities?.models.map(model => {
             const disabled = data.disabled_providers.includes(selected.provider_id) || data.disabled_models.includes(model.model)
-            const description = typeof model.metadata.description === 'string' ? model.metadata.description : 'Provider 未提供模型说明'
-            return <div key={model.model} className="capability-model-card"><div className="capability-model-head"><div><strong>{shortModel(selected.provider_id, model.model)}</strong><p>{description}</p></div><Badge tone={disabled ? 'muted' : 'success'}>{disabled ? '已禁用' : '已启用'}</Badge></div><div className="tags capability-tags">{modelCapabilityLabels(model).map(value => <span key={value}>{value}</span>)}</div>{limitText(model) && <small>{limitText(model)}</small>}</div>
+            const description = typeof model.metadata.description === 'string' ? model.metadata.description.trim() : ''
+            const limits = modelLimits(model)
+            return <div key={model.model} className="capability-model-card">
+              <div className="capability-model-head"><div><strong title={model.model}>{shortModel(selected.provider_id, model.model)}</strong>{description && <p>{description}</p>}</div><Badge tone={disabled ? 'muted' : 'success'}>{disabled ? '已禁用' : '已启用'}</Badge></div>
+              <div className="tags capability-tags">{modelCapabilityLabels(model).map(value => <span key={value}>{value}</span>)}</div>
+              {!!limits.length && <div className="capability-model-limits">{limits.map(limit => <div key={limit.label}><span>{limit.label}</span><strong>{limit.value}</strong></div>)}</div>}
+            </div>
           })}
           {!selectedCapabilities?.models.length && <EmptyState title="没有能力声明" description="该 Provider 没有返回可验证的模型能力。"/>}
           {!!selectedCapabilities?.errors.length && <div className="alert"><span>{selectedCapabilities.errors.map(item => item.model).join('、')} 的能力声明读取失败。</span></div>}
@@ -302,14 +307,14 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
 
         {tab === 'ranking' && <>{selectedModelRanking.length ? <div className="table-card provider-ranking-table"><table><thead><tr><th>模型</th><th>调用</th><th>Token</th><th>缓存 Token</th><th>命中率</th><th>成功率</th></tr></thead><tbody>{selectedModelRanking.map(item => <tr key={item.id}><td><code>{shortModel(selected.provider_id, item.id)}</code></td><td>{item.calls}</td><td>{integer(item.tokens.total_tokens)}</td><td>{integer(item.tokens.cached_input_tokens)}</td><td>{percent(item.cache_hit_rate)}</td><td>{percent(item.success_rate)}</td></tr>)}</tbody></table></div> : <EmptyState title="暂无模型排行" description="今天尚未记录该厂商模型的真实 Token 调用。"/>}</>}
 
-        {tab === 'keys' && <div className="provider-detail-section">
+        {tab === 'keys' && <div className="provider-keys-panel">
           <div className="provider-detail-metrics">
-            <div><span>已配置密钥</span><strong>{selectedKeys.length}</strong><small>按配置顺序自动故障转移</small></div>
-            <div><span>当前可用</span><strong>{selectedKeys.filter(item => item.status === 'healthy').length}</strong><small>异常密钥会自动跳过</small></div>
+            <div><span>已配置密钥</span><strong>{selectedKeys.length}</strong></div>
+            <div><span>当前可用</span><strong>{selectedKeys.filter(item => item.status === 'healthy').length}</strong></div>
           </div>
           <div className="provider-key-pool">
             <header className="provider-key-pool-head">
-              <div><span>密钥池</span><strong>上游密钥状态</strong></div>
+              <div><strong>密钥池</strong></div>
               <small>{selectedKeyStatusUnavailable ? '状态暂时不可读取' : selectedKeys.length ? `共 ${selectedKeys.length} 个 · 每页 ${PROVIDER_KEY_PAGE_SIZE} 个` : '尚未配置上游密钥'}</small>
             </header>
             {selectedKeyStatusUnavailable ? <div className="provider-key-empty"><TriangleAlert size={18}/><span>密钥状态暂时不可读取，请刷新或检查 Provider 连接。</span></div> : selectedKeys.length ? <>
@@ -334,10 +339,9 @@ export default function Providers({ onSettings }: { onSettings: () => void }) {
               {keyAddOpen ? <form className="provider-key-add-form" onSubmit={event => { event.preventDefault(); void addProviderKey() }}>
                 <label htmlFor="provider-key-input">添加上游密钥</label>
                 <div className="provider-key-add-row">
-                  <input id="provider-key-input" type="password" autoComplete="new-password" maxLength={8192} value={keyDraft} onChange={event => setKeyDraft(event.target.value)} placeholder="输入上游 API 密钥" aria-describedby="provider-key-input-help" autoFocus/>
+                  <input id="provider-key-input" type="password" autoComplete="new-password" maxLength={8192} value={keyDraft} onChange={event => setKeyDraft(event.target.value)} placeholder="输入上游 API 密钥" autoFocus/>
                   <div className="provider-key-add-actions"><button type="button" className="btn" disabled={keyBusy} onClick={cancelAddProviderKey}><X size={14}/>撤销</button><button type="submit" className="btn primary" disabled={keyBusy || !keyDraft.trim()}><Plus size={14}/>{keyBusy ? '添加中' : '确认添加'}</button></div>
                 </div>
-                <small id="provider-key-input-help">系统会自动生成密钥编号，不需要填写 key_id。</small>
               </form> : <button type="button" className="provider-key-add-trigger" onClick={() => { setKeyAddOpen(true); setKeyAddError('') }}><Plus size={16}/>添加密钥</button>}
               {keyAddError && <div className="provider-key-add-error" role="alert"><span>{keyAddError}</span><button type="button" onClick={cancelAddProviderKey}>撤销</button></div>}
             </div>
