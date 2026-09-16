@@ -18,13 +18,27 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.0-blue" alt="Gateway version 0.8.0"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.1-blue" alt="Gateway version 0.8.1"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 0.8.1 SSE persistence and disk I/O stability
+
+This release reduces high-frequency SQLite writes without changing the public Kemo protocol, event payloads, or resume contract:
+
+- **Bounded in-memory batches:** each response owns an isolated queue of unpublished SSE events. A batch commits after 50 ms, 32 events, or immediately at a terminal boundary.
+- **Publish after commit:** events become visible to subscribers only after SQLite `COMMIT` succeeds, so `Last-Event-ID`, exact replay, and restart recovery continue to use durable boundaries only.
+- **Persistent SQLite connection:** the gateway reuses one lock-protected WAL connection for its lifetime, removing per-event connections, PRAGMA initialization, and `SELECT MAX(sequence)`. Sequence reservation stays in memory while database primary-key and event-ID uniqueness constraints remain the final guard.
+- **Atomic terminal persistence:** pending events, the terminal event, and the final response row commit in one transaction. The redundant terminal `save()` is removed, and terminal or shutdown paths flush immediately.
+- **Cancellation-safe consistency:** once a SQLite worker begins committing, cancellation is delayed until database and in-memory replay state agree. Background persistence failures wake subscribers instead of leaving an SSE stream waiting forever.
+
+In a local synthetic run with 1,698 events, response transactions fell from 1,700 to 55, process write operations from 19,940 to 2,252, and written bytes from about 50.0 MiB to 4.96 MiB. These figures demonstrate removal of transaction amplification; identical percentages are not promised across hardware, filesystems, or concurrent workloads.
+
+Gateway and console versions are **`0.8.1`**; the Kemo Protocol remains **`1.0`**. Existing databases, gateway keys, and Provider configuration require no migration. Restart the gateway after upgrading, and rebuild the frontend to synchronize its package version.
 
 ## 0.8.0 guided workflows, unified tests, and bounded statistics caching
 
@@ -122,7 +136,9 @@ events in `storage/executions/executions.sqlite3`. A client disconnect does not 
 current process; during the default 24-hour retention window, the same request and `Last-Event-ID` resume at the next
 event. A gateway restart never re-runs the upstream request: unfinished work becomes
 `incomplete/gateway_restarted`. The core also enforces a 900-second fallback timeout, a 64-execution single-process
-limit, and consistent retry semantics. See [api.md](api.md) for the exact boundaries and environment variables.
+limit, and consistent retry semantics. Non-terminal events commit in bounded per-response batches of up to 50 ms or
+32 events; only committed events are published to SSE clients, while terminal events flush atomically without waiting.
+See [api.md](api.md) for the exact boundaries and environment variables.
 
 ### Public model names
 

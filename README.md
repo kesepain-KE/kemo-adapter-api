@@ -18,13 +18,27 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.0-blue" alt="Gateway version 0.8.0"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.1-blue" alt="Gateway version 0.8.1"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 0.8.1 SSE 持久化与磁盘 I/O 稳定性
+
+本版本优化高频流式事件的 SQLite 写入，不改变 Kemo 公开协议、事件内容或续传方式：
+
+- **有界内存批次**：每个响应独立缓存尚未发布的 SSE 事件，默认达到 50 ms、32 条或终态中的任一条件即提交；不同响应的缓冲区完全隔离。
+- **提交后发布**：事件只有在 SQLite `COMMIT` 成功后才进入可见事件列表并通知客户端，因此 `Last-Event-ID`、精确重放和重启恢复仍只依赖已持久化边界。
+- **持久 SQLite 连接**：网关生命周期内复用同一受锁保护的 WAL 连接，移除每事件连接、PRAGMA 初始化与 `SELECT MAX(sequence)`；sequence 在内存中连续预留，数据库主键和 event ID 唯一约束继续作为最终防线。
+- **终态原子提交**：pending 事件、统一终态和最终响应行在同一事务完成，删除终态后的重复 `save()`；终态和关停会立即 flush，不等待普通定时窗口。
+- **取消与故障一致性**：SQLite 工作线程开始提交后，即使协程被取消也会先完成数据库/内存边界同步，再传播取消；后台落盘失败会唤醒订阅者，不会让 SSE 永久等待。
+
+同规模 1698 事件的本地合成基准中，响应事务由 1700 次降至 55 次，进程写操作由 19940 次降至 2252 次，写入字节由约 50.0 MiB 降至约 4.96 MiB。该结果用于说明事务放大已消除，不承诺不同硬件、文件系统和并发负载具有相同百分比。
+
+网关与前端管理包统一为 **`0.8.1`**，Kemo 协议仍为 **`1.0`**。现有数据库、调用密钥和 Provider 配置无需迁移；升级后需要重启网关，前端版本同步需重新构建。
 
 ## 0.8.0 智能体引导、统一测试与统计读缓存
 
@@ -117,7 +131,8 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 `storage/executions/executions.sqlite3`。客户端断开不会取消当前进程中的 Provider 执行；在默认
 24 小时保留期内，可使用相同请求和 `Last-Event-ID` 从下一事件继续。网关重启不会重跑上游任务，
 未结束的任务会明确变成 `incomplete/gateway_restarted`。核心还提供 900 秒兜底超时、单进程 64
-并发上限和统一可重试语义，具体边界及环境变量见 [api.md](api.md)。
+并发上限和统一可重试语义。非终态事件按每响应 50 ms/32 条的有界内存批次提交，只有提交成功的
+事件才会向 SSE 客户端发布；终态立即原子落盘。具体边界及环境变量见 [api.md](api.md)。
 
 ### 模型命名
 
