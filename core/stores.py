@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import closing
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import logging
 from pathlib import Path
 import sqlite3
 import time
@@ -18,6 +18,9 @@ from typing import Protocol
 from uuid import uuid4
 
 from core.models import KemoResponse, SSEEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 class InternalStatus(StrEnum):
@@ -54,8 +57,17 @@ class ExecutionRecord:
     provider_response_id: str | None = None
     response: KemoResponse | None = None
     events: list[SSEEvent] = field(default_factory=list)
+    persisted_sequence: int = field(default=-1, repr=False)
+    pending_events: list[SSEEvent] = field(default_factory=list, repr=False)
+    pending_flush_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    pending_flush_error: BaseException | None = field(default=None, repr=False)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition, repr=False)
     producer_task: asyncio.Task[object] | None = field(default=None, repr=False)
+
+    @property
+    def next_sequence(self) -> int:
+        """Return the next reserved sequence, including not-yet-published events."""
+        return len(self.events) + len(self.pending_events)
 
 
 class IdempotencyConflict(Exception):
@@ -127,10 +139,14 @@ class InMemoryExecutionStore:
 
     async def append_event(self, record: ExecutionRecord, event: SSEEvent) -> None:
         async with self._lock:
-            expected = len(record.events)
+            if record.status in TERMINAL_STATUSES:
+                raise RuntimeError("终态 Execution 不得继续追加 SSE 事件")
+            expected = record.next_sequence
             if event.sequence != expected:
                 raise RuntimeError(f"SSE sequence 应为 {expected}，实际为 {event.sequence}")
             record.events.append(event)
+            record.persisted_sequence = event.sequence
+            _apply_terminal_event(record, event)
         async with record.condition:
             record.condition.notify_all()
 
@@ -143,7 +159,9 @@ class InMemoryExecutionStore:
                 await record.condition.wait_for(
                     lambda: next_sequence < len(record.events)
                     or record.status in TERMINAL_STATUSES
+                    or record.pending_flush_error is not None
                 )
+                _raise_flush_error(record)
                 if next_sequence >= len(record.events):
                     return
                 event = record.events[next_sequence]
@@ -155,8 +173,12 @@ class InMemoryExecutionStore:
     async def wait_terminal(self, record: ExecutionRecord) -> KemoResponse:
         async with record.condition:
             await record.condition.wait_for(
-                lambda: record.status in TERMINAL_STATUSES and record.response is not None
+                lambda: (
+                    record.status in TERMINAL_STATUSES and record.response is not None
+                )
+                or record.pending_flush_error is not None
             )
+            _raise_flush_error(record)
             assert record.response is not None
             return record.response
 
@@ -178,16 +200,21 @@ class SQLiteExecutionStore:
         retention_hours: int = 24,
         cleanup_interval_seconds: float = 3600.0,
         max_events_per_response: int = 200_000,
+        event_flush_interval_seconds: float = 0.05,
+        event_batch_size: int = 32,
     ) -> None:
         self.root = root.resolve()
         self.path = self.root / "executions.sqlite3"
         self.retention_seconds = max(1, retention_hours) * 3600
         self.cleanup_interval_seconds = max(60.0, cleanup_interval_seconds)
         self.max_events_per_response = max(100, max_events_per_response)
+        self.event_flush_interval_seconds = max(0.001, event_flush_interval_seconds)
+        self.event_batch_size = max(1, event_batch_size)
         self._lock = asyncio.Lock()
         self._by_request: dict[tuple[str, str], ExecutionRecord] = {}
         self._by_response: dict[tuple[str, str], ExecutionRecord] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._connection: sqlite3.Connection | None = None
 
     async def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -206,6 +233,25 @@ class SQLiteExecutionStore:
                 await self._cleanup_task
             except asyncio.CancelledError:
                 pass
+        notify: list[ExecutionRecord] = []
+        delayed_cancel = False
+        async with self._lock:
+            records = list(self._by_request.values())
+            for record in records:
+                self._cancel_pending_flush(record)
+                if record.pending_events:
+                    delayed_cancel = (
+                        await self._flush_pending_locked(record) or delayed_cancel
+                    )
+                    notify.append(record)
+            delayed_cancel = (
+                await self._run_critical_write(self._close_connection_sync)
+                or delayed_cancel
+            )
+        for record in notify:
+            await self._notify(record)
+        if delayed_cancel:
+            raise asyncio.CancelledError
 
     async def _cleanup_loop(self) -> None:
         while True:
@@ -277,15 +323,36 @@ class SQLiteExecutionStore:
             return record
 
     async def save(self, record: ExecutionRecord) -> None:
+        notify = False
+        delayed_cancel = False
         async with self._lock:
-            await asyncio.to_thread(self._save_sync, record)
+            self._raise_pending_flush_error(record)
+            self._cancel_pending_flush(record)
+            if record.pending_events:
+                delayed_cancel = await self._flush_pending_locked(
+                    record,
+                    persist_record=True,
+                )
+                notify = True
+            else:
+                delayed_cancel = await self._run_critical_write(
+                    self._save_sync,
+                    record,
+                )
             self._cache(record)
-        async with record.condition:
-            record.condition.notify_all()
+        if notify or not record.pending_events:
+            await self._notify(record)
+        if delayed_cancel:
+            raise asyncio.CancelledError
 
     async def append_event(self, record: ExecutionRecord, event: SSEEvent) -> None:
+        notify = False
+        delayed_cancel = False
         async with self._lock:
-            expected = len(record.events)
+            self._raise_pending_flush_error(record)
+            if record.status in TERMINAL_STATUSES:
+                raise RuntimeError("终态 Execution 不得继续追加 SSE 事件")
+            expected = record.next_sequence
             if event.sequence != expected:
                 raise RuntimeError(
                     f"SSE sequence 应为 {expected}，实际为 {event.sequence}"
@@ -295,11 +362,114 @@ class SQLiteExecutionStore:
                 and not _terminal_event(event)
             ):
                 raise RuntimeError("SSE 事件数量超过单响应安全上限")
-            await asyncio.to_thread(self._append_event_sync, record, event)
-            record.events.append(event)
-            self._cache(record)
+            record.pending_events.append(event)
+            if _terminal_event(event) or len(record.pending_events) >= self.event_batch_size:
+                self._cancel_pending_flush(record)
+                delayed_cancel = await self._flush_pending_locked(record)
+                notify = True
+            elif record.pending_flush_task is None:
+                record.pending_flush_task = asyncio.create_task(
+                    self._flush_after_delay(record),
+                    name=f"execution-event-flush:{record.response_id}",
+                )
+        if notify:
+            await self._notify(record)
+        if delayed_cancel:
+            raise asyncio.CancelledError
+
+    async def _flush_after_delay(self, record: ExecutionRecord) -> None:
+        try:
+            await asyncio.sleep(self.event_flush_interval_seconds)
+            notify = False
+            delayed_cancel = False
+            async with self._lock:
+                if record.pending_flush_task is not asyncio.current_task():
+                    return
+                record.pending_flush_task = None
+                if record.pending_events:
+                    delayed_cancel = await self._flush_pending_locked(record)
+                    notify = True
+            if notify:
+                await self._notify(record)
+            if delayed_cancel:
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            return
+        except BaseException as exc:
+            async with self._lock:
+                record.pending_flush_error = exc
+            logger.exception(
+                "Background execution-event flush failed for %s",
+                record.response_id,
+            )
+            await self._notify(record)
+
+    async def _flush_pending_locked(
+        self,
+        record: ExecutionRecord,
+        *,
+        persist_record: bool = False,
+    ) -> bool:
+        if not record.pending_events:
+            return False
+        events = list(record.pending_events)
+        delayed_cancel = await self._run_critical_write(
+            self._append_events_sync,
+            record,
+            events,
+            persist_record,
+        )
+        del record.pending_events[: len(events)]
+        record.events.extend(events)
+        record.persisted_sequence = events[-1].sequence
+        for event in events:
+            _apply_terminal_event(record, event)
+        record.pending_flush_error = None
+        self._cache(record)
+        return delayed_cancel
+
+    @staticmethod
+    async def _run_critical_write(function: object, *args: object) -> bool:
+        """Finish a started SQLite transaction before delivering cancellation.
+
+        ``asyncio.to_thread`` cannot stop its worker when the awaiting task is
+        cancelled.  Returning before the worker finishes could leave the
+        database committed while the in-memory replay boundary still points
+        at the previous event.  Consume cancellation temporarily, reconcile
+        memory after the worker finishes, then let the caller re-raise it.
+        """
+        thread_task = asyncio.create_task(
+            asyncio.to_thread(function, *args),  # type: ignore[arg-type]
+        )
+        delayed_cancel = False
+        while True:
+            try:
+                await asyncio.shield(thread_task)
+                return delayed_cancel
+            except asyncio.CancelledError:
+                delayed_cancel = True
+                current = asyncio.current_task()
+                if current is not None:
+                    current.uncancel()
+                if thread_task.done():
+                    thread_task.result()
+                    return delayed_cancel
+
+    def _cancel_pending_flush(self, record: ExecutionRecord) -> None:
+        task = record.pending_flush_task
+        record.pending_flush_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    @staticmethod
+    async def _notify(record: ExecutionRecord) -> None:
         async with record.condition:
             record.condition.notify_all()
+
+    @staticmethod
+    def _raise_pending_flush_error(record: ExecutionRecord) -> None:
+        if record.pending_flush_error is not None:
+            raise RuntimeError("SSE 事件后台持久化失败") from record.pending_flush_error
 
     async def subscribe(
         self, record: ExecutionRecord, after_sequence: int = -1
@@ -310,7 +480,9 @@ class SQLiteExecutionStore:
                 await record.condition.wait_for(
                     lambda: next_sequence < len(record.events)
                     or record.status in TERMINAL_STATUSES
+                    or record.pending_flush_error is not None
                 )
+                _raise_flush_error(record)
                 if next_sequence >= len(record.events):
                     return
                 event = record.events[next_sequence]
@@ -324,7 +496,9 @@ class SQLiteExecutionStore:
             await record.condition.wait_for(
                 lambda: record.status in TERMINAL_STATUSES
                 and record.response is not None
+                or record.pending_flush_error is not None
             )
+            _raise_flush_error(record)
             assert record.response is not None
             return record.response
 
@@ -333,15 +507,28 @@ class SQLiteExecutionStore:
         self._by_response[(record.tenant_id, record.response_id)] = record
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10.0)
+        connection = sqlite3.connect(
+            self.path,
+            timeout=10.0,
+            check_same_thread=False,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 10000")
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
+    def _require_connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError("SQLite execution store 尚未初始化或已经关闭")
+        return self._connection
+
     def _initialize_sync(self) -> None:
-        with closing(self._connect()) as connection:
+        if self._connection is not None:
+            raise RuntimeError("SQLite execution store 不得重复初始化")
+        connection = self._connect()
+        self._connection = connection
+        try:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA wal_autocheckpoint = 1000")
             connection.executescript(
@@ -382,9 +569,25 @@ class SQLiteExecutionStore:
                 """
             )
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            connection.close()
+            self._connection = None
+            raise
+
+    def _close_connection_sync(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is None:
+            return
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            connection.close()
 
     def _recover_interrupted_sync(self) -> None:
-        with closing(self._connect()) as connection:
+        connection = self._require_connection()
+        try:
             rows = connection.execute(
                 "SELECT * FROM executions WHERE status IN ('created', 'running')"
             ).fetchall()
@@ -439,12 +642,16 @@ class SQLiteExecutionStore:
                     ),
                 )
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
     def _create_or_get_sync(
         self, record: ExecutionRecord
     ) -> tuple[sqlite3.Row, bool]:
         now = time.time()
-        with closing(self._connect()) as connection:
+        connection = self._require_connection()
+        try:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO executions
                    (tenant_id, request_id, request_hash, response_id, model,
@@ -476,9 +683,13 @@ class SQLiteExecutionStore:
             connection.commit()
             assert row is not None
             return row, cursor.rowcount == 1
+        except BaseException:
+            connection.rollback()
+            raise
 
     def _save_sync(self, record: ExecutionRecord) -> None:
-        with closing(self._connect()) as connection:
+        connection = self._require_connection()
+        try:
             connection.execute(
                 """UPDATE executions
                    SET status = ?, provider_response_id = ?, response_json = ?,
@@ -494,50 +705,87 @@ class SQLiteExecutionStore:
                 ),
             )
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
-    def _append_event_sync(self, record: ExecutionRecord, event: SSEEvent) -> None:
-        with closing(self._connect()) as connection:
-            expected = int(
-                connection.execute(
-                    """SELECT COALESCE(MAX(sequence), -1) + 1
-                       FROM execution_events
-                       WHERE tenant_id = ? AND response_id = ?""",
-                    (record.tenant_id, record.response_id),
-                ).fetchone()[0]
-            )
-            if event.sequence != expected:
+    def _append_events_sync(
+        self,
+        record: ExecutionRecord,
+        events: list[SSEEvent],
+        persist_record: bool = False,
+    ) -> None:
+        if not events:
+            return
+        connection = self._require_connection()
+        try:
+            expected = record.persisted_sequence + 1
+            if events[0].sequence != expected:
                 raise RuntimeError(
-                    f"持久化 SSE sequence 应为 {expected}，实际为 {event.sequence}"
+                    f"持久化 SSE sequence 应为 {expected}，实际为 {events[0].sequence}"
                 )
-            connection.execute(
+            for offset, event in enumerate(events):
+                if event.sequence != expected + offset:
+                    raise RuntimeError(
+                        "批量持久化 SSE sequence 不连续："
+                        f"应为 {expected + offset}，实际为 {event.sequence}"
+                    )
+            now = time.time()
+            connection.executemany(
                 """INSERT INTO execution_events
                    (tenant_id, response_id, sequence, event_id, event_json, created_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    record.tenant_id,
-                    record.response_id,
-                    event.sequence,
-                    event.event_id,
-                    event.model_dump_json(exclude_none=True),
-                    time.time(),
-                ),
+                [
+                    (
+                        record.tenant_id,
+                        record.response_id,
+                        event.sequence,
+                        event.event_id,
+                        event.model_dump_json(exclude_none=True),
+                        now,
+                    )
+                    for event in events
+                ],
             )
-            if _terminal_event(event) and event.response is not None:
+            terminal = events[-1] if _terminal_event(events[-1]) else None
+            if terminal is not None and terminal.response is not None:
                 connection.execute(
                     """UPDATE executions
                        SET status = ?, provider_response_id = ?,
                            response_json = ?, updated_at = ?
-                       WHERE tenant_id = ? AND response_id = ?""",
+                    WHERE tenant_id = ? AND response_id = ?""",
                     (
-                        event.response.status,
-                        event.response.provider_response_id,
-                        event.response.model_dump_json(exclude_none=True),
-                        time.time(),
+                        terminal.response.status,
+                        terminal.response.provider_response_id,
+                        terminal.response.model_dump_json(exclude_none=True),
+                        now,
                         record.tenant_id,
                         record.response_id,
                     ),
                 )
+            elif persist_record:
+                connection.execute(
+                    """UPDATE executions
+                       SET status = ?, provider_response_id = ?, response_json = ?,
+                           updated_at = ?
+                       WHERE tenant_id = ? AND request_id = ?""",
+                    (
+                        record.status.value,
+                        record.provider_response_id,
+                        self._response_json(record.response),
+                        now,
+                        record.tenant_id,
+                        record.request_id,
+                    ),
+                )
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+
+    def _append_event_sync(self, record: ExecutionRecord, event: SSEEvent) -> None:
+        """Compatibility wrapper for focused tests and external diagnostics."""
+        self._append_events_sync(record, [event])
 
     def _hydrate_sync(self, row: sqlite3.Row) -> ExecutionRecord:
         response = (
@@ -545,12 +793,12 @@ class SQLiteExecutionStore:
             if row["response_json"]
             else None
         )
-        with closing(self._connect()) as connection:
-            event_rows = connection.execute(
-                """SELECT event_json FROM execution_events
-                   WHERE tenant_id = ? AND response_id = ? ORDER BY sequence""",
-                (row["tenant_id"], row["response_id"]),
-            ).fetchall()
+        connection = self._require_connection()
+        event_rows = connection.execute(
+            """SELECT event_json FROM execution_events
+               WHERE tenant_id = ? AND response_id = ? ORDER BY sequence""",
+            (row["tenant_id"], row["response_id"]),
+        ).fetchall()
         events = [SSEEvent.model_validate_json(item["event_json"]) for item in event_rows]
         return ExecutionRecord(
             tenant_id=row["tenant_id"],
@@ -566,16 +814,17 @@ class SQLiteExecutionStore:
             provider_response_id=row["provider_response_id"],
             response=response,
             events=events,
+            persisted_sequence=(events[-1].sequence if events else -1),
         )
 
     def _select_one_sync(
         self, query: str, parameters: tuple[str, str]
     ) -> sqlite3.Row | None:
-        with closing(self._connect()) as connection:
-            return connection.execute(query, parameters).fetchone()
+        return self._require_connection().execute(query, parameters).fetchone()
 
     def _cleanup_expired_sync(self, cutoff: float) -> list[tuple[str, str]]:
-        with closing(self._connect()) as connection:
+        connection = self._require_connection()
+        try:
             rows = connection.execute(
                 """SELECT tenant_id, request_id FROM executions
                    WHERE updated_at < ? AND status NOT IN ('created', 'running')""",
@@ -587,6 +836,9 @@ class SQLiteExecutionStore:
                 (cutoff,),
             )
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
         return [(row["tenant_id"], row["request_id"]) for row in rows]
 
     @staticmethod
@@ -602,3 +854,17 @@ def _terminal_event(event: SSEEvent) -> bool:
         "response.cancelled",
         "error",
     }
+
+
+def _apply_terminal_event(record: ExecutionRecord, event: SSEEvent) -> None:
+    """Publish terminal state in memory only after its event is durable."""
+    if not _terminal_event(event) or event.response is None:
+        return
+    record.response = event.response
+    record.provider_response_id = event.response.provider_response_id
+    record.status = InternalStatus(event.response.status)
+
+
+def _raise_flush_error(record: ExecutionRecord) -> None:
+    if record.pending_flush_error is not None:
+        raise RuntimeError("SSE 事件后台持久化失败") from record.pending_flush_error

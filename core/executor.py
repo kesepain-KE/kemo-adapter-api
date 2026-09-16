@@ -735,7 +735,7 @@ class GatewayExecutor:
                                 ),
                                 request_id=request.request_id,
                                 response_id=record.response_id,
-                                sequence=len(record.events),
+                                sequence=record.next_sequence,
                             )
                             await self.store.append_event(record, call_event)
                     pending_tool_events.clear()
@@ -744,7 +744,7 @@ class GatewayExecutor:
                     terminal_provider_event,
                     request_id=request.request_id,
                     response_id=record.response_id,
-                    sequence=len(record.events),
+                    sequence=record.next_sequence,
                     terminal_response=terminal_response,
                 )
                 if provider_event.kind == ProviderEventKind.MEDIA_COMPLETED:
@@ -765,13 +765,8 @@ class GatewayExecutor:
                         separators=(",", ":"),
                         sort_keys=True,
                     )
-                if terminal_response is not None:
-                    record.response = terminal_response
-                    record.provider_response_id = terminal_response.provider_response_id
                 await self.store.append_event(record, event)
                 if terminal_response is not None:
-                    record.status = InternalStatus(terminal_response.status)
-                    await self.store.save(record)
                     return
         except asyncio.CancelledError:
             raise
@@ -784,17 +779,14 @@ class GatewayExecutor:
                 error=exc.error,
             )
             response = self._response_from_result(request, record, result, context)
-            record.response = response
             failed = EventAssembler.assemble(
                 ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=exc.error),
                 request_id=request.request_id,
                 response_id=record.response_id,
-                sequence=len(record.events),
+                sequence=record.next_sequence,
                 terminal_response=response,
             )
             await self.store.append_event(record, failed)
-            record.status = InternalStatus.FAILED
-            await self.store.save(record)
             return
         except Exception as exc:
             error = ErrorObject(
@@ -812,17 +804,14 @@ class GatewayExecutor:
                 error=error,
             )
             response = self._response_from_result(request, record, result, context)
-            record.response = response
             failed = EventAssembler.assemble(
                 ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=error),
                 request_id=request.request_id,
                 response_id=record.response_id,
-                sequence=len(record.events),
+                sequence=record.next_sequence,
                 terminal_response=response,
             )
             await self.store.append_event(record, failed)
-            record.status = InternalStatus.FAILED
-            await self.store.save(record)
             return
 
         if record.response is None:
@@ -841,17 +830,14 @@ class GatewayExecutor:
                 error=error,
             )
             response = self._response_from_result(request, record, result, context)
-            record.response = response
             failed = EventAssembler.assemble(
                 ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=error),
                 request_id=request.request_id,
                 response_id=record.response_id,
-                sequence=len(record.events),
+                sequence=record.next_sequence,
                 terminal_response=response,
             )
             await self.store.append_event(record, failed)
-            record.status = InternalStatus.FAILED
-            await self.store.save(record)
 
     async def _store_stream_failure(
         self,
@@ -864,17 +850,14 @@ class GatewayExecutor:
             return
         result = ProviderResult(status="failed", error=error)
         response = self._response_from_result(request, record, result, context)
-        record.response = response
         failed = EventAssembler.assemble(
             ProviderEvent(kind=ProviderEventKind.FAILED, result=result, error=error),
             request_id=request.request_id,
             response_id=record.response_id,
-            sequence=len(record.events),
+            sequence=record.next_sequence,
             terminal_response=response,
         )
         await self.store.append_event(record, failed)
-        record.status = InternalStatus.FAILED
-        await self.store.save(record)
 
     async def get(self, tenant_id: str, response_id: str) -> KemoResponse | None:
         record = await self.store.get_by_response_id(tenant_id, response_id)
@@ -925,7 +908,7 @@ class GatewayExecutor:
             await self.registry.release_registered(package)
         partial_output: list[MessageItem] = []
         seen_items: set[str] = set()
-        for event in record.events:
+        for event in (*record.events, *record.pending_events):
             if (
                 event.type == "output_media.completed"
                 and isinstance(event.item, MessageItem)
@@ -940,7 +923,6 @@ class GatewayExecutor:
             model=record.model,
             output=partial_output,
         )
-        record.response = response
         cancelled = EventAssembler.assemble(
             ProviderEvent(
                 kind=ProviderEventKind.CANCELLED,
@@ -953,12 +935,10 @@ class GatewayExecutor:
             ),
             request_id=record.request_id,
             response_id=record.response_id,
-            sequence=len(record.events),
+            sequence=record.next_sequence,
             terminal_response=response,
         )
         await self.store.append_event(record, cancelled)
-        record.status = InternalStatus.CANCELLED
         if record.producer_task is not None and not record.producer_task.done():
             record.producer_task.cancel()
-        await self.store.save(record)
         return response
