@@ -457,7 +457,11 @@ def _is_protected(path: str) -> bool:
         return False
     for pattern in PROTECTED_PATTERNS:
         if pattern.endswith("/"):
-            if normalized.startswith(pattern) or f"/{pattern}" in normalized:
+            if normalized.startswith(pattern):
+                return True
+            # tests/ 属于发布测试源码；嵌套目录匹配只对部署数据目录生效，
+            # 避免 tests/providers/ 被误判为部署者私有的 providers/。
+            if not normalized.startswith("tests/") and f"/{pattern}" in normalized:
                 return True
         elif "*" in pattern:
             basename = normalized.rsplit("/", 1)[-1]
