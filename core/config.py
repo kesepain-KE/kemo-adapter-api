@@ -69,8 +69,13 @@ class Settings:
     model_execution_timeout_seconds: float = 900.0
     max_concurrent_executions: int = 64
     sse_heartbeat_seconds: float = 15.0
-    execution_retention_hours: int = 24
+    log_retention_days: int = 7
     max_sse_events_per_response: int = 200_000
+
+    @property
+    def execution_retention_hours(self) -> int:
+        """Compatibility view for the execution store's hour-based boundary."""
+        return self.log_retention_days * 24
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -93,6 +98,7 @@ class Settings:
                 key_id=safe_key_id(legacy_key, os.getenv("GATEWAY_API_KEY_ID")),
             )
         provider_settings = json.loads(os.getenv("PROVIDER_SETTINGS_JSON", "{}"))
+        log_retention_days = _positive_int_env("LOG_RETENTION_DAYS", 7)
         return cls(
             host=os.getenv("HOST", "127.0.0.1"),
             port=int(os.getenv("PORT", "7531")),
@@ -132,9 +138,7 @@ class Settings:
             sse_heartbeat_seconds=_positive_float_env(
                 "SSE_HEARTBEAT_SECONDS", 15.0
             ),
-            execution_retention_hours=_positive_int_env(
-                "EXECUTION_RETENTION_HOURS", 24
-            ),
+            log_retention_days=log_retention_days,
             max_sse_events_per_response=_positive_int_env(
                 "MAX_SSE_EVENTS_PER_RESPONSE", 200_000
             ),
