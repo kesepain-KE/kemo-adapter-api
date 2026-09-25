@@ -18,13 +18,26 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.1-blue" alt="Gateway version 0.8.1"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.2-blue" alt="Gateway version 0.8.2"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 0.8.2 长期运行与声明式目录热重建
+
+本版本继续以稳定性为主，不改变 Kemo 公开协议：
+
+- **快速启动与七日保留**：调用日志、每日统计、Execution、幂等响应和 SSE 重放记录统一默认保留 7 天；过期清理在启动成功后延迟执行并分批释放写锁，Asset 目录扫描移出启动关键路径。
+- **有界 SQLite 维护**：统计连接显式关闭，新执行库启用增量页回收和 WAL 大小上限，正常关停使用非阻塞式检查点；不会在启动阶段自动执行可能长期锁库的完整 `VACUUM`。
+- **声明式模型目录候选包**：已有 Provider 可以显式实现 `requires_catalog_rebuild()`。核心只在该 Provider 确认模型目录或能力配置变化时旁路构造候选包，逐模型校验能力和全局路由冲突，全部成功后原子切换。
+- **在途请求代际隔离**：新请求进入新 Provider，旧请求继续使用旧 Provider；取消操作通过 `response_id` 命中实际创建响应的 Provider 代际。旧代际分别排空后关闭，不会因连续更新互相覆盖。
+- **保守重启边界**：模板和普通 Provider 默认不启用目录热重建。Python、`manifest.json`、协议映射、依赖、新 Provider、环境变量和 Web 构建仍需平滑重启；核心不执行 `importlib.reload()`。
+
+网关与前端管理包统一为 **`0.8.2`**，Kemo 协议仍为 **`1.0`**。现有数据库、调用密钥和普通
+Provider 配置无需迁移；升级源码后需要重启网关，前端版本同步需重新构建。
 
 ## 0.8.1 SSE 持久化与磁盘 I/O 稳定性
 
@@ -38,7 +51,7 @@
 
 同规模 1698 事件的本地合成基准中，响应事务由 1700 次降至 55 次，进程写操作由 19940 次降至 2252 次，写入字节由约 50.0 MiB 降至约 4.96 MiB。该结果用于说明事务放大已消除，不承诺不同硬件、文件系统和并发负载具有相同百分比。
 
-网关与前端管理包统一为 **`0.8.1`**，Kemo 协议仍为 **`1.0`**。现有数据库、调用密钥和 Provider 配置无需迁移；升级后需要重启网关，前端版本同步需重新构建。
+网关与前端管理包当时统一为 **`0.8.1`**，Kemo 协议保持 **`1.0`**。
 
 ## 0.8.0 智能体引导、统一测试与统计读缓存
 
@@ -129,7 +142,7 @@ kemo-agent / kemo-graph / 其他 Kemo 客户端
 
 生产运行默认每 15 秒发送一次 SSE 注释心跳，并将执行记录和已发事件持久化到
 `storage/executions/executions.sqlite3`。客户端断开不会取消当前进程中的 Provider 执行；在默认
-24 小时保留期内，可使用相同请求和 `Last-Event-ID` 从下一事件继续。网关重启不会重跑上游任务，
+7 天保留期内，可使用相同请求和 `Last-Event-ID` 从下一事件继续。网关重启不会重跑上游任务，
 未结束的任务会明确变成 `incomplete/gateway_restarted`。核心还提供 900 秒兜底超时、单进程 64
 并发上限和统一可重试语义。非终态事件按每响应 50 ms/32 条的有界内存批次提交，只有提交成功的
 事件才会向 SSE 客户端发布；终态立即原子落盘。具体边界及环境变量见 [api.md](api.md)。
@@ -179,7 +192,7 @@ Copy-Item api/keys.json.example api/keys.json
 
 仓库默认不提交部署端的真实 `providers/*` 厂商包。可以从 `template/provider/` 创建本地厂商包，也可以让智能体按照 [agent_control.md](agent_control.md) 与 [ADD_DIY/README.md](ADD_DIY/README.md) 完成创建和验证。
 
-新增 Provider 目录、修改 Python、模型清单或依赖后必须重启。已有 Provider 的 `config.json` 和 `secrets.json` 可以热更新。
+新增 Provider 目录、修改 Python、模型清单或依赖后必须重启。已有 Provider 的 `config.json` 和 `secrets.json` 可以热更新。少数把模型目录完整定义在配置中的 Provider 可以显式实现 `requires_catalog_rebuild()`：核心会先构造并验证候选包，再一次性切换模型路由；模板和普通 Provider 默认不启用此能力。
 
 ### 4. 启动
 
@@ -288,10 +301,16 @@ expand_call(
 | `api/runtime.json`、`api/keys.json` | 否 |
 | Provider `config.json`、`secrets.json` | 否 |
 | 最高权限系统提示词、Provider/模型启停 | 否 |
+| 已有 Provider 明确支持的声明式模型目录配置 | 否；候选包完整验证成功后原子切换 |
 | `.env` 环境变量 | 是 |
 | Python、Provider 清单、依赖、协议模型 | 是 |
 | 新增或删除 Provider 目录 | 是 |
 | Web 前端源码或构建产物 | 是 |
+
+声明式目录热重建只复用进程启动时已经导入的 Provider 工厂，不重新加载 Python 模块。候选包会在
+旁路验证 Provider ID、完整模型名、每个模型的能力对象和全局路由冲突；任何失败都关闭候选并继续
+使用旧 revision。切换后新请求使用新包，已经持有旧包的请求完成后旧包才关闭。新增 Provider、
+修改 `capabilities.py` / `manifest.json` / 协议映射或安装依赖仍必须走平滑重启。
 
 平滑重启：
 

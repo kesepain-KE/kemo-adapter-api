@@ -18,13 +18,27 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.1-blue" alt="Gateway version 0.8.1"></a>
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.2-blue" alt="Gateway version 0.8.2"></a>
   <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 0.8.2 long-running stability and declarative catalog rebuilds
+
+This release continues to prioritize stability without changing the public Kemo protocol:
+
+- **Fast startup and seven-day retention:** invocation logs, daily statistics, executions, idempotent responses, and SSE replay records share a seven-day default. Expiration starts after readiness, releases the writer lock between bounded batches, and Asset directory scanning no longer blocks startup.
+- **Bounded SQLite maintenance:** statistics connections close explicitly, new execution databases use incremental page reclamation and a WAL size limit, and normal shutdown uses a non-blocking checkpoint. Startup never launches an automatic full `VACUUM` that could hold the database lock for a long time.
+- **Declarative model-catalog candidates:** an existing Provider may explicitly implement `requires_catalog_rebuild()`. Only a confirmed catalog or capability setting change builds an off-route candidate; every capability and global route conflict is validated before one atomic publication step.
+- **In-flight generation isolation:** new requests use the new Provider while existing requests retain the previous generation. Cancellation resolves the exact Provider generation from `response_id`, and multiple retired generations close independently after draining.
+- **Conservative restart boundary:** the template and ordinary Providers do not opt in by default. Python, `manifest.json`, protocol mappings, dependencies, new Providers, environment variables, and web builds still require a graceful restart; the core never calls `importlib.reload()`.
+
+Gateway and console versions are **`0.8.2`**; the Kemo Protocol remains **`1.0`**. Existing databases, gateway
+keys, and ordinary Provider configuration require no migration. Restart after upgrading source, and rebuild the
+frontend to synchronize its package version.
 
 ## 0.8.1 SSE persistence and disk I/O stability
 
@@ -38,7 +52,7 @@ This release reduces high-frequency SQLite writes without changing the public Ke
 
 In a local synthetic run with 1,698 events, response transactions fell from 1,700 to 55, process write operations from 19,940 to 2,252, and written bytes from about 50.0 MiB to 4.96 MiB. These figures demonstrate removal of transaction amplification; identical percentages are not promised across hardware, filesystems, or concurrent workloads.
 
-Gateway and console versions are **`0.8.1`**; the Kemo Protocol remains **`1.0`**. Existing databases, gateway keys, and Provider configuration require no migration. Restart the gateway after upgrading, and rebuild the frontend to synchronize its package version.
+Gateway and console versions for that release were **`0.8.1`**; the Kemo Protocol remained **`1.0`**.
 
 ## 0.8.0 guided workflows, unified tests, and bounded statistics caching
 
@@ -133,7 +147,7 @@ See [api.md](api.md) for request fields, authentication, SSE, idempotency, Embed
 
 Production streams emit an SSE comment heartbeat every 15 seconds by default and persist execution records and emitted
 events in `storage/executions/executions.sqlite3`. A client disconnect does not cancel the Provider execution in the
-current process; during the default 24-hour retention window, the same request and `Last-Event-ID` resume at the next
+current process; during the default seven-day retention window, the same request and `Last-Event-ID` resume at the next
 event. A gateway restart never re-runs the upstream request: unfinished work becomes
 `incomplete/gateway_restarted`. The core also enforces a 900-second fallback timeout, a 64-execution single-process
 limit, and consistent retry semantics. Non-terminal events commit in bounded per-response batches of up to 50 ms or
@@ -187,7 +201,7 @@ startup and require a restart after changes.
 
 Real deployment-specific `providers/*` packages are not committed by default. Create a local provider from `template/provider/`, or let an agent follow [agent_control.md](agent_control.md) and [ADD_DIY/README.md](ADD_DIY/README.md) to build and verify one.
 
-Adding a Provider directory or changing Python, manifests, or dependencies requires a restart. Existing Provider `config.json` and `secrets.json` files can be hot-reloaded.
+Adding a Provider directory or changing Python, manifests, or dependencies requires a restart. Existing Provider `config.json` and `secrets.json` files can be hot-reloaded. A Provider whose complete model catalog is declarative may explicitly implement `requires_catalog_rebuild()`; the core builds and validates a candidate package before publishing its routes. The template and ordinary Providers do not opt in by default.
 
 ### 4. Start the gateway
 
@@ -316,10 +330,18 @@ See [api.md](api.md#智能体全局感知接口) for the complete status fields 
 | `api/runtime.json` or `api/keys.json` | No |
 | Provider `config.json` or `secrets.json` | No |
 | Highest-priority system prompt or provider/model switches | No |
+| Declarative model-catalog settings explicitly supported by an existing Provider | No; atomically published only after full candidate validation |
 | `.env` variables | Yes |
 | Python, Provider manifests, dependencies, or protocol models | Yes |
 | Adding or removing a Provider directory | Yes |
 | Web front-end source or build output | Yes |
+
+Declarative catalog rebuilds reuse the Provider factory that was already imported at process startup; they do not
+reload Python modules. The candidate is validated off-route for provider identity, complete model names, every
+`ModelCapabilities` object, and global route conflicts. Any failure closes the candidate and preserves the previous
+revision, routes, and package. New requests use a successfully published package while in-flight requests retain the
+previous generation until it drains. New Provider directories and changes to Python, `manifest.json`, protocol
+mapping, or dependencies still require a graceful restart.
 
 Graceful restart:
 
