@@ -454,6 +454,18 @@ class RoutedProviderPackage(ProviderPackage):
         if self._active_calls == 0:
             await self._drain_retired()
 
+    def requires_catalog_rebuild(
+        self,
+        previous_settings: Mapping[str, Any],
+        new_settings: Mapping[str, Any],
+    ) -> bool:
+        """Propagate an explicit catalog-rebuild opt-in from child packages."""
+
+        return any(
+            package.requires_catalog_rebuild(previous_settings, new_settings)
+            for _, package in self._packages
+        )
+
     async def _drain_retired(self) -> None:
         retired, self._retired_packages = self._retired_packages, []
         for package in retired:
