@@ -34,6 +34,7 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 | 最高权限系统提示词 | `core/live_control.json` → `highest_priority_system_prompt` | `executor.py:make_context()` 注入到 RequestContext | 下一请求 | 编辑 JSON 或 `PUT /admin/api/runtime/control` |
 | 厂商 API 地址/超时 | `providers/<id>/config.json` | `live_config.py:_load()` 读取并深合并，`package.reload_config()` 原子替换 Client | 下一请求 | 编辑 JSON 或 `PUT /admin/api/runtime/providers/{provider_id}`；已有密钥池不提交 api_key |
 | 厂商密钥池 | `providers/<id>/secrets.json` → `api_keys` | 统一密钥路由与热配置 | 下一请求 | 按密钥配方原子修改 JSON，或使用网页 Provider 密钥池 |
+| 已有 Provider 的声明式模型目录 | Provider 自定义的 `config.json` 字段 | Provider 明确实现 `requires_catalog_rebuild()`；核心旁路构造、离线校验并原子替换完整包 | 下一请求 | 仅限不修改 Python/manifest/依赖的声明式目录；模板默认不启用 |
 
 ### 热插拔实现细节
 
@@ -41,6 +42,8 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 - **配置文件应使用原子写入**：先写临时文件再 `os.replace()`，避免部分写入（`service.py:_atomic_json()`）。
 - **Provider API 配置热更新**必须采用新 Client 接收新请求、旧 Client 排空在途请求的方式（`template/provider/provider.py:reload_config()`），不能在轮换 Key 或 Endpoint 时中断进行中的流。
 - **内建对已创建执行的无损保护**：`registry.resolve_registered()` 绕过禁用检查，已在运行中的 LLM 响应和检索请求不受 `disabled_providers`/`disabled_models` 影响。正在使用旧 API Key 的 Provider 请求仍由旧 Client 完成。
+- **声明式模型目录是显式选择加入能力**：普通 Provider 不实现 `requires_catalog_rebuild()`，模型和能力仍需重启。选择加入后，该方法只能比较不含副作用的配置字段并返回布尔值。核心使用启动时已经导入的同一工厂构造候选包，逐模型验证完整名称和 `ModelCapabilities`，检查整张路由表冲突；全部成功后才在无 `await` 的临界段切换。候选失败时关闭候选并保留旧 revision、旧路由和旧 Provider；旧包继续服务已持有引用的请求，排空后关闭。
+- **这不是 Python 热重载**：核心不会执行 `importlib.reload()`，不会自动导入新 Provider，也不会把 `manifest.json` 当作运行时能力来源。修改 `capabilities.py`、协议映射、manifest、依赖或 Provider 目录结构仍必须重启。
 
 ### 生效条件
 
@@ -51,7 +54,7 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 | 类别 | 原因 | 代码位置 |
 |------|------|----------|
 | 新增 Provider 厂商包 | `providers/` 只在启动时 `pkgutil.iter_modules` 扫描一次 | `registry.py:discover()` |
-| 新增模型注册 | 模型在 `discover()` → `register()` 中注册，启动后不再调用 | `registry.py:register()` |
+| 静态模型注册 | 模板和普通 Provider 的模型来自 Python/manifest；只有显式声明式目录可走候选包热重建 | `registry.py:register()` / `requires_catalog_rebuild()` |
 | Provider Python 代码 | protocol/streaming/usage/errors/capabilities 等包内文件 | `providers/<id>/` |
 | 核心/API/Web 源码 | core/、api/、web/ 目录代码 | — |
 | 统计存储与缓存源码 | storage/ 的 Python 模块 | `statistics.py`、`read_cache.py` |
