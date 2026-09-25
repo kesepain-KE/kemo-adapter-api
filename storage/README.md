@@ -45,6 +45,21 @@
 的事件必然先完成本地提交，可以通过 `Last-Event-ID` 精确重放。该设计仍不承诺操作系统、磁盘控制器
 或存储硬件故障下的绝对零丢失。
 
+## 七日保留与启动维护
+
+`LOG_RETENTION_DAYS` 是日志型历史数据的统一周期，默认 `7` 天，覆盖调用日志、每日统计、
+Execution 和 SSE 重放记录。Asset 使用独立的小时 TTL，不属于此策略。
+
+启动时只完成当天统计库装配、Execution schema 和中断恢复；不会同步扫描全部 Asset，也不会等待
+历史数据清理。清理任务在启动后延迟运行：Execution 每批最多处理少量父记录并在批次之间释放锁，
+统计库按日期删除过期的 `.sqlite3`、`-wal` 和 `-shm`。StatisticsStore 的每次 SQLite 访问都会显式
+关闭连接，避免 Windows 文件句柄长期占用旧日期数据库。
+
+新建 Execution 数据库默认使用 `auto_vacuum=INCREMENTAL`，每次维护只回收有界页数；WAL 高水位
+限制为 16 MiB。正常关闭只做被动 checkpoint，不把强制压缩大 WAL 放进重启必经路径。旧的
+`auto_vacuum=NONE` 数据库不会在启动时自动执行完整 `VACUUM`，因为完整重建可能长时间锁库并额外
+占用磁盘空间；它们仍可复用空闲页，后续新数据不会持续按原速度扩大主文件。
+
 ## 维护与验证
 
 统计读缓存实现位于 `storage/read_cache.py`，统计接入位于 `storage/statistics.py`；执行事件缓冲位于
