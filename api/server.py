@@ -118,6 +118,7 @@ def create_app(
     statistics = StatisticsStore(
         statistics_root or live_config.project_root / "storage",
         timezone_name=resolved_settings.statistics_timezone,
+        retention_days=resolved_settings.log_retention_days,
     )
     assets = AssetStore(
         asset_root or live_config.project_root / "storage" / "assets",
@@ -153,6 +154,7 @@ def create_app(
         await runtime_state.mark_stopping()
         await assets.close()
         await executions.close()
+        await statistics.close()
         await registry.close()
 
     app = FastAPI(
