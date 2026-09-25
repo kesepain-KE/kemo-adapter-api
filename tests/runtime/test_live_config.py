@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,9 +15,11 @@ from api.server import create_app
 from core.config import Settings
 from core.executor import GatewayExecutor
 from core.live_config import LiveConfigManager, LiveConfigSnapshot
+from core.models import ModelCapabilities
+from core.provider_contract import ProviderPackage
 from core.registry import ProviderRegistry
 from core.stores import InMemoryExecutionStore
-from tests.support.llm import FakeProvider
+from tests.support.llm import FakeProvider, request
 
 
 class ReloadableFakeProvider(FakeProvider):
@@ -70,6 +73,80 @@ class FailingReloadProvider(ReloadableFakeProvider):
         if settings.get("mode") == "bad":
             raise ValueError("candidate rejected")
         await super().reload_config(settings)
+
+
+class DeclarativeCatalogProvider(ProviderPackage):
+    provider_id = "catalog"
+    instances: list["DeclarativeCatalogProvider"] = []
+    validation_started: asyncio.Event | None = None
+    validation_release: asyncio.Event | None = None
+
+    def __init__(self, settings) -> None:
+        self._models = frozenset(settings.get("catalog_models", ["catalog-one"]))
+        self._streaming = bool(settings.get("catalog_streaming", False))
+        self._invalid_capability = bool(settings.get("invalid_capability", False))
+        self._block_validation = bool(settings.get("block_validation", False))
+        self.closed = False
+        self.close_calls = 0
+        self.instances.append(self)
+
+    @property
+    def models(self) -> frozenset[str]:
+        return self._models
+
+    async def capabilities(self, model: str) -> ModelCapabilities:
+        if model not in self._models:
+            raise LookupError(model)
+        if self._block_validation and self.validation_started is not None:
+            self.validation_started.set()
+            if self.validation_release is not None:
+                await self.validation_release.wait()
+        return ModelCapabilities(
+            model="catalog-wrong" if self._invalid_capability else model,
+            input_modalities=["text"],
+            output_modalities=["text"],
+            streaming=self._streaming,
+        )
+
+    def requires_catalog_rebuild(self, previous_settings, new_settings) -> bool:
+        fields = (
+            "catalog_models",
+            "catalog_streaming",
+            "invalid_capability",
+            "block_validation",
+            "factory_failure",
+        )
+        return any(previous_settings.get(key) != new_settings.get(key) for key in fields)
+
+    async def close(self) -> None:
+        self.closed = True
+        self.close_calls += 1
+
+
+def discover_catalog_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: dict,
+) -> tuple[ProviderRegistry, DeclarativeCatalogProvider]:
+    DeclarativeCatalogProvider.instances = []
+    DeclarativeCatalogProvider.validation_started = None
+    DeclarativeCatalogProvider.validation_release = None
+    module_info = SimpleNamespace(name="providers.catalog", ispkg=True)
+    monkeypatch.setattr("core.registry.pkgutil.iter_modules", lambda *_: [module_info])
+
+    def create_provider(values):
+        if values.get("factory_failure"):
+            raise RuntimeError(f"private={values['factory_failure']}")
+        return DeclarativeCatalogProvider(values)
+
+    monkeypatch.setattr(
+        "core.registry.importlib.import_module",
+        lambda *_: SimpleNamespace(create_provider=create_provider),
+    )
+    registry = ProviderRegistry()
+    registry.discover({"catalog": settings})
+    package = registry.providers["catalog"]
+    assert isinstance(package, DeclarativeCatalogProvider)
+    return registry, package
 
 
 def test_live_config_refreshes_only_supported_runtime_controls(tmp_path: Path) -> None:
@@ -188,6 +265,316 @@ def test_registry_rolls_back_already_reloaded_provider_when_later_provider_fails
         assert first.applied_settings[-1]["mode"] == "old"
         assert registry._live_revision == "old"
         assert registry._applied_provider_settings["first"]["mode"] == "old"
+
+    asyncio.run(scenario())
+
+
+def test_registry_atomically_rebuilds_opted_in_catalog_without_interrupting_old_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, original = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one"], "catalog_streaming": False},
+        )
+        gateway = GatewayExecutor(registry, InMemoryExecutionStore())
+        context = gateway.make_context(
+            tenant_id="tenant-catalog",
+            subject_id="subject-catalog",
+            request_id="req-catalog",
+        )
+        record, created, held = await gateway.prepare(
+            request(stream=False).model_copy(update={"model": "catalog-one"}),
+            context,
+        )
+        assert created is True
+        assert held is original
+
+        await registry.apply_live_config(
+            LiveConfigSnapshot(
+                revision="catalog-v2",
+                provider_settings={
+                    "catalog": {
+                        "catalog_models": ["catalog-one", "catalog-two"],
+                        "catalog_streaming": True,
+                    }
+                },
+            )
+        )
+
+        replacement = registry.resolve("catalog-two")
+        assert replacement is registry.resolve("catalog-one")
+        assert replacement is not original
+        assert (await replacement.capabilities("catalog-two")).streaming is True
+        assert original.closed is False
+
+        cancellation_package = registry.acquire_registered(
+            "catalog-one", response_id=record.response_id
+        )
+        assert cancellation_package is original
+        await registry.release_registered(cancellation_package)
+
+        registry.unbind_execution(record.response_id, held)
+        await registry.release_registered(held)
+        assert original.closed is True
+        assert original.close_calls == 1
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_does_not_publish_candidate_before_catalog_validation_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, original = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one"]},
+        )
+        DeclarativeCatalogProvider.validation_started = asyncio.Event()
+        DeclarativeCatalogProvider.validation_release = asyncio.Event()
+        apply_task = asyncio.create_task(
+            registry.apply_live_config(
+                LiveConfigSnapshot(
+                    revision="catalog-blocked",
+                    provider_settings={
+                        "catalog": {
+                            "catalog_models": ["catalog-one", "catalog-two"],
+                            "block_validation": True,
+                        }
+                    },
+                )
+            )
+        )
+
+        await DeclarativeCatalogProvider.validation_started.wait()
+        assert registry.resolve("catalog-one") is original
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve("catalog-two")
+
+        DeclarativeCatalogProvider.validation_release.set()
+        await apply_task
+        assert registry.resolve("catalog-one") is not original
+        assert registry.resolve("catalog-two") is registry.resolve("catalog-one")
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_catalog_rebuild_can_remove_model_after_old_generation_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, original = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one", "catalog-two"]},
+        )
+        held = registry.acquire_active("catalog-one")
+
+        await registry.apply_live_config(
+            LiveConfigSnapshot(
+                revision="catalog-remove",
+                provider_settings={
+                    "catalog": {"catalog_models": ["catalog-two"]}
+                },
+            )
+        )
+
+        with pytest.raises(LookupError, match="Provider 已删除"):
+            registry.resolve("catalog-one")
+        assert registry.resolve_registered("catalog-one") is original
+        assert registry.resolve("catalog-two") is not original
+
+        await registry.release_registered(held)
+        assert original.closed is True
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve_registered("catalog-one")
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_rejects_invalid_catalog_candidate_and_keeps_old_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, original = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one"]},
+        )
+
+        with pytest.raises(ValueError, match="能力声明模型名不一致"):
+            await registry.apply_live_config(
+                LiveConfigSnapshot(
+                    revision="catalog-invalid",
+                    provider_settings={
+                        "catalog": {
+                            "catalog_models": ["catalog-one", "catalog-two"],
+                            "invalid_capability": True,
+                        }
+                    },
+                )
+            )
+
+        assert registry.resolve("catalog-one") is original
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve("catalog-two")
+        assert registry._live_revision == "empty"
+        candidate = DeclarativeCatalogProvider.instances[-1]
+        assert candidate is not original
+        assert candidate.closed is True
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_catalog_candidate_error_does_not_expose_private_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, original = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one"]},
+        )
+        secret = "upstream-secret-must-not-appear"
+
+        with pytest.raises(ValueError) as captured:
+            await registry.apply_live_config(
+                LiveConfigSnapshot(
+                    revision="catalog-factory-failure",
+                    provider_settings={
+                        "catalog": {
+                            "catalog_models": ["catalog-one", "catalog-two"],
+                            "factory_failure": secret,
+                        }
+                    },
+                )
+            )
+
+        assert secret not in str(captured.value)
+        assert "RuntimeError" in str(captured.value)
+        assert registry.resolve("catalog-one") is original
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_discards_catalog_candidate_when_another_provider_reload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, original = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one"]},
+        )
+        failing = FailingReloadProvider()
+        registry.register(failing)
+        await registry.apply_live_config(
+            LiveConfigSnapshot(
+                revision="transaction-old",
+                provider_settings={
+                    "catalog": {"catalog_models": ["catalog-one"]},
+                    "second": {"mode": "old"},
+                },
+            )
+        )
+
+        with pytest.raises(ValueError, match="candidate rejected"):
+            await registry.apply_live_config(
+                LiveConfigSnapshot(
+                    revision="transaction-new",
+                    provider_settings={
+                        "catalog": {
+                            "catalog_models": ["catalog-one", "catalog-two"]
+                        },
+                        "second": {"mode": "bad"},
+                    },
+                )
+            )
+
+        assert registry.resolve("catalog-one") is original
+        with pytest.raises(LookupError, match="没有注册模型"):
+            registry.resolve("catalog-two")
+        assert registry._live_revision == "transaction-old"
+        candidate = DeclarativeCatalogProvider.instances[-1]
+        assert candidate is not original
+        assert candidate.closed is True
+        assert failing.applied_settings[-1] == {"mode": "old"}
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_registry_keeps_multiple_retired_catalog_generations_until_each_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        registry, first = discover_catalog_provider(
+            monkeypatch,
+            {"catalog_models": ["catalog-one"]},
+        )
+        first_held = registry.acquire_active("catalog-one")
+
+        await registry.apply_live_config(
+            LiveConfigSnapshot(
+                revision="catalog-second",
+                provider_settings={
+                    "catalog": {
+                        "catalog_models": ["catalog-one"],
+                        "catalog_streaming": True,
+                    }
+                },
+            )
+        )
+        second = registry.resolve("catalog-one")
+        second_held = registry.acquire_active("catalog-one")
+
+        await registry.apply_live_config(
+            LiveConfigSnapshot(
+                revision="catalog-third",
+                provider_settings={
+                    "catalog": {
+                        "catalog_models": ["catalog-one", "catalog-two"],
+                        "catalog_streaming": True,
+                    }
+                },
+            )
+        )
+        third = registry.resolve("catalog-one")
+        assert first is not second and second is not third
+        assert first.closed is False
+        assert second.closed is False
+
+        await registry.release_registered(first_held)
+        assert first.closed is True
+        assert second.closed is False
+        await registry.release_registered(second_held)
+        assert second.closed is True
+        await registry.close()
+
+    asyncio.run(scenario())
+
+
+def test_executor_releases_provider_generation_binding_after_terminal_response() -> None:
+    async def scenario() -> None:
+        for streaming in (False, True):
+            registry = ProviderRegistry()
+            registry.register(FakeProvider())
+            gateway = GatewayExecutor(registry, InMemoryExecutionStore())
+            context = gateway.make_context(
+                tenant_id="tenant-binding",
+                subject_id="subject-binding",
+                request_id=f"req-binding-{streaming}",
+            )
+            payload = request(stream=streaming).model_copy(
+                update={"request_id": f"req-binding-{streaming}"}
+            )
+            if streaming:
+                _ = [event async for event in gateway.stream(payload, context)]
+            else:
+                await gateway.execute(payload, context)
+            assert registry._execution_packages == {}
+            await registry.close()
 
     asyncio.run(scenario())
 
