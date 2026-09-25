@@ -115,6 +115,7 @@ class GatewayExecutor:
             if created:
                 # The producer task owns this reference until its Provider
                 # call and all response normalization have completed.
+                self.registry.bind_execution(resolved.response_id, package)
                 return resolved, True, package
             await self.registry.release_registered(package)
             return resolved, False, None
@@ -376,6 +377,7 @@ class GatewayExecutor:
             if lease is not None and not lease_owned_by_producer:
                 await lease.release()
             if package is not None and not package_owned_by_producer:
+                self.registry.unbind_execution(record.response_id, package)
                 await self.registry.release_registered(package)
 
     async def _execute_once(
@@ -441,6 +443,7 @@ class GatewayExecutor:
                 if execution_lease is not None:
                     await execution_lease.release()
             finally:
+                self.registry.unbind_execution(record.response_id, package)
                 await self.registry.release_registered(package)
 
     async def stream(
@@ -528,6 +531,7 @@ class GatewayExecutor:
             )
         finally:
             if package is not None and not package_owned_by_producer:
+                self.registry.unbind_execution(record.response_id, package)
                 await self.registry.release_registered(package)
 
     async def iter_prepared_stream(
@@ -614,6 +618,7 @@ class GatewayExecutor:
                     if execution_lease is not None:
                         await execution_lease.release()
                 finally:
+                    self.registry.unbind_execution(record.response_id, package)
                     await self.registry.release_registered(package)
 
     async def _produce_stream_inner(
@@ -882,7 +887,9 @@ class GatewayExecutor:
         if record.response is not None:
             return record.response
 
-        package = self.registry.acquire_registered(record.model)
+        package = self.registry.acquire_registered(
+            record.model, response_id=record.response_id
+        )
         context = RequestContext(
             tenant_id=tenant_id,
             subject_id=subject_id,
