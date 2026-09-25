@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -22,6 +22,56 @@ from tests.support.retrieval import (
     embedding_body,
     rerank_body,
 )
+
+
+def test_statistics_initialize_defers_retention_cleanup(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = StatisticsStore(
+            tmp_path / "storage",
+            retention_days=7,
+            cleanup_startup_delay_seconds=60,
+        )
+        expired = store._path_for_day("2026-09-01")
+        expired.parent.mkdir(parents=True, exist_ok=True)
+        expired.write_bytes(b"old")
+
+        await store.initialize()
+
+        assert expired.exists()
+        await store.close()
+
+    asyncio.run(scenario())
+
+
+def test_statistics_retention_keeps_exactly_seven_calendar_days(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = StatisticsStore(
+            tmp_path / "storage",
+            retention_days=7,
+            cleanup_startup_delay_seconds=60,
+        )
+        await store.initialize()
+        expired = store._path_for_day("2026-09-18")
+        oldest_kept = store._path_for_day("2026-09-19")
+        newest = store._path_for_day("2026-09-25")
+        for path in (expired, oldest_kept, newest):
+            store._initialize_database(path)
+        Path(str(expired) + "-wal").touch()
+        Path(str(expired) + "-shm").touch()
+
+        removed = await store.cleanup_expired(today=date(2026, 9, 25))
+
+        assert removed == 1
+        assert expired.exists() is False
+        assert Path(str(expired) + "-wal").exists() is False
+        assert Path(str(expired) + "-shm").exists() is False
+        assert oldest_kept.exists()
+        assert newest.exists()
+        await store.close()
+
+    asyncio.run(scenario())
 
 
 def test_daily_store_rollups_nullable_usage_rankings_and_replays(tmp_path: Path) -> None:
