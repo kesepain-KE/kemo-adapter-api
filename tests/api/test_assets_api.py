@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -7,11 +8,31 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from core.assets import AssetStore
 from core.config import PrincipalConfig, Settings
 from tests.support.project import project
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"kemo-test-png"
+
+
+def test_asset_initialize_defers_directory_scan(tmp_path: Path) -> None:
+    class ObservedAssetStore(AssetStore):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root, cleanup_startup_delay_seconds=60)
+            self.cleanup_called = False
+
+        async def cleanup_expired(self, **kwargs: object) -> int:
+            self.cleanup_called = True
+            return await super().cleanup_expired(**kwargs)
+
+    async def scenario() -> None:
+        store = ObservedAssetStore(tmp_path / "assets")
+        await store.initialize()
+        assert store.cleanup_called is False
+        await store.close()
+
+    asyncio.run(scenario())
 
 
 def _settings() -> Settings:
