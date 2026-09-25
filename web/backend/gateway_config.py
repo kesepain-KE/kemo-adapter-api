@@ -27,7 +27,7 @@ GROUPS = (
         ("MAX_CONCURRENT_EXECUTIONS", "max_concurrent_executions", "最大并发执行数"),
         ("MODEL_EXECUTION_TIMEOUT_SECONDS", "model_execution_timeout_seconds", "执行超时（秒）"),
         ("SSE_HEARTBEAT_SECONDS", "sse_heartbeat_seconds", "SSE 心跳间隔（秒）"),
-        ("EXECUTION_RETENTION_HOURS", "execution_retention_hours", "执行记录保留（小时）"),
+        ("LOG_RETENTION_DAYS", "log_retention_days", "日志保留（天）"),
         ("MAX_SSE_EVENTS_PER_RESPONSE", "max_sse_events_per_response", "单次响应事件上限"),
     )),
     ("请求与媒体资源", (
