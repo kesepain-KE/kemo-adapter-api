@@ -228,6 +228,28 @@ class ProviderPackage(ABC):
         """热更新厂商 API 配置；实现必须原子切换且不得中断已有请求。"""
         return None
 
+    def requires_catalog_rebuild(
+        self,
+        previous_settings: Mapping[str, Any],
+        new_settings: Mapping[str, Any],
+    ) -> bool:
+        """Return whether a live setting change requires a new package.
+
+        The default is deliberately conservative: ordinary API keys, URLs,
+        headers and timeouts continue through ``reload_config``.  A Provider
+        may opt in only when a declarative setting changes its model set or
+        capability declarations.  The registry then builds and validates a
+        complete replacement package before atomically publishing it, so
+        in-flight requests keep using the previous package.
+
+        This hook must be pure, fast and must never log or return secret
+        values.  Python source, dependencies and newly created Provider
+        directories remain restart-only changes.
+        """
+
+        del previous_settings, new_settings
+        return False
+
     async def close(self) -> None:
         """释放连接池等厂商私有资源。"""
         return None
