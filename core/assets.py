@@ -19,6 +19,7 @@ from core.provider_contract import AssetAccess, ResolvedAsset
 
 _CHUNK_SIZE = 1024 * 1024
 _CLEANUP_INTERVAL_SECONDS = 15 * 60
+_CLEANUP_STARTUP_DELAY_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,63 +63,119 @@ class AssetStoreFailure(Exception):
 
 
 class AssetStore:
-    def __init__(self, root: Path, *, limits: AssetLimits | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        limits: AssetLimits | None = None,
+        cleanup_startup_delay_seconds: float = _CLEANUP_STARTUP_DELAY_SECONDS,
+        cleanup_interval_seconds: float = _CLEANUP_INTERVAL_SECONDS,
+    ) -> None:
         self.root = root.resolve()
         self.limits = limits or AssetLimits()
+        self.cleanup_startup_delay_seconds = max(0.0, cleanup_startup_delay_seconds)
+        self.cleanup_interval_seconds = max(1.0, cleanup_interval_seconds)
         self._lock_guard = asyncio.Lock()
         self._asset_locks: dict[str, asyncio.Lock] = {}
-        self._cleanup_stop = asyncio.Event()
+        self._cleanup_stop: asyncio.Event | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
 
     async def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        await self.cleanup_expired()
         if self._cleanup_task is None or self._cleanup_task.done():
-            self._cleanup_stop.clear()
+            self._cleanup_stop = asyncio.Event()
             self._cleanup_task = asyncio.create_task(
                 self._cleanup_loop(), name="kemo-asset-cleanup"
             )
 
     async def close(self) -> None:
-        self._cleanup_stop.set()
+        stop = self._cleanup_stop
+        if stop is not None:
+            stop.set()
         task = self._cleanup_task
         self._cleanup_task = None
         if task is not None:
             await task
+        self._cleanup_stop = None
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
         """删除过期内容但保留最小元数据，以便继续稳定返回 410。"""
         cutoff = now or datetime.now(timezone.utc)
         removed = 0
-        for record_path in self.root.glob("*/*/metadata.json"):
-            try:
-                raw = json.loads(record_path.read_text(encoding="utf-8"))
-                descriptor = AssetDescriptor.model_validate(raw.get("descriptor"))
-            except (OSError, UnicodeError, json.JSONDecodeError, ValueError, AttributeError):
-                continue
-            if descriptor.expires_at > cutoff:
-                continue
+        record_paths = await asyncio.to_thread(
+            self._expired_record_paths_sync,
+            cutoff,
+        )
+        for record_path in record_paths:
             asset_id = record_path.parent.name
             lock = await self._asset_lock(asset_id)
             async with lock:
-                content_path = record_path.parent / "content.bin"
-                if content_path.is_file():
-                    try:
-                        content_path.unlink(missing_ok=True)
-                    except OSError:
-                        continue
+                deleted = await asyncio.to_thread(
+                    self._delete_expired_content_sync,
+                    record_path,
+                    cutoff,
+                )
+                if deleted:
                     removed += 1
         return removed
 
     async def _cleanup_loop(self) -> None:
-        while not self._cleanup_stop.is_set():
+        stop = self._cleanup_stop
+        if stop is None:
+            return
+        if self.cleanup_startup_delay_seconds:
             try:
                 await asyncio.wait_for(
-                    self._cleanup_stop.wait(),
-                    timeout=_CLEANUP_INTERVAL_SECONDS,
+                    stop.wait(),
+                    timeout=self.cleanup_startup_delay_seconds,
+                )
+                return
+            except TimeoutError:
+                pass
+        while not stop.is_set():
+            await self.cleanup_expired()
+            try:
+                await asyncio.wait_for(
+                    stop.wait(),
+                    timeout=self.cleanup_interval_seconds,
                 )
             except TimeoutError:
-                await self.cleanup_expired()
+                pass
+
+    def _expired_record_paths_sync(self, cutoff: datetime) -> list[Path]:
+        expired: list[Path] = []
+        for record_path in self.root.glob("*/*/metadata.json"):
+            descriptor = self._read_descriptor_sync(record_path)
+            if descriptor is not None and descriptor.expires_at <= cutoff:
+                expired.append(record_path)
+        return expired
+
+    @staticmethod
+    def _read_descriptor_sync(record_path: Path) -> AssetDescriptor | None:
+        try:
+            raw = json.loads(record_path.read_text(encoding="utf-8"))
+            return AssetDescriptor.model_validate(raw.get("descriptor"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, AttributeError):
+            return None
+
+    def _delete_expired_content_sync(
+        self,
+        record_path: Path,
+        cutoff: datetime,
+    ) -> bool:
+        # Re-read under the per-asset lock in case the metadata changed after
+        # the background directory scan.
+        descriptor = self._read_descriptor_sync(record_path)
+        if descriptor is None or descriptor.expires_at > cutoff:
+            return False
+        content_path = record_path.parent / "content.bin"
+        if not content_path.is_file():
+            return False
+        try:
+            content_path.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return True
 
     def bind(self, tenant_id: str, subject_id: str) -> "BoundAssetAccess":
         return BoundAssetAccess(self, tenant_id=tenant_id, subject_id=subject_id)
