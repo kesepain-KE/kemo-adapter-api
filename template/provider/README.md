@@ -126,6 +126,28 @@ Kemo SSE 事件（输出给 kemo-agent）
 | `test_contract.py` | 脱敏 Golden Fixture 和 Provider 契约回归测试 |
 | `catalog_contract.py` | 检查全部模型的目录、能力字段与 manifest 一致；不读密钥、不联网 |
 
+## 模型目录热重建（高级、默认关闭）
+
+模板的 `MODEL_CAPABILITIES` 和 `manifest.json` 是静态目录，因此增加模型、修改能力、推理档位或
+多模态映射后必须重启。不要为了省一次重启而覆盖这一默认边界。
+
+只有当某个 Provider 把**完整且可验证的模型目录**放在自己的 `config.json` 字段中，并且工厂能够
+仅凭同一份设置构造完整新包时，才可以覆盖：
+
+```python
+def requires_catalog_rebuild(self, previous_settings, new_settings) -> bool:
+    return previous_settings.get("model_catalog") != new_settings.get("model_catalog")
+```
+
+该方法只做字典比较，不联网、不写文件、不记录配置值，也不能检查密钥内容。返回 `True` 后，核心
+会使用已经导入的同一 `create_provider(settings)` 工厂在旁路构造候选包，逐模型验证能力和路由，
+全部通过后才原子替换；失败时旧包继续运行。必须增加以下测试：新增模型、删除模型、能力变化、
+无效能力回滚、路由冲突回滚、候选校验期间旧路由仍可用，以及两代旧包分别排空关闭。
+
+以下情况永远不是声明式热重建，仍需重启：修改任何 Python、修改 `manifest.json`、安装依赖、创建
+新 Provider、改变 Kemo 协议。普通密钥、URL、Header 和超时变化不要返回 `True`，它们继续走
+`reload_config()`，以保留密钥健康状态并减少无意义的 Client 重建。
+
 ## 实现路径
 
 从以下方向依次填充：
@@ -244,5 +266,5 @@ HTTP 500 → PROVIDER_UNAVAILABLE (retryable=True)
 未知选项被拒绝、工具流只有一个终态、Usage 不补零、错误不泄密、Provider 自有探测可用，
 并执行完整后端测试和前端构建。
 
-`config.json` 和 `secrets.json` 更新无需重启。任何 Python、manifest、依赖或协议
-代码变化都必须重启。
+`config.json` 和 `secrets.json` 的普通 API 配置更新无需重启。只有按上节完整实现并测试的声明式
+模型目录字段可以触发候选包热重建；任何 Python、manifest、依赖或协议代码变化都必须重启。
