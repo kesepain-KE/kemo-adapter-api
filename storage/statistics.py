@@ -11,6 +11,7 @@ import asyncio
 import json
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -61,6 +62,9 @@ class StatisticsStore:
 
     def __init__(
         self, root: Path, *, timezone_name: str = "Asia/Shanghai",
+        retention_days: int = 7,
+        cleanup_startup_delay_seconds: float = 30.0,
+        cleanup_interval_seconds: float = 6 * 3600.0,
         read_cache_ttl_seconds: float = 30.0,
         read_cache_max_entries: int = 128,
         read_cache_max_bytes: int = 8 * 1024 * 1024,
@@ -69,11 +73,16 @@ class StatisticsStore:
         self.daily_root = self.root / "daily"
         self.timezone_name = timezone_name
         self.timezone = ZoneInfo(timezone_name)
+        self.retention_days = max(1, retention_days)
+        self.cleanup_startup_delay_seconds = max(0.0, cleanup_startup_delay_seconds)
+        self.cleanup_interval_seconds = max(60.0, cleanup_interval_seconds)
         self._lock = asyncio.Lock()
         self._healthy = True
         self._dropped_events = 0
         self._last_error: str | None = None
         self._initialized_paths: set[Path] = set()
+        self._cleanup_stop: asyncio.Event | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._read_cache = ReadCache(
             ttl_seconds=read_cache_ttl_seconds,
             max_entries=read_cache_max_entries,
@@ -130,6 +139,60 @@ class StatisticsStore:
             self._mark_success()
         except Exception as exc:
             self._mark_failure(exc)
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_stop = asyncio.Event()
+            self._cleanup_task = asyncio.create_task(
+                self._cleanup_loop(),
+                name="statistics-retention-cleanup",
+            )
+
+    async def close(self) -> None:
+        stop = self._cleanup_stop
+        if stop is not None:
+            stop.set()
+        task = self._cleanup_task
+        self._cleanup_task = None
+        if task is not None:
+            await task
+        self._cleanup_stop = None
+
+    async def cleanup_expired(self, *, today: date | None = None) -> int:
+        current_day = today or datetime.now(self.timezone).date()
+        oldest_kept_day = current_day - timedelta(days=self.retention_days - 1)
+        async with self._lock:
+            removed_paths = await self._write(
+                self._cleanup_expired_sync,
+                oldest_kept_day.isoformat(),
+            )
+            self._initialized_paths.difference_update(removed_paths)
+        return len(removed_paths)
+
+    async def _cleanup_loop(self) -> None:
+        stop = self._cleanup_stop
+        if stop is None:
+            return
+        if self.cleanup_startup_delay_seconds:
+            try:
+                await asyncio.wait_for(
+                    stop.wait(),
+                    timeout=self.cleanup_startup_delay_seconds,
+                )
+                return
+            except TimeoutError:
+                pass
+        while not stop.is_set():
+            try:
+                await self.cleanup_expired()
+                self._mark_success()
+            except Exception as exc:
+                self._mark_failure(exc)
+            try:
+                await asyncio.wait_for(
+                    stop.wait(),
+                    timeout=self.cleanup_interval_seconds,
+                )
+            except TimeoutError:
+                pass
 
     def health(self) -> dict[str, object]:
         return {
@@ -307,17 +370,51 @@ class StatisticsStore:
             return value.isoformat()
         return date.fromisoformat(value).isoformat()
 
+    def _cleanup_expired_sync(self, oldest_kept_day: str) -> list[Path]:
+        removed: list[Path] = []
+        for path in sorted(self.daily_root.glob("*/*/*.sqlite3")):
+            try:
+                day = date.fromisoformat(path.stem).isoformat()
+            except ValueError:
+                continue
+            if day >= oldest_kept_day:
+                continue
+            for candidate in (
+                Path(str(path) + "-wal"),
+                Path(str(path) + "-shm"),
+                path,
+            ):
+                candidate.unlink(missing_ok=True)
+            removed.append(path)
+        for directory in sorted(
+            (item for item in self.daily_root.glob("*/*") if item.is_dir()),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        for directory in sorted(
+            (item for item in self.daily_root.glob("*") if item.is_dir()),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        return removed
+
     def _connect(self, path: Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, timeout=10)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=NORMAL")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def _initialize_database(self, path: Path) -> None:
-        with self._connect(path) as connection:
+        with closing(self._connect(path)) as connection, connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS invocations (
@@ -446,7 +543,7 @@ class StatisticsStore:
         response_id: str | None,
     ) -> None:
         self._ensure_database(handle.database)
-        with self._connect(handle.database) as connection:
+        with closing(self._connect(handle.database)) as connection, connection:
             connection.execute(
                 """INSERT INTO invocations(
                     invocation_id, day, task, provider_id, model, tenant_id,
@@ -489,7 +586,7 @@ class StatisticsStore:
         response_latency_ms: float | None,
     ) -> None:
         normalized = self._usage_values(usage)
-        with self._connect(handle.database) as connection:
+        with closing(self._connect(handle.database)) as connection, connection:
             row = connection.execute(
                 "SELECT status FROM invocations WHERE invocation_id=?", (handle.invocation_id,)
             ).fetchone()
@@ -610,7 +707,7 @@ class StatisticsStore:
         gateway_key_id: str | None,
     ) -> None:
         self._ensure_database(path)
-        with self._connect(path) as connection:
+        with closing(self._connect(path)) as connection, connection:
             for dimension, key in self._dimensions(provider_id, model, gateway_key_id):
                 self._ensure_rollup(connection, day, task, dimension, key)
                 connection.execute(
@@ -681,7 +778,7 @@ class StatisticsStore:
         if not path.exists():
             return None
         self._ensure_database(path)
-        with self._connect(path) as connection:
+        with closing(self._connect(path)) as connection, connection:
             if task == "all":
                 return connection.execute(
                     """SELECT
@@ -740,7 +837,7 @@ class StatisticsStore:
         path = self._path_for_day(day)
         if path.exists():
             self._ensure_database(path)
-            with self._connect(path) as connection:
+            with closing(self._connect(path)) as connection, connection:
                 rows = connection.execute(
                     """SELECT started_at, status, input_tokens, cached_input_tokens,
                               output_tokens, total_tokens, usage_exact, usage_exact_fields
@@ -830,7 +927,7 @@ class StatisticsStore:
         if not path.exists():
             return {"date": day, "dimension": dimension, "items": []}
         self._ensure_database(path)
-        with self._connect(path) as connection:
+        with closing(self._connect(path)) as connection, connection:
             rows = connection.execute(
                 """SELECT dimension_key,
                     SUM(calls) calls, SUM(successes) successes, SUM(failures) failures,
