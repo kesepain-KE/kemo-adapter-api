@@ -199,6 +199,10 @@ class SQLiteExecutionStore:
         *,
         retention_hours: int = 24,
         cleanup_interval_seconds: float = 3600.0,
+        cleanup_startup_delay_seconds: float = 30.0,
+        cleanup_batch_size: int = 8,
+        incremental_vacuum_pages: int = 2048,
+        wal_size_limit_bytes: int = 16 * 1024 * 1024,
         max_events_per_response: int = 200_000,
         event_flush_interval_seconds: float = 0.05,
         event_batch_size: int = 32,
@@ -207,6 +211,10 @@ class SQLiteExecutionStore:
         self.path = self.root / "executions.sqlite3"
         self.retention_seconds = max(1, retention_hours) * 3600
         self.cleanup_interval_seconds = max(60.0, cleanup_interval_seconds)
+        self.cleanup_startup_delay_seconds = max(0.0, cleanup_startup_delay_seconds)
+        self.cleanup_batch_size = max(1, cleanup_batch_size)
+        self.incremental_vacuum_pages = max(0, incremental_vacuum_pages)
+        self.wal_size_limit_bytes = max(0, wal_size_limit_bytes)
         self.max_events_per_response = max(100, max_events_per_response)
         self.event_flush_interval_seconds = max(0.001, event_flush_interval_seconds)
         self.event_batch_size = max(1, event_batch_size)
@@ -220,7 +228,6 @@ class SQLiteExecutionStore:
         self.root.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(self._initialize_sync)
         await asyncio.to_thread(self._recover_interrupted_sync)
-        await self.cleanup_expired()
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(
                 self._cleanup_loop(), name="execution-store-cleanup"
@@ -254,18 +261,65 @@ class SQLiteExecutionStore:
             raise asyncio.CancelledError
 
     async def _cleanup_loop(self) -> None:
+        if self.cleanup_startup_delay_seconds:
+            await asyncio.sleep(self.cleanup_startup_delay_seconds)
         while True:
-            await asyncio.sleep(self.cleanup_interval_seconds)
             await self.cleanup_expired()
+            await asyncio.sleep(self.cleanup_interval_seconds)
 
     async def cleanup_expired(self) -> None:
         cutoff = time.time() - self.retention_seconds
-        async with self._lock:
-            removed = await asyncio.to_thread(self._cleanup_expired_sync, cutoff)
-            for key in removed:
-                record = self._by_request.pop(key, None)
-                if record is not None:
-                    self._by_response.pop((record.tenant_id, record.response_id), None)
+        while True:
+            delayed_cancel = False
+            async with self._lock:
+                removed, delayed_cancel = await self._cleanup_expired_batch(
+                    cutoff,
+                )
+                for key in removed:
+                    record = self._by_request.pop(key, None)
+                    if record is not None:
+                        self._by_response.pop(
+                            (record.tenant_id, record.response_id),
+                            None,
+                        )
+            if delayed_cancel:
+                raise asyncio.CancelledError
+            if len(removed) < self.cleanup_batch_size:
+                break
+            # Let active requests use the single writer between cleanup batches.
+            await asyncio.sleep(0.01)
+        if self.incremental_vacuum_pages:
+            async with self._lock:
+                delayed_cancel = await self._run_critical_write(
+                    self._incremental_vacuum_sync,
+                    self.incremental_vacuum_pages,
+                )
+            if delayed_cancel:
+                raise asyncio.CancelledError
+
+    async def _cleanup_expired_batch(
+        self,
+        cutoff: float,
+    ) -> tuple[list[tuple[str, str]], bool]:
+        result_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._cleanup_expired_batch_sync,
+                cutoff,
+                self.cleanup_batch_size,
+            )
+        )
+        delayed_cancel = False
+        while True:
+            try:
+                removed = await asyncio.shield(result_task)
+                return removed, delayed_cancel
+            except asyncio.CancelledError:
+                delayed_cancel = True
+                current = asyncio.current_task()
+                if current is not None:
+                    current.uncancel()
+                if result_task.done():
+                    return result_task.result(), delayed_cancel
 
     async def create_or_get(
         self, record: ExecutionRecord
@@ -526,11 +580,19 @@ class SQLiteExecutionStore:
     def _initialize_sync(self) -> None:
         if self._connection is not None:
             raise RuntimeError("SQLite execution store 不得重复初始化")
+        new_database = not self.path.exists() or self.path.stat().st_size == 0
         connection = self._connect()
         self._connection = connection
         try:
+            if new_database:
+                # New databases can return deleted pages incrementally without
+                # ever placing a full VACUUM on the startup path.
+                connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA wal_autocheckpoint = 1000")
+            connection.execute(
+                f"PRAGMA journal_size_limit = {self.wal_size_limit_bytes}"
+            )
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS executions (
@@ -566,6 +628,8 @@ class SQLiteExecutionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_executions_updated
                     ON executions(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_executions_status
+                    ON executions(status);
                 """
             )
             connection.commit()
@@ -581,7 +645,9 @@ class SQLiteExecutionStore:
         if connection is None:
             return
         try:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # Checkpoint committed frames without forcing a potentially large
+            # WAL truncation into the restart-critical shutdown path.
+            connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
         finally:
             connection.close()
 
@@ -822,24 +888,42 @@ class SQLiteExecutionStore:
     ) -> sqlite3.Row | None:
         return self._require_connection().execute(query, parameters).fetchone()
 
-    def _cleanup_expired_sync(self, cutoff: float) -> list[tuple[str, str]]:
+    def _cleanup_expired_batch_sync(
+        self,
+        cutoff: float,
+        limit: int,
+    ) -> list[tuple[str, str]]:
         connection = self._require_connection()
         try:
             rows = connection.execute(
                 """SELECT tenant_id, request_id FROM executions
-                   WHERE updated_at < ? AND status NOT IN ('created', 'running')""",
-                (cutoff,),
+                   WHERE updated_at < ? AND status NOT IN ('created', 'running')
+                   ORDER BY updated_at
+                   LIMIT ?""",
+                (cutoff, limit),
             ).fetchall()
-            connection.execute(
-                """DELETE FROM executions
-                   WHERE updated_at < ? AND status NOT IN ('created', 'running')""",
-                (cutoff,),
-            )
+            if rows:
+                connection.executemany(
+                    """DELETE FROM executions
+                       WHERE tenant_id = ? AND request_id = ?
+                         AND updated_at < ?
+                         AND status NOT IN ('created', 'running')""",
+                    [
+                        (row["tenant_id"], row["request_id"], cutoff)
+                        for row in rows
+                    ],
+                )
             connection.commit()
         except BaseException:
             connection.rollback()
             raise
         return [(row["tenant_id"], row["request_id"]) for row in rows]
+
+    def _incremental_vacuum_sync(self, pages: int) -> None:
+        connection = self._require_connection()
+        if int(connection.execute("PRAGMA auto_vacuum").fetchone()[0]) != 2:
+            return
+        connection.execute(f"PRAGMA incremental_vacuum({max(1, pages)})")
 
     @staticmethod
     def _response_json(response: KemoResponse | None) -> str | None:
