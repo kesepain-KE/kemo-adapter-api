@@ -256,7 +256,7 @@ Provider 生成图片、音频、视频或文件后，必须通过 `RequestConte
 `X-Kemo-Heartbeat-Seconds`；反向代理仍应关闭流式响应缓冲，并把空闲超时设置为大于心跳间隔。
 
 幂等记录、统一终态和已发出的 SSE 事件持久化在网关本地 SQLite WAL 数据库
-`storage/executions/executions.sqlite3`，默认保留 24 小时。客户端断开不会取消同一网关进程中的
+`storage/executions/executions.sqlite3`，默认保留 7 天。客户端断开不会取消同一网关进程中的
 Provider 执行，相同请求可以在保留期内重连或查询终态。网关进程重启时，上次尚未结束的执行会被
 确定性终结为 `status=incomplete`、`incomplete_details.reason=gateway_restarted`，并追加
 `response.incomplete` 终态事件。
@@ -301,9 +301,14 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
 - 同一 Provider 响应中的并行工具调用按批次原子处理。任一调用非法时，网关不会先发布同批其他调用，而是返回 `response.incomplete` 及有限的校验原因。
 - Schema 校验受递归深度、节点总数和数组项数限制。超过限制会返回明确的参数/契约错误，不会递归崩溃或无限扫描。
 
-这些默认值分别由 `SSE_HEARTBEAT_SECONDS`、`EXECUTION_RETENTION_HOURS`、
+这些默认值分别由 `SSE_HEARTBEAT_SECONDS`、`LOG_RETENTION_DAYS`、
 `MODEL_EXECUTION_TIMEOUT_SECONDS`、`MAX_CONCURRENT_EXECUTIONS` 和
 `MAX_SSE_EVENTS_PER_RESPONSE` 配置；它们属于启动环境变量，修改后必须重启网关。
+
+`LOG_RETENTION_DAYS` 同时控制调用日志、每日统计数据库、Execution 与 SSE 重放记录，默认值为
+`7`。过期清理不会阻塞应用启动：启动后延迟执行，Execution 按小批次删除并在批次之间释放写锁，
+每日统计按日期文件删除。旧的 `EXECUTION_RETENTION_HOURS` 不再决定日志周期；未设置新变量时仍按
+7 天执行。Asset 内容不是调用日志，继续由 `DEFAULT_ASSET_TTL_HOURS` 单独控制。
 
 ## kemo-graph 检索模型接口
 
