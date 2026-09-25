@@ -7,7 +7,7 @@
 先填写 [操作任务卡](template/examples/task-card.md)，只选择本次目标，不要求一次读完全部手册。
 创建厂商、增加模型、更新能力、给单个模型加多模态、修改密钥分别有独立步骤与完成判据。
 
-本引导已按网关 **0.8.1 / Kemo 1.0** 核对；后续操作仍以目标项目 `version.json` 与源码为准。
+本引导已按网关 **0.8.2 / Kemo 1.0** 核对；后续操作仍以目标项目 `version.json` 与源码为准。
 整包发布走 [发布配方](ADD_DIY/release.md)，测试统一从 [测试入口](tests/README.md) 选择，
 不要沿用旧的 `tests/test_*.py` 扁平路径。
 
@@ -33,6 +33,7 @@ Fixture。不能只修一端测试或让两端各自维护不同样例。
 | 修改上游密钥 | `providers/<id>/secrets.json` 的 `api_keys` 数组 | 否，热更新 | 不写 `.env`、代码、日志或 Markdown |
 | 修改网关调用 Token | `api/keys.json` | 否，热更新 | 不改 Provider 的 `secrets.json` |
 | 修改 Base URL/请求头 | `providers/<id>/config.json` | 否，热更新 | 不把密钥放进 `config.json` |
+| 修改声明式模型目录 | 仅限 Provider 已实现并测试 `requires_catalog_rebuild()` 的指定配置字段 | 否，候选包验证通过后热更新 | 不把 Python/manifest 变化误报成热更新 |
 | 修改环境变量 | `.env` | 是 | 不报告“已热更新” |
 
 只有用户明确要求“首次单 Token 快速启动”或应急恢复时，才可取消 `.env.example` 中
@@ -108,8 +109,9 @@ Fixture。不能只修一端测试或让两端各自维护不同样例。
 5. 租户、主体和资源权限只能来自认证 Principal，不能相信正文 `metadata.user`。
 6. 未知 `provider_options` 必须拒绝；不得透传任意 URL、Header 或密钥。
 7. `api.md` 只记录网关对外 API；Web 管理接口记录在开发目录的 Web 后端 API 文档。
-8. 只有 `ADD_DIY/architecture.md` 热插拔清单中的配置无需重启。环境变量、Python、模型注册、
-   manifest、依赖和网页构建变化都必须重启。
+8. 只有 `ADD_DIY/architecture.md` 热插拔清单中的配置无需重启。默认模型注册仍来自 Python；仅当
+   已有 Provider 明确实现并测试 `requires_catalog_rebuild()` 时，它自己的声明式目录配置才允许
+   旁路构造候选包并热切换。环境变量、Python、manifest、依赖、新 Provider 和网页构建变化都必须重启。
 9. 未获授权不得调用付费厂商接口、创建资源、撤销密钥或扩大 scopes。
 10. Kemo 媒体块必须按 `source.kind` 解析；不得自行发明 `source.media_type` 等不存在的字段，也
     不得在媒体为空或无法解析时向上游发送空 Data URL。
