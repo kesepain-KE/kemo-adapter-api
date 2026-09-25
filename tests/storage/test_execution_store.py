@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import sqlite3
 import threading
 
 import pytest
@@ -82,6 +83,20 @@ class _BlockingSQLiteExecutionStore(SQLiteExecutionStore):
         if not self.allow_write.wait(timeout=2):
             raise TimeoutError("test did not release SQLite write")
         super()._append_events_sync(record, events, persist_record)
+
+
+class _ObservedCleanupStore(SQLiteExecutionStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root, cleanup_startup_delay_seconds=60)
+        self.cleanup_called = threading.Event()
+
+    def _cleanup_expired_batch_sync(
+        self,
+        cutoff: float,
+        limit: int,
+    ) -> list[tuple[str, str]]:
+        self.cleanup_called.set()
+        return super()._cleanup_expired_batch_sync(cutoff, limit)
 
 
 def test_sqlite_execution_store_persists_idempotency_and_terminal_response(
@@ -439,5 +454,36 @@ def test_cancelled_append_finishes_commit_before_exposing_cancellation(
         assert replay is not None
         assert replay.events[0] == created
         await replay_store.close()
+
+    asyncio.run(scenario())
+
+
+def test_initialize_defers_retention_cleanup_off_startup_path(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = _ObservedCleanupStore(tmp_path)
+        await store.initialize()
+        assert store.cleanup_called.is_set() is False
+        await store.close()
+
+    asyncio.run(scenario())
+
+
+def test_new_execution_database_uses_incremental_vacuum_and_wal_limit(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = SQLiteExecutionStore(
+            tmp_path,
+            cleanup_startup_delay_seconds=60,
+            wal_size_limit_bytes=4 * 1024 * 1024,
+        )
+        await store.initialize()
+        connection = store._require_connection()
+        assert int(connection.execute("PRAGMA auto_vacuum").fetchone()[0]) == 2
+        assert int(connection.execute("PRAGMA journal_size_limit").fetchone()[0]) == 4 * 1024 * 1024
+        await store.close()
+
+        with sqlite3.connect(tmp_path / "executions.sqlite3") as check:
+            assert int(check.execute("PRAGMA auto_vacuum").fetchone()[0]) == 2
 
     asyncio.run(scenario())
