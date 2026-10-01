@@ -18,13 +18,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.2-blue" alt="Gateway version 0.8.2"></a>
-  <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-1.0.0-blue" alt="Gateway version 1.0.0"></a>
+  <img src="https://img.shields.io/badge/Kemo%20Protocol-2.0-7c5cff" alt="Kemo Protocol 2.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 1.0.0 Kemo 2.0 contract baseline
+
+This release finalizes the gateway at **1.0.0**. It keeps the Kemo 2.0 protocol and aligns request, response, streaming, tool-call, Embedding, Rerank, and structured-output contracts with `kemo-agent 1.4.0` and `kemo-graph 1.6.0`.
 
 ## 0.8.2 long-running stability and declarative catalog rebuilds
 
@@ -36,7 +40,7 @@ This release continues to prioritize stability without changing the public Kemo 
 - **In-flight generation isolation:** new requests use the new Provider while existing requests retain the previous generation. Cancellation resolves the exact Provider generation from `response_id`, and multiple retired generations close independently after draining.
 - **Conservative restart boundary:** the template and ordinary Providers do not opt in by default. Python, `manifest.json`, protocol mappings, dependencies, new Providers, environment variables, and web builds still require a graceful restart; the core never calls `importlib.reload()`.
 
-Gateway and console versions are **`0.8.2`**; the Kemo Protocol remains **`1.0`**. Existing databases, gateway
+Gateway and console versions are **`1.0.0`**; the Kemo Protocol is **`2.0`**. Existing databases, gateway
 keys, and ordinary Provider configuration require no migration. Restart after upgrading source, and rebuild the
 frontend to synchronize its package version.
 

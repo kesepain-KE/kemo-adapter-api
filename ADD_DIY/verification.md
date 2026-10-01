@@ -119,11 +119,11 @@ providers/<provider_id>/
 ## 7. 必须执行的验证
 
 修改 `core/models.py`、公开请求/响应、能力声明、Asset、Usage、工具、多模态、Embedding、Rerank
-或 SSE 线路字段时，先执行 Kemo 1.0 共享契约门禁：
+或 SSE 线路字段时，先执行 Kemo 2.0 共享契约门禁：
 
 ```powershell
 python -m tests --suite kemo-contract -q
-python -m tests.contracts.kemo_v1 --peer-root E:\code\kemo-agent -q
+python -m tests.contracts.kemo_v2 --peer-root E:\code\kemo-agent -q
 ```
 
 第二条命令中的路径是示例，必须指向实际 kemo-agent 仓库。两边的 `wire.json`、`manifest.json`
@@ -170,3 +170,10 @@ git diff --check
 
 最终报告必须包含：修改范围、支持的真实模型与任务、探测结果、测试数量、是否需要重启、仍未
 验证的能力，以及 Provider 是否会随 Git 推送。不得包含任何完整密钥或敏感响应。
+
+## Kemo 2.0 双仓制品门禁
+
+修改协议模型、SSE、Asset、工具、多模态、Usage、Embedding、Rerank 或能力声明时，先在
+`kemo-agent` 重新生成 `provider/protocol/spec/{schema,model-index,freeze,fixture-manifest}.json`，再运行
+`python -m provider.protocol.spec.build_artifact E:\code\kemo-adapter-api\vendor` 更新固定制品和 lock 摘要。
+随后分别运行两仓的 `tests/contracts/kemo_v2`；禁止仅修改某一端或恢复 Kemo 1.x 兼容。

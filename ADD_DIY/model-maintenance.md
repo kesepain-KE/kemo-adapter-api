@@ -19,17 +19,25 @@
 可复制的最小声明（示例名称必须替换；不代表上游已验证）：
 
 ```python
-from core.models import ModelCapabilities, ReasoningCapabilities, ToolCapabilities
+from core.models import (
+    ModelCapabilities,
+    ReasoningCapabilities,
+    StructuredOutputCapabilities,
+    ToolCapabilities,
+)
 
 new_model = ModelCapabilities(
+    protocol_version="2.0",
     model="demo_vendor-chat-v2-fast",
+    provider_id="demo_vendor",
+    provider_model="chat-v2-fast",
     task="llm",
     input_modalities=["text"],
     output_modalities=["text"],
     streaming=False,
     reasoning=ReasoningCapabilities(supported=False, efforts=[]),
     tools=ToolCapabilities(function_calling=False, parallel_calls=False),
-    structured_output=False,
+    structured_output=StructuredOutputCapabilities(supported=False),
     metadata={"upstream_model": "chat-v2-fast"},
     extensions={
         "operations": {"conversation": {"supported": True}},

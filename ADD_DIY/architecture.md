@@ -60,7 +60,7 @@ Provider 包只能依赖 `core.models` 和 `core.provider_contract`，核心不�
 | 统计存储与缓存源码 | storage/ 的 Python 模块 | `statistics.py`、`read_cache.py` |
 | 环境变量（.env） | `Settings.from_env()` 只启动时调用一次 | `config.py` |
 | 依赖 | `requirements.txt` 变更 | — |
-| 协议版本 | `X-Kemo-Protocol-Version` 硬校验为 `"1.0"` | `routes/responses.py`、`routes/retrieval.py` |
+| 协议版本 | `X-Kemo-Protocol-Version` 硬校验为 `"2.0"` | `routes/responses.py`、`routes/retrieval.py` |
 
 **环境变量永远属于必须重启的启动配置**，不得把环境变量误报为已热加载。
 

@@ -4,13 +4,13 @@
 智能体只读状态 API，
 不包含 Web 管理端接口。
 
-协议版本：`1.0`
+协议版本：`2.0`
 
 ## 通用请求头
 
 ```http
 Authorization: Bearer <gateway-key>
-X-Kemo-Protocol-Version: 1.0
+X-Kemo-Protocol-Version: 2.0
 X-Request-ID: <request_id>
 Idempotency-Key: <request_id>
 Accept: application/json | text/event-stream
@@ -121,7 +121,7 @@ Authorization: Bearer <gateway-key>
 
 ```json
 {
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "object": "kemo.model_list",
   "count": 1,
   "data": [
@@ -174,7 +174,7 @@ Provider 密钥、网关密钥、请求头或其他私有配置。
 
 ### 完整多模态内容与操作
 
-Kemo 1.0 使用同一个 `POST /model/responses` 承载文本对话、视觉、ASR、TTS、语音转换、图片
+Kemo 2.0 使用同一个 `POST /model/responses` 承载文本对话、视觉、ASR、TTS、语音转换、图片
 生成/编辑、视频理解和视频生成。目录中的此类模型仍声明 `task=llm`；具体操作由
 `metadata.capability` 指定，并且必须同时满足 `input_modalities`、`output_modalities` 和
 `extensions.operations.<操作>.supported=true`。网关核心不会把专用操作统一塞进厂商
@@ -315,7 +315,7 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
 Embedding 与 Rerank 是独立同步任务，不使用 LLM `input/output` Item，也不通过
 `/model/responses` 执行。两者均要求：
 
-- `X-Kemo-Protocol-Version: 1.0`；
+- `X-Kemo-Protocol-Version: 2.0`；
 - `Idempotency-Key` 与正文 `request_id` 完全相同；
 - `model:invoke` 或对应的 `embedding:invoke` / `rerank:invoke` scope；
 - Provider/模型启停、Drain、热配置和统一错误边界与 LLM 模型一致。
@@ -326,7 +326,7 @@ Embedding 与 Rerank 是独立同步任务，不使用 LLM `input/output` Item�
 
 ```json
 {
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "request_id": "embed_req_01",
   "model": "vendor-embedding-model",
   "input_type": "document",
@@ -350,7 +350,7 @@ capabilities 校验，不能静默降维、截断或改变归一化策略。
 
 ```json
 {
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "object": "kemo.embedding_list",
   "request_id": "embed_req_01",
   "model": "vendor-embedding-model",
@@ -389,7 +389,7 @@ capabilities 校验，不能静默降维、截断或改变归一化策略。
 
 ```json
 {
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "request_id": "rerank_req_01",
   "model": "vendor-rerank-model",
   "query": "用户正在查询什么？",
@@ -409,7 +409,7 @@ capabilities 校验，不能静默降维、截断或改变归一化策略。
 
 ```json
 {
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "object": "kemo.rerank",
   "request_id": "rerank_req_01",
   "model": "vendor-rerank-model",
@@ -462,7 +462,7 @@ capabilities 校验，不能静默降维、截断或改变归一化策略。
 | `DELETE /assets/{asset_id}` | 删除当前主体可控的临时 Asset | 已提供 |
 
 上传使用 `multipart/form-data`，字段 `file` 为媒体字节，`metadata` 为 JSON 字符串；请求必须
-携带 `Authorization`、`X-Kemo-Protocol-Version: 1.0` 和稳定 `Idempotency-Key`，可携带
+携带 `Authorization`、`X-Kemo-Protocol-Version: 2.0` 和稳定 `Idempotency-Key`，可携带
 `X-Content-SHA256`。相同主体、相同幂等键和相同内容复用同一 Asset；同键不同内容返回
 `409 IDEMPOTENCY_CONFLICT`。
 
@@ -475,7 +475,7 @@ Asset 按 tenant + subject 隔离，上传/删除要求 `asset:write`，查询/�
 
 ```json
 {
-  "protocol_version": "1.0",
+  "protocol_version": "2.0",
   "request_id": "req_1",
   "error": {
     "type": "provider_rate_limit",
@@ -504,3 +504,13 @@ URL。完整字段、Item、Content Block、Usage 和 SSE 事件合同以协议�
 
 HTTP 408、425、429、500、502、503、504 在没有更具体声明时默认标记为可重试；任何错误中的显式
 `retryable` 值优先。认证、授权、协议校验和正文校验错误不得盲目重试。
+
+## Kemo 2.0 传输基线
+
+网关程序版本为 **1.0.0**，当前唯一线协议为 **Kemo 2.0**。所有公开模型、检索、Asset 和响应端点都必须携带
+`X-Kemo-Protocol-Version: 2.0`；带 JSON body 的请求还必须让 body 的 `protocol_version` 与 header 完全一致。
+网关不提供 1.x shim，也不会按 `2.x` 前缀接收未来版本。
+
+`POST /model/responses` 在 `n=1` 时返回 `kemo.response`，在 `n>1` 且非流式时返回
+`kemo.response_batch`；流式请求固定 `n=1`。Embedding、Rerank、模型目录和 Asset 使用同一固定协议制品。
+HTTP 错误统一返回 `object="kemo.error"`，SSE 使用严格的 event id、sequence、ItemStart、done 和终态规则。

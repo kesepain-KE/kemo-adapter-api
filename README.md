@@ -18,13 +18,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-0.8.2-blue" alt="Gateway version 0.8.2"></a>
-  <img src="https://img.shields.io/badge/Kemo%20Protocol-1.0-7c5cff" alt="Kemo Protocol 1.0">
+  <a href="https://github.com/kesepain-KE/kemo-adapter-api"><img src="https://img.shields.io/badge/gateway-1.0.0-blue" alt="Gateway version 1.0.0"></a>
+  <img src="https://img.shields.io/badge/Kemo%20Protocol-2.0-7c5cff" alt="Kemo Protocol 2.0">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776ab" alt="Python 3.11+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="Apache License 2.0"></a>
 </p>
 
 ---
+
+## 1.0.0 Kemo 2.0 版本基线对齐
+
+本版本将网关版本正式定档为 **1.0.0**，继续提供 Kemo 2.0 协议，并完成与 `kemo-agent 1.4.0`、`kemo-graph 1.6.0` 的请求、响应、流式、工具调用、Embedding、Rerank 和结构化输出合同对齐。
 
 ## 0.8.2 长期运行与声明式目录热重建
 
@@ -36,7 +40,7 @@
 - **在途请求代际隔离**：新请求进入新 Provider，旧请求继续使用旧 Provider；取消操作通过 `response_id` 命中实际创建响应的 Provider 代际。旧代际分别排空后关闭，不会因连续更新互相覆盖。
 - **保守重启边界**：模板和普通 Provider 默认不启用目录热重建。Python、`manifest.json`、协议映射、依赖、新 Provider、环境变量和 Web 构建仍需平滑重启；核心不执行 `importlib.reload()`。
 
-网关与前端管理包统一为 **`0.8.2`**，Kemo 协议仍为 **`1.0`**。现有数据库、调用密钥和普通
+网关与前端管理包统一为 **`1.0.0`**，Kemo 协议为 **`2.0`**。现有数据库、调用密钥和普通
 Provider 配置无需迁移；升级源码后需要重启网关，前端版本同步需重新构建。
 
 ## 0.8.1 SSE 持久化与磁盘 I/O 稳定性
