@@ -19,6 +19,12 @@ _TERMINAL_EVENT_TYPES = {
 _MAX_EVENT_DATA_BYTES = 1024 * 1024
 
 
+class EventTooLargeError(ValueError):
+    """A complete wire event exceeded the Kemo per-event byte budget."""
+
+    code = "event_too_large"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -32,6 +38,7 @@ class EventAssembler:
             type="response.created",
             event_id=f"evt_{uuid4().hex}",
             sequence=sequence,
+            previous_sequence=None if sequence == 0 else sequence - 1,
             request_id=request_id,
             response_id=response_id,
             timestamp=_now(),
@@ -53,6 +60,7 @@ class EventAssembler:
             type=event_type,
             event_id=f"evt_{uuid4().hex}",
             sequence=sequence,
+            previous_sequence=None if sequence == 0 else sequence - 1,
             request_id=request_id,
             response_id=response_id,
             timestamp=_now(),
@@ -61,11 +69,14 @@ class EventAssembler:
             call_id=provider_event.call_id,
             name=provider_event.name,
             delta=provider_event.delta,
+            text=provider_event.text,
             item=provider_event.item,
             usage=provider_event.usage,
             response=terminal_response,
-            error=provider_event.error,
-            data=provider_event.data,
+            # response.failed carries its error only inside the normalized
+            # response; standalone ``error`` events are the only shape with
+            # a top-level UnifiedError.
+            error=(provider_event.error if event_type == "error" else None),
         ))
 
 
@@ -76,5 +87,7 @@ def _ensure_event_size(event: SSEEvent) -> SSEEvent:
         separators=(",", ":"),
     ).encode("utf-8")
     if len(payload) > _MAX_EVENT_DATA_BYTES:
-        raise ValueError("SSE 单事件 data 超过 1 MiB；大型媒体必须使用 Asset")
+        raise EventTooLargeError(
+            "SSE 单事件 data 超过 1 MiB；大型媒体必须使用 Asset"
+        )
     return event

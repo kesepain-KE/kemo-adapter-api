@@ -64,6 +64,10 @@ class RequestContext:
 class ProviderEventKind(StrEnum):
     ITEM_ADDED = "output_item.added"
     TEXT_DELTA = "output_text.delta"
+    # Core-synthesized closure for providers whose native stream only exposes
+    # deltas.  The public Kemo 2.0 stream requires output_text.done before
+    # usage/terminal frames, so the executor may emit this normalized event.
+    TEXT_DONE = "output_text.done"
     AUDIO_DELTA = "output_audio.delta"
     REASONING_SUMMARY_DELTA = "reasoning.summary.delta"
     REASONING_CONTENT_DELTA = "reasoning.content.delta"
@@ -75,6 +79,10 @@ class ProviderEventKind(StrEnum):
     INCOMPLETE = "provider.incomplete"
     FAILED = "provider.failed"
     CANCELLED = "provider.cancelled"
+    # A stream-level failure that cannot be represented as a complete
+    # KemoResponse.  The gateway publishes this as the standalone ``error``
+    # terminal event and does not duplicate it into a response.failed frame.
+    ERROR = "error"
 
 
 @dataclass(slots=True)
@@ -89,6 +97,22 @@ class ProviderResult:
     incomplete_details: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderChoiceResult:
+    """One indexed candidate returned by a multi-choice Provider call."""
+
+    choice_index: int
+    result: ProviderResult
+
+
+@dataclass(slots=True)
+class ProviderBatchResult:
+    """One upstream execution with ordered candidates and aggregate usage."""
+
+    responses: list[ProviderChoiceResult]
+    usage: Usage = field(default_factory=Usage)
 
 
 @dataclass(slots=True)
@@ -116,6 +140,11 @@ class ProviderEmbedding:
 class ProviderEmbeddingResult:
     embeddings: list[ProviderEmbedding]
     vector_space_id: str
+    # IDs that the provider actually truncated according to its tokenizer.
+    # An empty list is distinct from an omitted/unknown report at the contract
+    # boundary; providers must populate this when truncate was requested.
+    truncated_ids: list[str] = field(default_factory=list)
+    truncation_reported: bool = False
     usage: Usage = field(default_factory=Usage)
     model_version: str | None = None
     provider_response_id: str | None = None
@@ -151,6 +180,7 @@ class ProviderEvent:
     call_id: str | None = None
     name: str | None = None
     delta: str | None = None
+    text: str | None = None
     item: dict[str, Any] | None = None
     usage: Usage | None = None
     result: ProviderResult | None = None
@@ -189,12 +219,14 @@ class ProviderPackage(ABC):
             status="unsupported",
             error=ErrorObject(
                 type="unsupported_operation",
-                code="PROBE_UNSUPPORTED",
+                code="CAPABILITY_ERROR",
                 message=f"Provider {self.provider_id} 尚未实现模型可达性探测器。",
             ),
         )
 
-    async def execute(self, request: KemoRequest, context: RequestContext) -> ProviderResult:
+    async def execute(
+        self, request: KemoRequest, context: RequestContext
+    ) -> ProviderResult | ProviderBatchResult:
         """完成一次 LLM 非流式执行；非 LLM 包保持默认实现。"""
         del request, context
         raise LookupError(f"Provider {self.provider_id} 不支持 LLM response")
