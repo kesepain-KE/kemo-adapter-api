@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response
 
 from api.dependencies import get_registry
 from api.middleware import (
@@ -14,6 +14,11 @@ from api.middleware import (
     can_access_model_task,
     ensure_model_allowed,
     ensure_model_task_allowed,
+)
+from api.protocol_version import (
+    CURRENT_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+    validate_protocol_version,
 )
 from core.models import (
     CompatibleModelItem,
@@ -147,11 +152,18 @@ async def list_models(
     task: ModelTask | None = Query(default=None),
     principal: Principal = Depends(authenticated_principal),
     registry: ProviderRegistry = Depends(get_registry),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> ModelCatalogResponse:
     """Return only models the authenticated gateway key may actually invoke."""
     _private_response(response)
+    validate_protocol_version(protocol_version)
     data = await _visible_models(principal, registry, task)
-    return ModelCatalogResponse(count=len(data), data=data)
+    return ModelCatalogResponse(
+        protocol_version=CURRENT_PROTOCOL_VERSION,
+        supported_protocol_versions=list(SUPPORTED_PROTOCOL_VERSIONS),
+        count=len(data),
+        data=data,
+    )
 
 
 @router.get("/v1/models", response_model=CompatibleModelList)
@@ -180,8 +192,10 @@ async def model_capabilities(
     model: str = Path(min_length=1),
     principal: Principal = Depends(authenticated_principal),
     registry: ProviderRegistry = Depends(get_registry),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> ModelCapabilities:
     _private_response(response)
+    validate_protocol_version(protocol_version)
     return await _load_capabilities(model, principal, registry)
 
 
@@ -191,7 +205,9 @@ async def capabilities(
     model: str = Query(min_length=1),
     principal: Principal = Depends(authenticated_principal),
     registry: ProviderRegistry = Depends(get_registry),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> ModelCapabilities:
     """Backward-compatible query-style capability endpoint."""
     _private_response(response)
+    validate_protocol_version(protocol_version)
     return await _load_capabilities(model, principal, registry)

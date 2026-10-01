@@ -16,8 +16,9 @@ from api.middleware import (
     ensure_model_task_allowed,
 )
 from api.sse import encode_sse
+from api.protocol_version import validate_protocol_version
 from core.executor import GatewayExecutor, StreamResumeError
-from core.models import KemoRequest, KemoResponse, SSEEvent
+from core.models import KemoRequest, KemoResponse, KemoResponseBatch, SSEEvent
 from core.stores import IdempotencyConflict
 from core.runtime_state import GatewayDrainingError, GatewayOverloadedError
 
@@ -54,7 +55,7 @@ async def _heartbeat_stream(
             await aclose()
 
 
-@router.post("/model/responses", response_model=KemoResponse)
+@router.post("/model/responses", response_model=KemoResponse | KemoResponseBatch)
 async def create_response(
     request: KemoRequest,
     http_request: Request,
@@ -63,13 +64,12 @@ async def create_response(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
-) -> KemoResponse | StreamingResponse:
+) -> KemoResponse | KemoResponseBatch | StreamingResponse:
     ensure_model_allowed(principal, request.model)
     ensure_model_task_allowed(principal, "llm")
     if idempotency_key != request.request_id:
         raise HTTPException(status_code=400, detail="Idempotency-Key 必须等于 request_id")
-    if protocol_version != request.protocol_version or request.protocol_version != "1.0":
-        raise HTTPException(status_code=400, detail="协议版本不兼容")
+    validate_protocol_version(protocol_version, body_version=request.protocol_version)
     try:
         execution_lease = await http_request.app.state.runtime_state.admit_execution()
     except (GatewayDrainingError, GatewayOverloadedError) as exc:
@@ -144,11 +144,17 @@ async def get_response(
     response: Response,
     principal: Principal = Depends(control_plane_principal),
     executor: GatewayExecutor = Depends(get_executor),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> KemoResponse:
+    validate_protocol_version(protocol_version)
     result = await executor.get(principal.tenant_id, response_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Response 不存在")
-    if result.status == "incomplete" and result.incomplete_details == {"reason": "running"}:
+    if (
+        result.status == "incomplete"
+        and result.incomplete_details is not None
+        and result.incomplete_details.reason == "running"
+    ):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
 
@@ -158,7 +164,9 @@ async def cancel_response(
     response_id: str,
     principal: Principal = Depends(control_plane_principal),
     executor: GatewayExecutor = Depends(get_executor),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> KemoResponse:
+    validate_protocol_version(protocol_version)
     result = await executor.cancel(
         tenant_id=principal.tenant_id,
         subject_id=principal.subject_id,

@@ -80,7 +80,7 @@ class RequestBodyLimitMiddleware:
     async def _send_rejection(self, send: Send) -> None:
         payload = json.dumps(
             {
-                "protocol_version": "1.0",
+                "protocol_version": "2.0",
                 "error": {
                     "type": "validation",
                     "code": "REQUEST_TOO_LARGE",

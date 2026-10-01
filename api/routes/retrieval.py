@@ -11,6 +11,7 @@ from api.middleware import (
     ensure_model_allowed,
     ensure_model_task_allowed,
 )
+from api.protocol_version import validate_protocol_version
 from core.models import (
     EmbeddingRequest,
     EmbeddingResponse,
@@ -42,13 +43,13 @@ def require_rerank_scope(
 
 def validate_headers(
     request_id: str,
-    protocol_version: str,
+    body_protocol_version: str,
+    protocol_version: str | None,
     idempotency_key: str | None,
 ) -> None:
     if idempotency_key != request_id:
         raise HTTPException(status_code=400, detail="Idempotency-Key 必须等于 request_id")
-    if protocol_version != "1.0":
-        raise HTTPException(status_code=400, detail="协议版本不兼容")
+    validate_protocol_version(protocol_version, body_version=body_protocol_version)
 
 
 def unknown_model(request_id: str, model: str) -> ModelOperationFailure:
@@ -73,7 +74,7 @@ async def create_embeddings(
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> EmbeddingResponse:
     ensure_model_allowed(principal, request.model)
-    validate_headers(request.request_id, protocol_version or "", idempotency_key)
+    validate_headers(request.request_id, request.protocol_version, protocol_version, idempotency_key)
     context = executor.make_context(
         tenant_id=principal.tenant_id,
         subject_id=principal.subject_id,
@@ -103,7 +104,7 @@ async def create_rerank(
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> RerankResponse:
     ensure_model_allowed(principal, request.model)
-    validate_headers(request.request_id, protocol_version or "", idempotency_key)
+    validate_headers(request.request_id, request.protocol_version, protocol_version, idempotency_key)
     context = executor.make_context(
         tenant_id=principal.tenant_id,
         subject_id=principal.subject_id,

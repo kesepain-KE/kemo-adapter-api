@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Reque
 from fastapi.responses import StreamingResponse
 
 from api.middleware import Principal, authenticated_principal
+from api.protocol_version import validate_protocol_version
 from core.assets import AssetStore, upload_chunks
 from core.models import AssetDescriptor
 
@@ -25,7 +26,7 @@ def _require_scope(principal: Principal, scope: str) -> None:
     if "owner" not in principal.scopes and scope not in principal.scopes:
         raise HTTPException(
             status_code=403,
-            detail={"code": "AUTHORIZATION_ERROR", "message": f"当前密钥缺少 {scope} 权限"},
+            detail={"code": "PERMISSION_DENIED", "message": f"当前密钥缺少 {scope} 权限"},
         )
 
 
@@ -40,11 +41,7 @@ async def upload_asset(
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> AssetDescriptor:
     _require_scope(principal, "asset:write")
-    if protocol_version != "1.0":
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "PROTOCOL_VERSION_ERROR", "message": "X-Kemo-Protocol-Version 必须为 1.0"},
-        )
+    validate_protocol_version(protocol_version)
     if idempotency_key is None:
         raise HTTPException(
             status_code=400,
@@ -90,7 +87,9 @@ async def get_asset(
     response: Response,
     principal: Principal = Depends(authenticated_principal),
     store: AssetStore = Depends(_asset_store),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> AssetDescriptor:
+    validate_protocol_version(protocol_version)
     _require_scope(principal, "asset:read")
     descriptor = store.get(
         asset_id,
@@ -108,7 +107,9 @@ async def get_asset_content(
     principal: Principal = Depends(authenticated_principal),
     store: AssetStore = Depends(_asset_store),
     range_header: str | None = Header(default=None, alias="Range"),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> StreamingResponse:
+    validate_protocol_version(protocol_version)
     _require_scope(principal, "asset:read")
     resolved = store.resolve(
         asset_id,
@@ -150,7 +151,9 @@ async def delete_asset(
     asset_id: str,
     principal: Principal = Depends(authenticated_principal),
     store: AssetStore = Depends(_asset_store),
+    protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> Response:
+    validate_protocol_version(protocol_version)
     _require_scope(principal, "asset:write")
     await store.delete(
         asset_id,
@@ -166,13 +169,13 @@ def _resolve_range(value: str | None, size: int) -> tuple[int, int, bool]:
     if not value.startswith("bytes=") or "," in value:
         raise HTTPException(
             status_code=416,
-            detail={"code": "INVALID_RANGE", "message": "只支持单段 bytes Range"},
+            detail={"code": "INVALID_MEDIA", "message": "只支持单段 bytes Range", "kind": "invalid_range"},
             headers={"Content-Range": f"bytes */{size}"},
         )
     spec = value[6:].strip()
     start_raw, separator, end_raw = spec.partition("-")
     if not separator:
-        raise HTTPException(status_code=416, detail={"code": "INVALID_RANGE", "message": "Range 格式无效"})
+        raise HTTPException(status_code=416, detail={"code": "INVALID_MEDIA", "message": "Range 格式无效", "kind": "invalid_range"})
     try:
         if not start_raw:
             suffix = int(end_raw)
@@ -184,11 +187,11 @@ def _resolve_range(value: str | None, size: int) -> tuple[int, int, bool]:
             start = int(start_raw)
             end = int(end_raw) if end_raw else size - 1
     except ValueError as exc:
-        raise HTTPException(status_code=416, detail={"code": "INVALID_RANGE", "message": "Range 格式无效"}) from exc
+        raise HTTPException(status_code=416, detail={"code": "INVALID_MEDIA", "message": "Range 格式无效", "kind": "invalid_range"}) from exc
     if start < 0 or start >= size or end < start:
         raise HTTPException(
             status_code=416,
-            detail={"code": "INVALID_RANGE", "message": "Range 超出 Asset 范围"},
+            detail={"code": "INVALID_MEDIA", "message": "Range 超出 Asset 范围", "kind": "invalid_range"},
             headers={"Content-Range": f"bytes */{size}"},
         )
     return start, min(end, size - 1), True
