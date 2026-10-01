@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from core.models import ModelCapabilities, ReasoningCapabilities, ToolCapabilities
+from core.models import (
+    ModelCapabilities,
+    ReasoningCapabilities,
+    StructuredOutputCapabilities,
+    ToolCapabilities,
+)
 
 
 MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     "example-model-name": ModelCapabilities(
+        protocol_version="2.0",
         model="example-model-name",
+        provider_id="example",
+        provider_model="model-name",
         task="llm",
         input_modalities=["text"],
         output_modalities=["text"],
@@ -24,7 +32,7 @@ MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         ),
         # 只声明已经用真实请求验证过的能力；模板默认不替厂商作乐观推断。
         tools=ToolCapabilities(function_calling=False, parallel_calls=False),
-        structured_output=False,
+        structured_output=StructuredOutputCapabilities(supported=False),
         metadata={"source": "provider_package", "upstream_model": "model-name"},
         extensions={
             # 未知额度保持空对象，不把示例数字当成厂商真实限制。

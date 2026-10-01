@@ -29,6 +29,10 @@ from .provider import ExampleProvider, resolve_api_key
 GATEWAY_MODEL = "example-model-name"
 
 
+def protocol_request_id(value: str) -> str:
+    return value if value.startswith("req_") else f"req_{value}"
+
+
 def test_full_catalog_matches_manifest_and_runtime() -> None:
     """复制后自动检查所有模型，不只检查 GATEWAY_MODEL 这一条。"""
     directory = Path(__file__).parent
@@ -126,7 +130,7 @@ def test_api_key_resolution_rejects_noncanonical_pool_entries(
         (408, "PROVIDER_TIMEOUT", True),
         (429, "RATE_LIMITED", True),
         (500, "PROVIDER_UNAVAILABLE", True),
-        (400, "INVALID_REQUEST", False),
+        (400, "VALIDATION_ERROR", False),
     ],
 )
 def test_error_mapper_keeps_http_retry_boundary_and_redacts_body(
@@ -198,12 +202,13 @@ class FakeClient:
 
 
 def context(request_id: str) -> RequestContext:
+    request_id = protocol_request_id(request_id)
     return RequestContext(
         tenant_id="test-tenant",
         subject_id="test-subject",
         request_id=request_id,
-        response_id=f"resp-{request_id}",
-        trace_id=f"trace-{request_id}",
+        response_id=f"resp_{request_id.removeprefix('req_')}",
+        trace_id=f"trace_{request_id.removeprefix('req_')}",
     )
 
 
@@ -213,8 +218,9 @@ def request(
     stream: bool = False,
     provider_options: dict[str, Any] | None = None,
 ) -> KemoRequest:
+    request_id = protocol_request_id(request_id)
     return KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id=request_id,
         attempt=1,
         model=GATEWAY_MODEL,
@@ -350,6 +356,7 @@ def test_asset_input_and_output_helpers_keep_paths_inside_provider(
     input_path = tmp_path / "input.png"
     input_path.write_bytes(b"test")
     input_descriptor = AssetDescriptor(
+        protocol_version="2.0",
         id="asset_input_test",
         status="ready",
         purpose="input",
@@ -386,9 +393,9 @@ def test_asset_input_and_output_helpers_keep_paths_inside_provider(
         request_context = RequestContext(
             tenant_id="test-tenant",
             subject_id="test-subject",
-            request_id="media-output",
-            response_id="resp-media-output",
-            trace_id="trace-media-output",
+            request_id="req_media_output",
+            response_id="resp_media_output",
+            trace_id="trace_media_output",
             assets=assets,  # type: ignore[arg-type]
         )
         block, descriptor = await store_output_media(

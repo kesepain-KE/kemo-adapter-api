@@ -85,11 +85,11 @@ class ExampleErrorMapper:
             message = "Provider is temporarily unavailable."
             retryable = True
         elif 400 <= normalized <= 499:
-            code = "INVALID_REQUEST"
+            code = "VALIDATION_ERROR"
             message = "Provider rejected the request."
             retryable = False
         else:
-            code = "PROVIDER_ERROR"
+            code = "UNKNOWN_ERROR"
             message = "Provider request failed."
             retryable = False
 

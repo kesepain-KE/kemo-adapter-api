@@ -8,17 +8,24 @@
       "input_modalities": ["text"],
       "output_modalities": ["text"],
       "streaming": false,
-      "structured_output": false,
       "reasoning": {
         "supported": false,
         "efforts": [],
         "summary": false,
-        "persisted_state": false
+        "persisted_state": false,
+        "contexts": ["none", "auto"],
+        "returns": ["none", "auto"]
       },
       "tools": {
         "function_calling": false,
         "parallel_calls": false,
-        "multimodal_results": false
+        "multimodal_results": false,
+        "tool_choice_modes": ["auto", "none"]
+      },
+      "structured_output": {
+        "supported": false,
+        "strict": false,
+        "schema_subset": []
       },
       "limits": {},
       "asset_limits": {},

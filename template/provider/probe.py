@@ -19,7 +19,7 @@ async def probe_model(
 ) -> ProviderProbeResult:
     """LLM 模板：执行低成本最小生成；其他任务必须替换为对应探测协议。"""
     request = KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id=context.request_id,
         attempt=1,
         model=model,

@@ -45,6 +45,7 @@ def add_verified_operations(
 def capability_example(operation: str) -> ModelCapabilities:
     data = MODEL_CAPABILITIES["example-model-name"].model_dump(mode="json")
     data["model"] = "example-demo-model"
+    data["provider_model"] = "demo-model"
     data["metadata"]["upstream_model"] = "demo-model"
     data["metadata"]["example_only"] = True
     # 每个示例只演示对应操作；真实模型可以通过上面的函数合并多种已验证操作。
@@ -83,10 +84,10 @@ def request_example(operation: str) -> KemoRequest:
         if modality in configs:
             output[modality] = configs[modality]
     return KemoRequest.model_validate({
-        "protocol_version": "1.0", "request_id": f"demo-{operation}", "attempt": 1,
+        "protocol_version": "2.0", "request_id": f"req_demo_{operation}", "attempt": 1,
         "model": "example-demo-model", "stream": False, "system_prompt": "",
-        "generation": {"max_output_tokens": 64, "parallel_tool_calls": False},
-        "output": output, "tools": [],
+        "generation": {"max_output_tokens": 64},
+        "parallel_tool_calls": False, "output": output, "tools": [],
         "input": [{"id": "msg_demo_user", "type": "message", "role": "user",
                    "status": "completed", "content": content}],
         "provider_options": {}, "metadata": {"capability": operation}, "extensions": {},
@@ -118,9 +119,10 @@ def retrieval_example(task: str) -> tuple[ModelCapabilities, EmbeddingRequest | 
     """模拟检索模型；维度/批量数字仅用于离线测试，不是生产额度。"""
     data = MODEL_CAPABILITIES["example-model-name"].model_dump(mode="json")
     data.update(model=f"example-demo-{task}", task=task)
+    data["provider_model"] = f"demo-{task}"
     data["metadata"] = {"upstream_model": f"demo-{task}", "example_only": True}
     data["extensions"].pop("operations")
-    base = {"protocol_version": "1.0", "request_id": f"demo-{task}", "model": data["model"]}
+    base = {"protocol_version": "2.0", "request_id": f"req_demo_{task}", "model": data["model"]}
     if task == "embedding":
         data["output_modalities"] = ["embedding"]
         data["embedding"] = {
