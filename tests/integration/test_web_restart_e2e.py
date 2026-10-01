@@ -41,6 +41,7 @@ def _copy_runtime_project(destination: Path) -> None:
     ):
         shutil.copy2(PROJECT_ROOT / filename, destination / filename)
     shutil.copytree(PROJECT_ROOT / "api", destination / "api", ignore=ignore_runtime)
+    shutil.copytree(PROJECT_ROOT / "vendor", destination / "vendor")
     shutil.copytree(PROJECT_ROOT / "core", destination / "core", ignore=ignore_runtime)
     (destination / "web").mkdir()
     shutil.copy2(PROJECT_ROOT / "web" / "__init__.py", destination / "web" / "__init__.py")
