@@ -30,13 +30,13 @@ from tests.support.project import project, write_json
 
 EMBED_HEADERS = {
     "Authorization": "Bearer embedding-token",
-    "X-Kemo-Protocol-Version": "1.0",
-    "Idempotency-Key": "embed_req_1",
+    "X-Kemo-Protocol-Version": "2.0",
+    "Idempotency-Key": "req_embed_1",
 }
 RERANK_HEADERS = {
     "Authorization": "Bearer rerank-token",
-    "X-Kemo-Protocol-Version": "1.0",
-    "Idempotency-Key": "rerank_req_1",
+    "X-Kemo-Protocol-Version": "2.0",
+    "Idempotency-Key": "req_rerank_1",
 }
 
 
@@ -49,7 +49,10 @@ class BrokenEmbeddingProvider(FakeRetrievalProvider):
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
+            protocol_version="2.0",
             model=model,
+            provider_id=self.provider_id,
+            provider_model="embed-v1",
             task="embedding",
             input_modalities=["text"],
             output_modalities=["embedding"],
@@ -175,13 +178,13 @@ def test_model_whitelist_applies_to_embeddings_and_rerank(tmp_path: Path) -> Non
     app.state.registry.register(FakeRetrievalProvider())
     embedding_headers = {
         "Authorization": "Bearer limited-token",
-        "X-Kemo-Protocol-Version": "1.0",
-        "Idempotency-Key": "embed_req_1",
+        "X-Kemo-Protocol-Version": "2.0",
+        "Idempotency-Key": "req_embed_1",
     }
     rerank_headers = {
         "Authorization": "Bearer limited-token",
-        "X-Kemo-Protocol-Version": "1.0",
-        "Idempotency-Key": "rerank_req_1",
+        "X-Kemo-Protocol-Version": "2.0",
+        "Idempotency-Key": "req_rerank_1",
     }
 
     with TestClient(app) as client:
@@ -194,12 +197,16 @@ def test_model_whitelist_applies_to_embeddings_and_rerank(tmp_path: Path) -> Non
 
     assert allowed.status_code == 200
     assert blocked.status_code == 403
-    assert blocked.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
+    assert blocked.json()["error"]["code"] == "PERMISSION_DENIED"
+    assert blocked.json()["error"]["details"]["kind"] == "model_not_allowed"
 
 
 def test_capabilities_expose_retrieval_task_contracts(tmp_path: Path) -> None:
     app, _ = retrieval_app(tmp_path)
-    headers = {"Authorization": "Bearer model-token"}
+    headers = {
+        "Authorization": "Bearer model-token",
+        "X-Kemo-Protocol-Version": "2.0",
+    }
     with TestClient(app) as client:
         embedding = client.get(
             "/model/capabilities",
@@ -225,10 +232,10 @@ def test_task_mismatch_and_bad_provider_result_are_sanitized(tmp_path: Path) -> 
     mismatch = embedding_body()
     mismatch["model"] = "retrieval-rerank-v1"
     broken_body = embedding_body()
-    broken_body["request_id"] = "broken_req_1"
+    broken_body["request_id"] = "req_broken_1"
     broken_body["model"] = "broken_retrieval-embed-v1"
     broken_body["inputs"] = [{"id": "node", "text": "secret source text"}]
-    broken_headers = {**EMBED_HEADERS, "Idempotency-Key": "broken_req_1"}
+    broken_headers = {**EMBED_HEADERS, "Idempotency-Key": "req_broken_1"}
 
     with TestClient(app) as client:
         wrong_task = client.post(
@@ -260,8 +267,10 @@ def test_strict_request_validation_rejects_unstable_graph_ids(tmp_path: Path) ->
             "/model/rerank", headers=RERANK_HEADERS, json=invalid_rerank
         )
 
-    assert embedding_response.status_code == 422
-    assert rerank_response.status_code == 422
+    assert embedding_response.status_code == 400
+    assert rerank_response.status_code == 400
+    assert embedding_response.json()["object"] == "kemo.error"
+    assert rerank_response.json()["object"] == "kemo.error"
 
 
 def test_unknown_retrieval_model_has_task_specific_error(tmp_path: Path) -> None:

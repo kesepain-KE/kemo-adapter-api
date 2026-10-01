@@ -21,8 +21,8 @@ from core.stores import (
 def _record(
     *,
     request_hash: str = "hash-1",
-    request_id: str = "request-1",
-    response_id: str = "response-1",
+    request_id: str = "req_1",
+    response_id: str = "resp_1",
 ) -> ExecutionRecord:
     return ExecutionRecord(
         tenant_id="tenant-1",
@@ -39,7 +39,7 @@ def _reasoning_event(record: ExecutionRecord, sequence: int) -> SSEEvent:
     return EventAssembler.assemble(
         ProviderEvent(
             kind=ProviderEventKind.REASONING_CONTENT_DELTA,
-            item_id="reasoning-1",
+            item_id="rs_1",
             delta=f"delta-{sequence}",
         ),
         request_id=record.request_id,
@@ -112,7 +112,7 @@ def test_sqlite_execution_store_persists_idempotency_and_terminal_response(
             request_id=record.request_id,
             status="incomplete",
             model=record.model,
-            incomplete_details={"reason": "test"},
+            incomplete_details={"reason": "other", "details": {"kind": "test"}},
         )
         record.status = InternalStatus.INCOMPLETE
         record.response = response
@@ -149,11 +149,14 @@ def test_sqlite_execution_store_recovers_interrupted_stream_for_replay(
 
         second = SQLiteExecutionStore(tmp_path, retention_hours=24)
         await second.initialize()
-        recovered = await second.get_by_request_id("tenant-1", "request-1")
+        recovered = await second.get_by_request_id("tenant-1", "req_1")
         assert recovered is not None
         assert recovered.status == InternalStatus.INCOMPLETE
         assert recovered.response is not None
-        assert recovered.response.incomplete_details == {"reason": "gateway_restarted"}
+        assert recovered.response.incomplete_details.reason == "upstream_stopped"
+        assert recovered.response.incomplete_details.details == {
+            "kind": "gateway_restarted"
+        }
         assert [event.type for event in recovered.events] == [
             "response.created",
             "response.incomplete",
@@ -186,7 +189,10 @@ def test_terminal_event_and_response_commit_atomically(tmp_path: Path) -> None:
             request_id=record.request_id,
             status="incomplete",
             model=record.model,
-            incomplete_details={"reason": "finished-before-save"},
+            incomplete_details={
+                "reason": "other",
+                "details": {"kind": "finished-before-save"},
+            },
         )
         terminal = EventAssembler.assemble(
             ProviderEvent(
@@ -204,7 +210,7 @@ def test_terminal_event_and_response_commit_atomically(tmp_path: Path) -> None:
 
         second = SQLiteExecutionStore(tmp_path, retention_hours=24)
         await second.initialize()
-        recovered = await second.get_by_request_id("tenant-1", "request-1")
+        recovered = await second.get_by_request_id("tenant-1", "req_1")
         assert recovered is not None
         assert recovered.response == response
         assert [event.type for event in recovered.events] == [
@@ -300,7 +306,10 @@ def test_terminal_event_flushes_pending_batch_and_publishes_state_atomically(
             request_id=record.request_id,
             status="incomplete",
             model=record.model,
-            incomplete_details={"reason": "batched-terminal"},
+            incomplete_details={
+                "reason": "other",
+                "details": {"kind": "batched-terminal"},
+            },
         )
         record.response = response
         terminal = EventAssembler.assemble(
@@ -328,7 +337,7 @@ def test_terminal_event_flushes_pending_batch_and_publishes_state_atomically(
 
         replay_store = SQLiteExecutionStore(tmp_path, retention_hours=24)
         await replay_store.initialize()
-        replay = await replay_store.get_by_request_id("tenant-1", "request-1")
+        replay = await replay_store.get_by_request_id("tenant-1", "req_1")
         assert replay is not None
         assert replay.status == InternalStatus.INCOMPLETE
         assert replay.response == response
@@ -373,10 +382,10 @@ def test_terminal_flush_is_isolated_per_response(tmp_path: Path) -> None:
         )
         await store.initialize()
         first, _ = await store.create_or_get(
-            _record(request_id="request-a", response_id="response-a")
+            _record(request_id="req_a", response_id="resp_a")
         )
         second, _ = await store.create_or_get(
-            _record(request_id="request-b", response_id="response-b")
+            _record(request_id="req_b", response_id="resp_b")
         )
         await store.append_event(
             first,
@@ -397,7 +406,10 @@ def test_terminal_flush_is_isolated_per_response(tmp_path: Path) -> None:
             request_id=first.request_id,
             status="incomplete",
             model=first.model,
-            incomplete_details={"reason": "isolated"},
+            incomplete_details={
+                "reason": "other",
+                "details": {"kind": "isolated"},
+            },
         )
         first.response = response
         terminal = EventAssembler.assemble(
@@ -450,7 +462,7 @@ def test_cancelled_append_finishes_commit_before_exposing_cancellation(
 
         replay_store = SQLiteExecutionStore(tmp_path)
         await replay_store.initialize()
-        replay = await replay_store.get_by_request_id("tenant-1", "request-1")
+        replay = await replay_store.get_by_request_id("tenant-1", "req_1")
         assert replay is not None
         assert replay.events[0] == created
         await replay_store.close()

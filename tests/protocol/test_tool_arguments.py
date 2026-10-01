@@ -33,13 +33,37 @@ def test_parser_distinguishes_missing_empty_object_and_non_object() -> None:
 
 def test_parser_rejects_oversized_valid_prefix_without_truncating() -> None:
     prefix = '{"x":1}'
-    oversized = prefix + (" " * (1_000_000 - len(prefix))) + "TRAILING"
+    oversized = prefix + (" " * (1024 * 1024 - len(prefix))) + "TRAILING"
 
     parsed = parse_tool_arguments(oversized)
 
     assert parsed.arguments == {}
     assert parsed.parse_error["kind"] == "arguments_too_large"
     assert parsed.arguments_raw is None
+
+
+def test_parser_enforces_exact_utf8_duplicate_and_finite_json_contract() -> None:
+    wrapper_bytes = len('{"x":""}'.encode("utf-8"))
+    boundary = '{"x":"' + ("a" * (1024 * 1024 - wrapper_bytes)) + '"}'
+    accepted = parse_tool_arguments(boundary)
+    assert accepted.parse_error is None
+    assert len(accepted.arguments_raw.encode("utf-8")) == 1024 * 1024
+
+    over = parse_tool_arguments(boundary[:-2] + 'a"}')
+    assert over.parse_error["kind"] == "arguments_too_large"
+    assert parse_tool_arguments('{"x":1,"x":2}').parse_error["kind"] == "duplicate_key"
+    assert parse_tool_arguments('{"x":NaN}').parse_error["kind"] == "non_finite_number"
+    assert parse_tool_arguments({"x": float("inf")}).parse_error["kind"] == "non_finite_number"
+
+
+def test_parser_applies_depth_and_node_budgets_to_mapping_inputs() -> None:
+    deep: dict[str, object] = {"leaf": True}
+    for _ in range(65):
+        deep = {"next": deep}
+    assert parse_tool_arguments(deep).parse_error["kind"] == "arguments_too_complex"
+
+    wide = {"items": list(range(4096))}
+    assert parse_tool_arguments(wide).parse_error["kind"] == "arguments_too_complex"
 
 
 def test_parser_rejects_deep_json_before_python_parser_variation() -> None:
@@ -53,15 +77,15 @@ def test_parser_rejects_deep_json_before_python_parser_variation() -> None:
 
 def test_schema_validation_allows_real_no_argument_tool_and_rejects_required_gap() -> None:
     no_arg = ToolCallItem(
-        id="item_no_arg",
-        call_id="call_no_arg",
+        id="call_no_arg_item",
+        call_id="callid_no_arg",
         name="noop",
         arguments={},
         arguments_raw="{}",
     )
     required_gap = ToolCallItem(
-        id="item_required",
-        call_id="call_required",
+        id="call_required_item",
+        call_id="callid_required",
         name="file",
         arguments={},
         arguments_raw="{}",
@@ -94,8 +118,8 @@ def test_schema_validation_allows_real_no_argument_tool_and_rejects_required_gap
     assert "secret" not in str(invalid)
 
     malformed = ToolCallItem(
-        id="item_parse_error",
-        call_id="call_parse_error",
+        id="call_parse_error_item",
+        call_id="callid_parse_error",
         name="file",
         arguments={},
         parse_error={"kind": "password=diagnostic-secret"},
@@ -107,7 +131,7 @@ def test_schema_validation_allows_real_no_argument_tool_and_rejects_required_gap
 
 def test_executor_converts_invalid_tool_batch_to_incomplete_without_calls() -> None:
     request = KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id="req_invalid_tools",
         attempt=1,
         model="test-model",
@@ -156,7 +180,7 @@ def test_executor_converts_invalid_tool_batch_to_incomplete_without_calls() -> N
             {
                 "id": "call_item",
                 "type": "tool_call",
-                "call_id": "call_file",
+                "call_id": "callid_file",
                 "name": "file",
                 "arguments": {},
                 "arguments_raw": "{}",
@@ -184,7 +208,7 @@ def test_executor_streaming_path_uses_same_terminal_contract() -> None:
 
 def test_invalid_stream_tool_completed_event_is_not_publishable() -> None:
     request = KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id="req_stream_invalid_tools",
         attempt=1,
         model="test-model",
@@ -223,7 +247,7 @@ def test_invalid_stream_tool_completed_event_is_not_publishable() -> None:
         item={
             "id": "call_item",
             "type": "tool_call",
-            "call_id": "call_file",
+            "call_id": "callid_file",
             "name": "file",
             "arguments": {},
             "arguments_raw": "{}",
@@ -234,7 +258,7 @@ def test_invalid_stream_tool_completed_event_is_not_publishable() -> None:
         item={
             "id": "call_item_valid",
             "type": "tool_call",
-            "call_id": "call_file_valid",
+            "call_id": "callid_file_valid",
             "name": "file",
             "arguments": {"action": "read", "path": "note.txt"},
             "arguments_raw": '{"action":"read","path":"note.txt"}',
@@ -247,7 +271,7 @@ def test_invalid_stream_tool_completed_event_is_not_publishable() -> None:
 
 def test_stream_invalid_parallel_batch_is_atomic_and_uses_incomplete_terminal() -> None:
     request = KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id="req_stream_atomic_tools",
         attempt=1,
         model="test-model",
@@ -284,7 +308,7 @@ def test_stream_invalid_parallel_batch_is_atomic_and_uses_incomplete_terminal() 
     valid_item = {
         "id": "call_item_valid",
         "type": "tool_call",
-        "call_id": "call_file_valid",
+        "call_id": "callid_file_valid",
         "name": "file",
         "arguments": {"action": "read", "path": "note.txt"},
         "arguments_raw": '{"action":"read","path":"note.txt"}',
@@ -292,7 +316,7 @@ def test_stream_invalid_parallel_batch_is_atomic_and_uses_incomplete_terminal() 
     invalid_item = {
         "id": "call_item_invalid",
         "type": "tool_call",
-        "call_id": "call_file_invalid",
+        "call_id": "callid_file_invalid",
         "name": "file",
         "arguments": {},
         "arguments_raw": "{}",
@@ -343,7 +367,11 @@ def test_stream_invalid_parallel_batch_is_atomic_and_uses_incomplete_terminal() 
         return record
 
     record = asyncio.run(exercise())
-    assert [event.type for event in record.events] == ["response.incomplete"]
+    assert [event.type for event in record.events] == [
+        "output_item.added",
+        "output_item.added",
+        "response.incomplete",
+    ]
     assert record.response is not None
     assert record.response.status == "incomplete"
     assert record.response.incomplete_details["reason"] == "invalid_tool_arguments"
@@ -351,7 +379,7 @@ def test_stream_invalid_parallel_batch_is_atomic_and_uses_incomplete_terminal() 
 
 def test_stream_valid_parallel_batch_publishes_all_tool_calls_before_terminal() -> None:
     request = KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id="req_stream_valid_tools",
         attempt=1,
         model="test-model",
@@ -385,7 +413,7 @@ def test_stream_valid_parallel_batch_publishes_all_tool_calls_before_terminal() 
         {
             "id": f"call_item_{index}",
             "type": "tool_call",
-            "call_id": f"call_file_{index}",
+            "call_id": f"callid_file_{index}",
             "name": "file",
             "arguments": {"path": f"note-{index}.txt"},
             "arguments_raw": f'{{"path":"note-{index}.txt"}}',
@@ -432,6 +460,8 @@ def test_stream_valid_parallel_batch_publishes_all_tool_calls_before_terminal() 
 
     record = asyncio.run(exercise())
     assert [event.type for event in record.events] == [
+        "output_item.added",
+        "output_item.added",
         "tool_call.completed",
         "tool_call.completed",
         "response.completed",
@@ -457,8 +487,8 @@ def test_schema_validation_reports_deep_schema_instead_of_recursion_error() -> N
     for _ in range(1200):
         arguments = {"next": arguments}
     item = ToolCallItem(
-        id="deep_item",
-        call_id="deep_call",
+        id="call_deep_item",
+        call_id="callid_deep",
         name="deep",
         arguments=arguments,
     )
@@ -481,8 +511,8 @@ def test_schema_validation_does_not_silently_skip_array_tail() -> None:
     )
     values = ["ok"] * 64 + [123]
     item = ToolCallItem(
-        id="batch_item",
-        call_id="batch_call",
+        id="call_batch_item",
+        call_id="callid_batch",
         name="batch",
         arguments={"items": values},
     )

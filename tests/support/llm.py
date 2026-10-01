@@ -13,7 +13,10 @@ class FakeProvider(ProviderPackage):
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
+            protocol_version="2.0",
             model=model,
+            provider_id=self.provider_id,
+            provider_model="model",
             input_modalities=["text"],
             output_modalities=["text"],
             streaming=True,
@@ -30,8 +33,6 @@ class FakeProvider(ProviderPackage):
                     "phase": "final_answer",
                     "status": "completed",
                     "content": [{"type": "text", "text": "ok"}],
-                    "metadata": {},
-                    "extensions": {},
                 }
             ],
             usage=Usage(
@@ -72,7 +73,7 @@ class FakeProvider(ProviderPackage):
 
 def request(*, stream: bool, system_prompt: str = "system") -> KemoRequest:
     return KemoRequest(
-        protocol_version="1.0",
+        protocol_version="2.0",
         request_id="req_1",
         attempt=1,
         model="fake-model",

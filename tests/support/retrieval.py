@@ -17,7 +17,10 @@ class FakeRetrievalProvider(ProviderPackage):
     async def capabilities(self, model: str) -> ModelCapabilities:
         if model == "retrieval-embed-v1":
             return ModelCapabilities(
+                protocol_version="2.0",
                 model=model,
+                provider_id=self.provider_id,
+                provider_model="embed-v1",
                 task="embedding",
                 input_modalities=["text"],
                 output_modalities=["embedding"],
@@ -33,7 +36,10 @@ class FakeRetrievalProvider(ProviderPackage):
             )
         if model == "retrieval-rerank-v1":
             return ModelCapabilities(
+                protocol_version="2.0",
                 model=model,
+                provider_id=self.provider_id,
+                provider_model="rerank-v1",
                 task="rerank",
                 input_modalities=["text"],
                 output_modalities=["score"],
@@ -92,8 +98,8 @@ class FakeRetrievalProvider(ProviderPackage):
 
 def embedding_body() -> dict:
     return {
-        "protocol_version": "1.0",
-        "request_id": "embed_req_1",
+        "protocol_version": "2.0",
+        "request_id": "req_embed_1",
         "model": "retrieval-embed-v1",
         "input_type": "document",
         "inputs": [
@@ -106,8 +112,8 @@ def embedding_body() -> dict:
 
 def rerank_body() -> dict:
     return {
-        "protocol_version": "1.0",
-        "request_id": "rerank_req_1",
+        "protocol_version": "2.0",
+        "request_id": "req_rerank_1",
         "model": "retrieval-rerank-v1",
         "query": "graph retrieval",
         "documents": [

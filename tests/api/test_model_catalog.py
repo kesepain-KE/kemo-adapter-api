@@ -69,7 +69,10 @@ def catalog_app(tmp_path: Path):
 
 
 def auth(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Kemo-Protocol-Version": "2.0",
+    }
 
 
 def test_catalog_requires_auth_and_filters_by_key_scope_and_whitelist(
@@ -160,11 +163,14 @@ def test_compatible_list_and_both_capability_routes_share_policy(tmp_path: Path)
     assert query_style.json() == path_style.json()
     assert path_style.json()["task"] == "llm"
     assert blocked_by_whitelist.status_code == 403
-    assert blocked_by_whitelist.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
+    assert blocked_by_whitelist.json()["error"]["code"] == "PERMISSION_DENIED"
+    assert blocked_by_whitelist.json()["error"]["details"]["kind"] == "model_not_allowed"
     assert blocked_by_scope.status_code == 403
-    assert blocked_by_scope.json()["error"]["code"] == "MODEL_TASK_NOT_ALLOWED"
+    assert blocked_by_scope.json()["error"]["code"] == "PERMISSION_DENIED"
+    assert blocked_by_scope.json()["error"]["details"]["kind"] == "model_task_not_allowed"
     assert broken.status_code == 502
-    assert broken.json()["error"]["code"] == "CAPABILITIES_UNAVAILABLE"
+    assert broken.json()["error"]["code"] == "PROVIDER_BAD_RESPONSE"
+    assert broken.json()["error"]["details"]["kind"] == "capabilities_unavailable"
     assert "secret provider failure" not in broken.text
     assert unknown.status_code == 404
     assert unknown.json()["error"]["code"] == "MODEL_NOT_FOUND"
@@ -206,11 +212,12 @@ def test_non_model_scope_cannot_invoke_llm(tmp_path: Path) -> None:
     body = request(stream=False).model_dump(mode="json")
     headers = {
         **auth("asset-token"),
-        "X-Kemo-Protocol-Version": "1.0",
+        "X-Kemo-Protocol-Version": "2.0",
         "Idempotency-Key": body["request_id"],
     }
     with TestClient(app) as client:
         response = client.post("/model/responses", headers=headers, json=body)
 
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "MODEL_TASK_NOT_ALLOWED"
+    assert response.json()["error"]["code"] == "PERMISSION_DENIED"
+    assert response.json()["error"]["details"]["kind"] == "model_task_not_allowed"

@@ -102,7 +102,10 @@ class DeclarativeCatalogProvider(ProviderPackage):
             if self.validation_release is not None:
                 await self.validation_release.wait()
         return ModelCapabilities(
+            protocol_version="2.0",
             model="catalog-wrong" if self._invalid_capability else model,
+            provider_id=self.provider_id,
+            provider_model=("wrong" if self._invalid_capability else model.removeprefix("catalog-")),
             input_modalities=["text"],
             output_modalities=["text"],
             streaming=self._streaming,
@@ -564,10 +567,10 @@ def test_executor_releases_provider_generation_binding_after_terminal_response()
             context = gateway.make_context(
                 tenant_id="tenant-binding",
                 subject_id="subject-binding",
-                request_id=f"req-binding-{streaming}",
+                request_id=f"req_binding_{str(streaming).lower()}",
             )
             payload = request(stream=streaming).model_copy(
-                update={"request_id": f"req-binding-{streaming}"}
+                update={"request_id": f"req_binding_{str(streaming).lower()}"}
             )
             if streaming:
                 _ = [event async for event in gateway.stream(payload, context)]
@@ -730,7 +733,10 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
         first = client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers={"Authorization": "Bearer live-token"},
+            headers={
+                "Authorization": "Bearer live-token",
+                "X-Kemo-Protocol-Version": "2.0",
+            },
         )
         assert first.status_code == 404
 
@@ -749,12 +755,18 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
         old_key = client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers={"Authorization": "Bearer live-token"},
+            headers={
+                "Authorization": "Bearer live-token",
+                "X-Kemo-Protocol-Version": "2.0",
+            },
         )
         new_key = client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers={"Authorization": "Bearer replacement-token-longer"},
+            headers={
+                "Authorization": "Bearer replacement-token-longer",
+                "X-Kemo-Protocol-Version": "2.0",
+            },
         )
         assert old_key.status_code == 401
         assert new_key.status_code == 404
@@ -763,17 +775,26 @@ def test_gateway_api_key_file_is_hot_loaded_without_environment_restart(tmp_path
         disabled = client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers={"Authorization": "Bearer replacement-token-longer"},
+            headers={
+                "Authorization": "Bearer replacement-token-longer",
+                "X-Kemo-Protocol-Version": "2.0",
+            },
         )
         assert disabled.status_code == 503
         # 关闭新 API 请求不影响已有 Response 的查询和取消入口。
         query_existing = client.get(
             "/model/responses/resp_missing",
-            headers={"Authorization": "Bearer replacement-token-longer"},
+            headers={
+                "Authorization": "Bearer replacement-token-longer",
+                "X-Kemo-Protocol-Version": "2.0",
+            },
         )
         cancel_existing = client.post(
             "/model/responses/resp_missing/cancel",
-            headers={"Authorization": "Bearer replacement-token-longer"},
+            headers={
+                "Authorization": "Bearer replacement-token-longer",
+                "X-Kemo-Protocol-Version": "2.0",
+            },
         )
         assert query_existing.status_code == 404
         assert cancel_existing.status_code == 404

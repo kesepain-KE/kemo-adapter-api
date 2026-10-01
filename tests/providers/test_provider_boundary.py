@@ -10,6 +10,7 @@ import pytest
 
 from core.executor import GatewayExecutor
 from core.models import (
+    ErrorObject,
     KemoRequest,
     ModelCapabilities,
     StageUsage,
@@ -25,7 +26,7 @@ from core.provider_contract import (
 )
 from core.registry import ProviderRegistry, _factory_settings
 from core.provider_keys import normalize_provider_keys
-from core.stores import IdempotencyConflict, InMemoryExecutionStore
+from core.stores import IdempotencyConflict, InMemoryExecutionStore, SQLiteExecutionStore
 from core.usage import aggregate_stages
 
 
@@ -42,6 +43,37 @@ class BrokenStreamProvider(FakeProvider):
         if False:
             yield ProviderEvent(kind=ProviderEventKind.TEXT_DELTA)
         raise ValueError("sensitive vendor body must not escape")
+
+
+class StandaloneErrorProvider(FakeProvider):
+    """Provider that reports a stream-level Kemo 2.0 error without a response."""
+
+    provider_id = "standalone-error"
+
+    @property
+    def models(self) -> frozenset[str]:
+        return frozenset({"standalone-error-model"})
+
+    async def _stream(
+        self, request: KemoRequest, context: RequestContext
+    ) -> AsyncIterator[ProviderEvent]:
+        del request, context
+        yield ProviderEvent(
+            kind=ProviderEventKind.ERROR,
+            error=ErrorObject(
+                type="provider_error",
+                code="PROVIDER_TIMEOUT",
+                message="upstream timed out before producing a response",
+                retryable=True,
+                retry_scope="same_sequence",
+                retry_after_ms=250,
+            ),
+        )
+
+    def stream(
+        self, request: KemoRequest, context: RequestContext
+    ) -> AsyncIterator[ProviderEvent]:
+        return self._stream(request, context)
 
 
 class SlowProvider(FakeProvider):
@@ -235,10 +267,12 @@ def test_core_owns_sse_sequence_ids_and_terminal_envelope() -> None:
         context = gateway.make_context(tenant_id="t1", subject_id="u1", request_id="req_1")
         events = [event async for event in gateway.stream(request(stream=True), context)]
 
-        assert [event.sequence for event in events] == [0, 1, 2, 3]
+        assert [event.sequence for event in events] == [0, 1, 2, 3, 4, 5]
         assert [event.type for event in events] == [
             "response.created",
+            "output_item.added",
             "output_text.delta",
+            "output_text.done",
             "usage.updated",
             "response.completed",
         ]
@@ -294,6 +328,89 @@ def test_broken_adapter_becomes_sanitized_terminal_failure() -> None:
         assert events[-1].response.error is not None
         assert events[-1].response.error.code == "PROVIDER_BAD_RESPONSE"
         assert "sensitive vendor body" not in events[-1].response.error.message
+
+    asyncio.run(scenario())
+
+
+def test_standalone_error_is_terminal_without_response_failed_duplicate() -> None:
+    async def scenario() -> None:
+        registry = ProviderRegistry()
+        registry.register(StandaloneErrorProvider())
+        store = InMemoryExecutionStore()
+        gateway = GatewayExecutor(registry, store)
+        standalone_request = request(stream=True).model_copy(
+            update={
+                "model": "standalone-error-model",
+                "request_id": "req_standalone_error",
+            }
+        )
+        context = gateway.make_context(
+            tenant_id="t1",
+            subject_id="u1",
+            request_id=standalone_request.request_id,
+        )
+
+        events = [event async for event in gateway.stream(standalone_request, context)]
+
+        assert [event.type for event in events] == ["response.created", "error"]
+        terminal = events[-1]
+        assert terminal.response is None
+        assert terminal.error is not None
+        assert terminal.error.code == "PROVIDER_TIMEOUT"
+        assert terminal.error.retryable is True
+        assert all(event.type != "response.failed" for event in events)
+
+        stored = await store.get_by_response_id("t1", terminal.response_id)
+        assert stored is not None
+        assert stored.status.value == "failed"
+        assert stored.response is not None
+        assert stored.response.status == "failed"
+        assert stored.response.error is not None
+        assert stored.response.error.code == "PROVIDER_TIMEOUT"
+
+        replay = await gateway.get("t1", terminal.response_id)
+        assert replay is not None
+        assert replay.status == "failed"
+        assert replay.error is not None
+        assert replay.error.code == "PROVIDER_TIMEOUT"
+
+    asyncio.run(scenario())
+
+
+def test_standalone_error_persists_failed_snapshot_in_sqlite(tmp_path) -> None:
+    async def scenario() -> None:
+        store = SQLiteExecutionStore(tmp_path, cleanup_startup_delay_seconds=60)
+        await store.initialize()
+        registry = ProviderRegistry()
+        registry.register(StandaloneErrorProvider())
+        gateway = GatewayExecutor(registry, store)
+        standalone_request = request(stream=True).model_copy(
+            update={
+                "model": "standalone-error-model",
+                "request_id": "req_standalone_error_sqlite",
+            }
+        )
+        context = gateway.make_context(
+            tenant_id="t1",
+            subject_id="u1",
+            request_id=standalone_request.request_id,
+        )
+
+        events = [event async for event in gateway.stream(standalone_request, context)]
+        response_id = events[-1].response_id
+        assert [event.type for event in events] == ["response.created", "error"]
+
+        await store.close()
+
+        replay_store = SQLiteExecutionStore(tmp_path, cleanup_startup_delay_seconds=60)
+        await replay_store.initialize()
+        replay_gateway = GatewayExecutor(ProviderRegistry(), replay_store)
+        replay = await replay_gateway.get("t1", response_id)
+        assert replay is not None
+        assert replay.status == "failed"
+        assert replay.error is not None
+        assert replay.error.code == "PROVIDER_TIMEOUT"
+        await replay_store.close()
 
     asyncio.run(scenario())
 

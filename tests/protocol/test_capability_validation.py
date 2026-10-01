@@ -37,14 +37,15 @@ def request(
     if "video" in modalities:
         output["video"] = {"format": "mp4"}
     return KemoRequest(
-        protocol_version="1.0",
-        request_id="capability-test",
+        protocol_version="2.0",
+        request_id="req_capability_test",
         attempt=1,
         model="fake-model",
         stream=stream,
         system_prompt="",
         reasoning=reasoning,
-        generation={"max_output_tokens": 64, "parallel_tool_calls": False},
+        generation={"max_output_tokens": 64},
+        parallel_tool_calls=False,
         output=output,
         tools=tools or [],
         input=[
@@ -72,7 +73,10 @@ def capabilities(
     tools: ToolCapabilities | None = None,
 ) -> ModelCapabilities:
     return ModelCapabilities(
+        protocol_version="2.0",
         model="fake-model",
+        provider_id="fake",
+        provider_model="model",
         task=task,
         input_modalities=input_modalities or ["text"],
         output_modalities=output_modalities or ["text"],
@@ -151,7 +155,10 @@ def test_rejects_requests_outside_declared_capabilities(
 
 def test_rejects_non_llm_task() -> None:
     caps = ModelCapabilities(
+        protocol_version="2.0",
         model="fake-model",
+        provider_id="fake",
+        provider_model="model",
         task="embedding",
         input_modalities=["text"],
         output_modalities=["embedding"],
@@ -190,8 +197,11 @@ def test_reasoning_effort_must_match_model_declaration() -> None:
 
 def test_capabilities_reject_supported_operation_without_required_modalities() -> None:
     with pytest.raises(ValueError, match="声明不一致"):
-        ModelCapabilities(
-            model="fake-model",
+            ModelCapabilities(
+                protocol_version="2.0",
+                model="fake-model",
+                provider_id="fake",
+                provider_model="model",
             input_modalities=["text"],
             output_modalities=["text"],
             streaming=True,

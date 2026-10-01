@@ -731,13 +731,14 @@ def test_owner_can_hot_update_key_model_whitelist_and_it_blocks_llm_calls(
             "/model/responses",
             headers={
                 **CALLER_HEADERS,
-                "X-Kemo-Protocol-Version": "1.0",
+                "X-Kemo-Protocol-Version": "2.0",
                 "Idempotency-Key": "req_1",
             },
             json=body,
         )
         assert blocked.status_code == 403
-        assert blocked.json()["error"]["code"] == "MODEL_NOT_ALLOWED"
+        assert blocked.json()["error"]["code"] == "PERMISSION_DENIED"
+        assert blocked.json()["error"]["details"]["kind"] == "model_not_allowed"
 
         allow = client.put(
             "/admin/api/keys/graph-production/model-policy",
@@ -751,7 +752,7 @@ def test_owner_can_hot_update_key_model_whitelist_and_it_blocks_llm_calls(
         assert client.get(
             "/model/capabilities",
             params={"model": "fake-model"},
-            headers=CALLER_HEADERS,
+            headers={**CALLER_HEADERS, "X-Kemo-Protocol-Version": "2.0"},
         ).status_code == 200
 
         stale = client.put(
@@ -797,7 +798,7 @@ def test_admin_can_reenable_gateway_after_public_api_is_disabled(tmp_path: Path)
         public = client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers=CALLER_HEADERS,
+            headers={**CALLER_HEADERS, "X-Kemo-Protocol-Version": "2.0"},
         )
         assert public.status_code == 503
         assert client.get("/admin/api/console", headers=ADMIN_HEADERS).status_code == 200
@@ -814,7 +815,7 @@ def test_admin_can_reenable_gateway_after_public_api_is_disabled(tmp_path: Path)
         restored = client.get(
             "/model/capabilities",
             params={"model": "unknown-model"},
-            headers=CALLER_HEADERS,
+            headers={**CALLER_HEADERS, "X-Kemo-Protocol-Version": "2.0"},
         )
         assert restored.status_code == 404
 

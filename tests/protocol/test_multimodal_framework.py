@@ -42,7 +42,10 @@ class ContractMultimodalProvider(ProviderPackage):
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return ModelCapabilities(
+            protocol_version="2.0",
             model=model,
+            provider_id="contract",
+            provider_model="multimodal",
             input_modalities=["text", "image", "audio", "video", "file"],
             output_modalities=["text", "image", "audio", "video", "file"],
             streaming=True,
@@ -50,6 +53,7 @@ class ContractMultimodalProvider(ProviderPackage):
                 function_calling=True,
                 parallel_calls=True,
                 multimodal_results=True,
+                tool_choice_modes=["auto", "none", "required", "named", "allowed"],
             ),
             extensions={
                 "operations": {
@@ -183,7 +187,7 @@ def _settings() -> Settings:
 def _headers(*, request_id: str | None = None) -> dict[str, str]:
     result = {
         "Authorization": "Bearer kemo-token",
-        "X-Kemo-Protocol-Version": "1.0",
+        "X-Kemo-Protocol-Version": "2.0",
     }
     if request_id is not None:
         result["Idempotency-Key"] = request_id
@@ -253,7 +257,7 @@ def _request(
             "assets": [{"asset_id": asset_id, "role": "source"}]
         }
     return {
-        "protocol_version": "1.0",
+        "protocol_version": "2.0",
         "request_id": request_id,
         "attempt": 1,
         "model": MODEL,
@@ -303,7 +307,7 @@ def test_framework_accepts_image_audio_and_video_assets(
             body=body,
             capability=capability,
         )
-        request_id = f"req-{kind}-input"
+        request_id = f"req_{kind}-input"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -340,7 +344,7 @@ def test_framework_accepts_file_asset_without_fake_file_mime_prefix(
             body=PDF,
             capability="conversation",
         )
-        request_id = "req-file-input"
+        request_id = "req_file-input"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -383,7 +387,7 @@ def test_framework_persists_image_audio_and_video_outputs(
 ) -> None:
     app, _ = _app(tmp_path)
     with TestClient(app) as client:
-        request_id = f"req-{kind}-output"
+        request_id = f"req_{kind}-output"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -409,7 +413,7 @@ def test_framework_persists_image_audio_and_video_outputs(
 def test_framework_persists_file_output_as_asset(tmp_path: Path) -> None:
     app, _ = _app(tmp_path)
     with TestClient(app) as client:
-        request_id = "req-file-output"
+        request_id = "req_file-output"
         payload = _request(
             request_id=request_id,
             capability="conversation",
@@ -441,7 +445,7 @@ def test_framework_persists_file_output_as_asset(tmp_path: Path) -> None:
 def test_streaming_media_has_completed_event_before_terminal(tmp_path: Path) -> None:
     app, _ = _app(tmp_path)
     with TestClient(app) as client:
-        request_id = "req-stream-image"
+        request_id = "req_stream-image"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -461,6 +465,7 @@ def test_streaming_media_has_completed_event_before_terminal(tmp_path: Path) -> 
         ]
         assert events == [
             "response.created",
+            "output_item.added",
             "output_media.completed",
             "usage.updated",
             "response.completed",
@@ -497,7 +502,7 @@ def test_framework_supports_bounded_audio_delta_before_asset_completion(
 
     provider.stream = audio_stream  # type: ignore[method-assign]
     with TestClient(app) as client:
-        request_id = "req-stream-audio"
+        request_id = "req_stream-audio"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -517,7 +522,9 @@ def test_framework_supports_bounded_audio_delta_before_asset_completion(
         ]
         assert events == [
             "response.created",
+            "output_item.added",
             "output_audio.delta",
+            "output_item.added",
             "output_media.completed",
             "usage.updated",
             "response.completed",
@@ -531,7 +538,10 @@ def test_framework_rejects_undeclared_multimodal_operation_before_provider(
 
     async def text_only_capabilities(model: str) -> ModelCapabilities:
         return ModelCapabilities(
+            protocol_version="2.0",
             model=model,
+            provider_id="contract",
+            provider_model="multimodal",
             input_modalities=["text", "video"],
             output_modalities=["text"],
             streaming=True,
@@ -540,7 +550,14 @@ def test_framework_rejects_undeclared_multimodal_operation_before_provider(
 
     provider.capabilities = text_only_capabilities  # type: ignore[method-assign]
     with TestClient(app) as client:
-        request_id = "req-video-denied"
+        asset = _upload(
+            client,
+            name="video.mp4",
+            mime_type="video/mp4",
+            body=MP4,
+            capability="video_understanding",
+        )
+        request_id = "req_video-denied"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -550,18 +567,19 @@ def test_framework_rejects_undeclared_multimodal_operation_before_provider(
                 input_blocks=[
                     {
                         "type": "video",
+                        "asset_id": asset["id"],
                         "mime_type": "video/mp4",
-                        "source": {
-                            "kind": "inline_base64",
-                            "data": "AAAA",
-                        },
+                        "checksum_sha256": asset["checksum_sha256"],
                     }
                 ],
                 output_modality="text",
+                asset_id=asset["id"],
             ),
         )
         assert response.status_code == 400
-        assert response.json()["error"]["code"] == "MULTIMODAL_OPERATION_UNSUPPORTED"
+        error = response.json()["error"]
+        assert error["code"] == "CAPABILITY_ERROR"
+        assert error["details"]["kind"] == "multimodal_operation_unsupported"
         assert provider.calls == []
 
 
@@ -596,7 +614,7 @@ def test_provider_cannot_return_media_without_registered_output_asset(
 
     provider.execute = invalid_execute  # type: ignore[method-assign]
     with TestClient(app) as client:
-        request_id = "req-unregistered-output"
+        request_id = "req_unregistered-output"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -635,7 +653,7 @@ def test_stream_rejects_media_event_that_differs_from_terminal_item(
 
     provider.stream = mismatched_stream  # type: ignore[method-assign]
     with TestClient(app) as client:
-        request_id = "req-stream-mismatch"
+        request_id = "req_stream-mismatch"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -655,6 +673,7 @@ def test_stream_rejects_media_event_that_differs_from_terminal_item(
         ]
         assert events == [
             "response.created",
+            "output_item.added",
             "output_media.completed",
             "response.failed",
         ]
@@ -676,7 +695,7 @@ def test_stream_rejects_event_data_larger_than_one_mib(tmp_path: Path) -> None:
 
     provider.stream = oversized_stream  # type: ignore[method-assign]
     with TestClient(app) as client:
-        request_id = "req-stream-large"
+        request_id = "req_stream-large"
         response = client.post(
             "/model/responses",
             headers=_headers(request_id=request_id),
@@ -700,7 +719,7 @@ def test_stream_rejects_event_data_larger_than_one_mib(tmp_path: Path) -> None:
 def test_model_response_json_larger_than_two_mib_is_rejected(tmp_path: Path) -> None:
     app, _ = _app(tmp_path)
     with TestClient(app) as client:
-        request_id = "req-json-large"
+        request_id = "req_json-large"
         payload = _request(
             request_id=request_id,
             capability="conversation",

@@ -401,9 +401,10 @@ def test_generic_stream_router_hides_first_key_failure_and_raises_after_all_keys
 def test_context_length_limit_is_not_misclassified_as_key_failure() -> None:
     error = ProviderException(ErrorObject(
         type="validation",
-        code="CONTEXT_LENGTH_EXCEEDED",
+        code="VALIDATION_ERROR",
         message="context length limit exceeded",
         provider_status=400,
+        details={"kind": "context_length_exceeded"},
     ))
     assert is_key_specific_failure(error)[0] is False
 

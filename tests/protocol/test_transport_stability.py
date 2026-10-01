@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 from api.server import create_app
 from api.routes.responses import _heartbeat_stream
 from core.config import PrincipalConfig, Settings
+from core.event_assembler import EventAssembler, EventTooLargeError
 from core.models import SSEEvent
 from core.runtime_state import (
     GatewayOverloadedError,
     GatewayRuntimeState,
 )
+from core.provider_contract import ProviderEvent, ProviderEventKind
 from tests.support.llm import FakeProvider, request as provider_request
 
 
@@ -59,6 +61,22 @@ def test_runtime_capacity_rejects_excess_work_and_recovers_after_release() -> No
     asyncio.run(scenario())
 
 
+def test_event_assembler_marks_complete_event_overflow_as_event_too_large() -> None:
+    with pytest.raises(EventTooLargeError) as captured:
+        EventAssembler.assemble(
+            provider_event=ProviderEvent(
+                kind=ProviderEventKind.TEXT_DELTA,
+                item_id="msg_overflow",
+                content_index=0,
+                delta="x" * (1024 * 1024),
+            ),
+            request_id="req_overflow",
+            response_id="resp_overflow",
+            sequence=0,
+        )
+    assert captured.value.code == "event_too_large"
+
+
 def test_invalid_last_event_id_is_rejected_before_sse_headers(tmp_path: Path) -> None:
     settings = Settings(
         api_keys={
@@ -83,7 +101,7 @@ def test_invalid_last_event_id_is_rejected_before_sse_headers(tmp_path: Path) ->
             "/model/responses",
             headers={
                 "Authorization": "Bearer gateway-token",
-                "X-Kemo-Protocol-Version": "1.0",
+                "X-Kemo-Protocol-Version": "2.0",
                 "Idempotency-Key": body["request_id"],
                 "Last-Event-ID": "evt_missing",
                 "Accept": "text/event-stream",

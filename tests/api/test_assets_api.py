@@ -60,7 +60,7 @@ def _settings() -> Settings:
 def _headers(token: str = "asset-token", *, key: str = "upload-1") -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
-        "X-Kemo-Protocol-Version": "1.0",
+        "X-Kemo-Protocol-Version": "2.0",
         "Idempotency-Key": key,
         "X-Content-SHA256": hashlib.sha256(PNG).hexdigest(),
     }

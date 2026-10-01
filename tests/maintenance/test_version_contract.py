@@ -40,8 +40,8 @@ def test_readme_release_badges_match_version_json() -> None:
         assert f"Gateway version {version}" in text
 
 
-def test_protocol_contract_remains_kemo_10_until_core_models_upgrade() -> None:
+def test_protocol_contract_is_kemo_20_after_core_models_upgrade() -> None:
     data = _version_data()
-    assert data["protocol_version"] == "1.0"
+    assert data["protocol_version"] == "2.0"
     config = (PROJECT_ROOT / "core" / "config.py").read_text(encoding="utf-8")
-    assert 'protocol_version: str = "1.0"' in config
+    assert 'protocol_version: str = "2.0"' in config
