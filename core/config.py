@@ -49,7 +49,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 7531
     base_url: str = ""
-    protocol_version: str = "1.0"
+    protocol_version: str = "2.0"
     api_keys: dict[str, PrincipalConfig] = field(default_factory=dict)
     provider_settings: dict[str, Any] = field(default_factory=dict)
     web_username: str = ""

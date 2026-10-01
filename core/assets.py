@@ -154,7 +154,9 @@ class AssetStore:
     def _read_descriptor_sync(record_path: Path) -> AssetDescriptor | None:
         try:
             raw = json.loads(record_path.read_text(encoding="utf-8"))
-            return AssetDescriptor.model_validate(raw.get("descriptor"))
+            payload = dict(raw.get("descriptor") or {})
+            payload.setdefault("protocol_version", "2.0")
+            return AssetDescriptor.model_validate(payload)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError, AttributeError):
             return None
 
@@ -389,6 +391,7 @@ class AssetStore:
                 os.replace(temporary, content_path)
                 now = datetime.now(timezone.utc)
                 descriptor = AssetDescriptor(
+                    protocol_version="2.0",
                     id=asset_id,
                     status="ready",
                     purpose=purpose,
@@ -433,7 +436,9 @@ class AssetStore:
             raw = json.loads(record_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or raw.get("owner_hash") != owner_hash:
                 return None
-            descriptor = AssetDescriptor.model_validate(raw.get("descriptor"))
+            payload = dict(raw.get("descriptor") or {})
+            payload.setdefault("protocol_version", "2.0")
+            descriptor = AssetDescriptor.model_validate(payload)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
             return None
         return descriptor, self._asset_dir(asset_id) / "content.bin"

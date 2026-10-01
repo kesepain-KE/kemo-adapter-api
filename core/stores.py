@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,7 +18,7 @@ import time
 from typing import Protocol
 from uuid import uuid4
 
-from core.models import KemoResponse, SSEEvent
+from core.models import KemoResponse, KemoResponseBatch, SSEEvent
 
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,13 @@ class ExecutionRecord:
     model: str
     provider_id: str
     subject_id: str
+    candidate_response_ids: list[str] = field(default_factory=list)
     live_config_revision: str = "empty"
     gateway_system_prompt_hash: str | None = None
     status: InternalStatus = InternalStatus.CREATED
     provider_response_id: str | None = None
     response: KemoResponse | None = None
+    batch: KemoResponseBatch | None = None
     events: list[SSEEvent] = field(default_factory=list)
     persisted_sequence: int = field(default=-1, repr=False)
     pending_events: list[SSEEvent] = field(default_factory=list, repr=False)
@@ -63,6 +66,17 @@ class ExecutionRecord:
     pending_flush_error: BaseException | None = field(default=None, repr=False)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition, repr=False)
     producer_task: asyncio.Task[object] | None = field(default=None, repr=False)
+    # Runtime-only protocol state; reconstructed records are replayed into it
+    # by GatewayExecutor before any new event is appended.
+    stream_guard: object | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.candidate_response_ids:
+            self.candidate_response_ids = [self.response_id]
+        elif self.candidate_response_ids[0] != self.response_id:
+            raise ValueError("response_id 必须是 candidate_response_ids[0]")
+        if len(set(self.candidate_response_ids)) != len(self.candidate_response_ids):
+            raise ValueError("candidate_response_ids 必须唯一")
 
     @property
     def next_sequence(self) -> int:
@@ -91,7 +105,9 @@ class ExecutionStore(Protocol):
 
     def subscribe(self, record: ExecutionRecord, after_sequence: int = -1) -> AsyncIterator[SSEEvent]: ...
 
-    async def wait_terminal(self, record: ExecutionRecord) -> KemoResponse: ...
+    async def wait_terminal(
+        self, record: ExecutionRecord
+    ) -> KemoResponse | KemoResponseBatch: ...
 
 
 class InMemoryExecutionStore:
@@ -117,7 +133,8 @@ class InMemoryExecutionStore:
                     raise IdempotencyConflict(record.request_id)
                 return existing, False
             self._by_request[key] = record
-            self._by_response[(record.tenant_id, record.response_id)] = record
+            for response_id in record.candidate_response_ids:
+                self._by_response[(record.tenant_id, response_id)] = record
             return record, True
 
     async def get_by_response_id(self, tenant_id: str, response_id: str) -> ExecutionRecord | None:
@@ -133,7 +150,8 @@ class InMemoryExecutionStore:
     async def save(self, record: ExecutionRecord) -> None:
         async with self._lock:
             self._by_request[(record.tenant_id, record.request_id)] = record
-            self._by_response[(record.tenant_id, record.response_id)] = record
+            for response_id in record.candidate_response_ids:
+                self._by_response[(record.tenant_id, response_id)] = record
         async with record.condition:
             record.condition.notify_all()
 
@@ -170,17 +188,21 @@ class InMemoryExecutionStore:
             if _terminal_event(event):
                 return
 
-    async def wait_terminal(self, record: ExecutionRecord) -> KemoResponse:
+    async def wait_terminal(
+        self, record: ExecutionRecord
+    ) -> KemoResponse | KemoResponseBatch:
         async with record.condition:
             await record.condition.wait_for(
                 lambda: (
-                    record.status in TERMINAL_STATUSES and record.response is not None
+                    record.status in TERMINAL_STATUSES
+                    and (record.response is not None or record.batch is not None)
                 )
                 or record.pending_flush_error is not None
             )
             _raise_flush_error(record)
-            assert record.response is not None
-            return record.response
+            result = record.batch or record.response
+            assert result is not None
+            return result
 
 
 class SQLiteExecutionStore:
@@ -278,10 +300,11 @@ class SQLiteExecutionStore:
                 for key in removed:
                     record = self._by_request.pop(key, None)
                     if record is not None:
-                        self._by_response.pop(
-                            (record.tenant_id, record.response_id),
-                            None,
-                        )
+                        for response_id in record.candidate_response_ids:
+                            self._by_response.pop(
+                                (record.tenant_id, response_id),
+                                None,
+                            )
             if delayed_cancel:
                 raise asyncio.CancelledError
             if len(removed) < self.cleanup_batch_size:
@@ -367,8 +390,11 @@ class SQLiteExecutionStore:
                 return cached
             row = await asyncio.to_thread(
                 self._select_one_sync,
-                "SELECT * FROM executions WHERE tenant_id = ? AND response_id = ?",
-                (tenant_id, response_id),
+                """SELECT * FROM executions
+                   WHERE tenant_id = ? AND (
+                       response_id = ? OR candidate_response_ids_json LIKE ?
+                   )""",
+                (tenant_id, response_id, f'%"{response_id}"%'),
             )
             if row is None:
                 return None
@@ -558,7 +584,8 @@ class SQLiteExecutionStore:
 
     def _cache(self, record: ExecutionRecord) -> None:
         self._by_request[(record.tenant_id, record.request_id)] = record
-        self._by_response[(record.tenant_id, record.response_id)] = record
+        for response_id in record.candidate_response_ids:
+            self._by_response[(record.tenant_id, response_id)] = record
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -608,6 +635,8 @@ class SQLiteExecutionStore:
                     status TEXT NOT NULL,
                     provider_response_id TEXT,
                     response_json TEXT,
+                    candidate_response_ids_json TEXT,
+                    batch_json TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (tenant_id, request_id),
@@ -632,6 +661,16 @@ class SQLiteExecutionStore:
                     ON executions(status);
                 """
             )
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(executions)").fetchall()
+            }
+            if "candidate_response_ids_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE executions ADD COLUMN candidate_response_ids_json TEXT"
+                )
+            if "batch_json" not in columns:
+                connection.execute("ALTER TABLE executions ADD COLUMN batch_json TEXT")
             connection.commit()
         except BaseException:
             connection.rollback()
@@ -664,7 +703,10 @@ class SQLiteExecutionStore:
                     request_id=row["request_id"],
                     status="incomplete",
                     model=row["model"],
-                    incomplete_details={"reason": "gateway_restarted"},
+                    incomplete_details={
+                        "reason": "upstream_stopped",
+                        "details": {"kind": "gateway_restarted"},
+                    },
                 )
                 sequence = int(
                     connection.execute(
@@ -678,6 +720,7 @@ class SQLiteExecutionStore:
                     type="response.incomplete",
                     event_id=f"evt_{uuid4().hex}",
                     sequence=sequence,
+                    previous_sequence=None if sequence == 0 else sequence - 1,
                     request_id=row["request_id"],
                     response_id=row["response_id"],
                     timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -723,8 +766,9 @@ class SQLiteExecutionStore:
                    (tenant_id, request_id, request_hash, response_id, model,
                     provider_id, subject_id, live_config_revision,
                     gateway_system_prompt_hash, status, provider_response_id,
-                    response_json, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    response_json, candidate_response_ids_json, batch_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     record.tenant_id,
                     record.request_id,
@@ -738,6 +782,8 @@ class SQLiteExecutionStore:
                     record.status.value,
                     record.provider_response_id,
                     self._response_json(record.response),
+                    json.dumps(record.candidate_response_ids, separators=(",", ":")),
+                    self._batch_json(record.batch),
                     now,
                     now,
                 ),
@@ -759,12 +805,15 @@ class SQLiteExecutionStore:
             connection.execute(
                 """UPDATE executions
                    SET status = ?, provider_response_id = ?, response_json = ?,
+                       candidate_response_ids_json = ?, batch_json = ?,
                        updated_at = ?
                    WHERE tenant_id = ? AND request_id = ?""",
                 (
                     record.status.value,
                     record.provider_response_id,
                     self._response_json(record.response),
+                    json.dumps(record.candidate_response_ids, separators=(",", ":")),
+                    self._batch_json(record.batch),
                     time.time(),
                     record.tenant_id,
                     record.request_id,
@@ -859,6 +908,16 @@ class SQLiteExecutionStore:
             if row["response_json"]
             else None
         )
+        candidate_response_ids = (
+            json.loads(row["candidate_response_ids_json"])
+            if row["candidate_response_ids_json"]
+            else [row["response_id"]]
+        )
+        batch = (
+            KemoResponseBatch.model_validate_json(row["batch_json"])
+            if row["batch_json"]
+            else None
+        )
         connection = self._require_connection()
         event_rows = connection.execute(
             """SELECT event_json FROM execution_events
@@ -874,17 +933,19 @@ class SQLiteExecutionStore:
             model=row["model"],
             provider_id=row["provider_id"],
             subject_id=row["subject_id"],
+            candidate_response_ids=candidate_response_ids,
             live_config_revision=row["live_config_revision"],
             gateway_system_prompt_hash=row["gateway_system_prompt_hash"],
             status=InternalStatus(row["status"]),
             provider_response_id=row["provider_response_id"],
             response=response,
+            batch=batch,
             events=events,
             persisted_sequence=(events[-1].sequence if events else -1),
         )
 
     def _select_one_sync(
-        self, query: str, parameters: tuple[str, str]
+        self, query: str, parameters: tuple[str, ...]
     ) -> sqlite3.Row | None:
         return self._require_connection().execute(query, parameters).fetchone()
 
@@ -928,6 +989,10 @@ class SQLiteExecutionStore:
     @staticmethod
     def _response_json(response: KemoResponse | None) -> str | None:
         return response.model_dump_json(exclude_none=True) if response is not None else None
+
+    @staticmethod
+    def _batch_json(batch: KemoResponseBatch | None) -> str | None:
+        return batch.model_dump_json(exclude_none=True) if batch is not None else None
 
 
 def _terminal_event(event: SSEEvent) -> bool:

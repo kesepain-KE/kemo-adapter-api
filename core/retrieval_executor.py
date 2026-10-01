@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -37,6 +35,9 @@ from core.runtime_state import (
 )
 from core.stores import IdempotencyConflict
 from storage.statistics import StatisticsStore
+from provider.protocol.serialization import request_fingerprint
+from provider.protocol.validation import validate_provider_options
+from provider.protocol.errors import ProtocolValidationError
 
 
 T = TypeVar("T")
@@ -59,13 +60,7 @@ class _OperationRecord:
 
 
 def _request_hash(request: BaseModel) -> str:
-    payload = json.dumps(
-        request.model_dump(mode="json"),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return request_fingerprint(request)
 
 
 class RetrievalExecutor:
@@ -199,10 +194,21 @@ class RetrievalExecutor:
         if capabilities.task != "embedding" or capabilities.embedding is None:
             self._invalid_task(request.request_id, request.model, "embedding")
         embedding_capabilities = capabilities.embedding
+        try:
+            validate_provider_options(
+                request.provider_options,
+                {"provider_options": capabilities.extensions.get("provider_options")}
+                if capabilities.extensions.get("provider_options") is not None
+                else None,
+            )
+        except ProtocolValidationError as exc:
+            self._invalid_request(request.request_id, str(exc))
         if request.input_type not in embedding_capabilities.input_types:
             self._invalid_request(request.request_id, "模型不支持该 input_type")
         if len(request.inputs) > embedding_capabilities.max_batch_size:
             self._invalid_request(request.request_id, "inputs 超过模型 max_batch_size")
+        if request.truncate != "none" and not embedding_capabilities.supports_truncate:
+            self._invalid_request(request.request_id, "模型不支持请求的 truncate 模式")
         expected_dimensions = request.dimensions or embedding_capabilities.default_dimensions
         if (
             request.dimensions is not None
@@ -232,6 +238,11 @@ class RetrievalExecutor:
         result: ProviderEmbeddingResult | None = None
         try:
             result = await self._call_provider_embedding(package, request, context)
+            if request.truncate != "none" and not result.truncation_reported:
+                self._invalid_request(
+                    request.request_id,
+                    "Provider 未提供可验证的 tokenizer 截断回执",
+                )
             if statistics_handle is not None:
                 statistics_handle.mark_response()
             response = self._build_embedding_response(request, result, expected_dimensions)
@@ -293,10 +304,24 @@ class RetrievalExecutor:
         if capabilities.task != "rerank" or capabilities.rerank is None:
             self._invalid_task(request.request_id, request.model, "rerank")
         rerank_capabilities = capabilities.rerank
+        try:
+            validate_provider_options(
+                request.provider_options,
+                {"provider_options": capabilities.extensions.get("provider_options")}
+                if capabilities.extensions.get("provider_options") is not None
+                else None,
+            )
+        except ProtocolValidationError as exc:
+            self._invalid_request(request.request_id, str(exc))
         if len(request.documents) > rerank_capabilities.max_documents:
             self._invalid_request(request.request_id, "documents 超过模型 max_documents")
         if request.return_documents and not rerank_capabilities.supports_return_documents:
             self._invalid_request(request.request_id, "模型不支持 return_documents")
+        if (
+            request.score_threshold is not None
+            and not rerank_capabilities.supports_score_threshold
+        ):
+            self._invalid_request(request.request_id, "模型不支持 score_threshold")
 
         statistics_handle = (
             await self.statistics.begin_invocation(
@@ -419,6 +444,13 @@ class RetrievalExecutor:
             raise self._provider_contract_failure(request.request_id)
         if not result.vector_space_id or not result.vector_space_id.strip():
             raise self._provider_contract_failure(request.request_id)
+        input_ids = {item.id for item in request.inputs}
+        truncated_ids = list(result.truncated_ids)
+        if (
+            len(set(truncated_ids)) != len(truncated_ids)
+            or not set(truncated_ids) <= input_ids
+        ):
+            raise self._provider_contract_failure(request.request_id)
         by_index = {item.index: item for item in result.embeddings}
         if len(by_index) != len(result.embeddings) or set(by_index) != set(range(len(request.inputs))):
             raise self._provider_contract_failure(request.request_id)
@@ -449,6 +481,7 @@ class RetrievalExecutor:
             vector_space_id=result.vector_space_id,
             dimensions=expected_dimensions,
             data=data,
+            truncated_ids=truncated_ids,
             usage=result.usage,
             provider_response_id=result.provider_response_id,
             metadata=result.metadata,
@@ -458,7 +491,7 @@ class RetrievalExecutor:
     def _build_rerank_response(
         self, request: RerankRequest, result: ProviderRerankResult
     ) -> RerankResponse:
-        if not isinstance(result, ProviderRerankResult) or not result.results:
+        if not isinstance(result, ProviderRerankResult):
             raise self._provider_contract_failure(request.request_id)
         seen: set[int] = set()
         validated: list[tuple[int, float]] = []
@@ -473,8 +506,16 @@ class RetrievalExecutor:
                 raise self._provider_contract_failure(request.request_id)
             seen.add(item.index)
             validated.append((item.index, float(item.relevance_score)))
+        threshold = request.score_threshold
+        thresholded = (
+            [item for item in validated if threshold is None or item[1] >= threshold]
+        )
+        filtered_count = len(validated) - len(thresholded)
+        # Python's sort is stable, but make the original document index an
+        # explicit tie-breaker so provider result ordering cannot perturb ties.
+        ranked = sorted(thresholded, key=lambda value: (-value[1], value[0]))
         top_n = request.top_n or len(request.documents)
-        ranked = sorted(validated, key=lambda value: value[1], reverse=True)[:top_n]
+        ranked = ranked[:top_n]
         response_items = [
             RerankResultItem(
                 rank=rank,
@@ -490,6 +531,7 @@ class RetrievalExecutor:
             model=request.model,
             model_version=result.model_version,
             results=response_items,
+            filtered_count=filtered_count,
             usage=result.usage,
             provider_response_id=result.provider_response_id,
             metadata=result.metadata,
@@ -515,7 +557,7 @@ class RetrievalExecutor:
             request_id,
             ErrorObject(
                 type="invalid_request",
-                code="INVALID_REQUEST",
+                code="VALIDATION_ERROR",
                 message=message,
                 retryable=False,
             ),
