@@ -8,6 +8,7 @@ diagnostic metadata is allowlisted and length based.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -15,8 +16,9 @@ from typing import Any
 
 
 MISSING = object()
-_MAX_RAW_ARGUMENTS = 1_000_000
+_MAX_RAW_ARGUMENTS = 1024 * 1024
 _MAX_ARGUMENT_DEPTH = 64
+_MAX_ARGUMENT_NODES = 4096
 _MAX_SCHEMA_DEPTH = 32
 _MAX_SCHEMA_NODES = 4096
 _MAX_SCHEMA_ARRAY_ITEMS = 4096
@@ -28,6 +30,9 @@ _PARSE_ERROR_KINDS = frozenset(
         "invalid_arguments_type",
         "non_object",
         "arguments_too_large",
+        "arguments_too_complex",
+        "duplicate_key",
+        "non_finite_number",
         "invalid_json",
     }
 )
@@ -38,6 +43,16 @@ class ParsedToolArguments:
     arguments: dict[str, Any]
     arguments_raw: str | None
     parse_error: dict[str, Any] | None
+
+
+class _ArgumentLimitError(ValueError):
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class _DuplicateKeyError(ValueError):
+    pass
 
 
 def _error(kind: str, message: str, *, exc: json.JSONDecodeError | None = None) -> dict[str, Any]:
@@ -73,6 +88,71 @@ def _raw_json_nesting_exceeds(raw: str, *, limit: int) -> bool:
     return False
 
 
+def _validate_argument_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    state: list[int] | None = None,
+    active: set[int] | None = None,
+) -> None:
+    counters = state if state is not None else [0]
+    active_ids = active if active is not None else set()
+    if depth > _MAX_ARGUMENT_DEPTH:
+        raise _ArgumentLimitError("arguments_too_complex", "工具参数嵌套层级超过上限")
+    counters[0] += 1
+    if counters[0] > _MAX_ARGUMENT_NODES:
+        raise _ArgumentLimitError("arguments_too_complex", "工具参数节点数量超过上限")
+    if isinstance(value, (dict, list)):
+        identity = id(value)
+        if identity in active_ids:
+            raise _ArgumentLimitError("invalid_arguments_type", "工具参数包含循环引用")
+        active_ids.add(identity)
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise _ArgumentLimitError(
+                    "invalid_arguments_type", "工具参数对象的键必须是字符串"
+                )
+            _validate_argument_value(
+                item,
+                depth=depth + 1,
+                state=counters,
+                active=active_ids,
+            )
+        active_ids.remove(id(value))
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_argument_value(
+                item,
+                depth=depth + 1,
+                state=counters,
+                active=active_ids,
+            )
+        active_ids.remove(id(value))
+        return
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return
+        raise _ArgumentLimitError("non_finite_number", "工具参数不能包含 NaN/Infinity")
+    raise _ArgumentLimitError("invalid_arguments_type", "工具参数包含非 JSON 类型")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKeyError(f"duplicate key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_non_finite(value: str) -> Any:
+    raise _ArgumentLimitError("non_finite_number", f"工具参数包含非有限数值: {value}")
+
+
 def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
     """Parse one Provider value without treating missing data as ``{}``.
 
@@ -90,18 +170,28 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
     if isinstance(value, Mapping):
         arguments = dict(value)
         try:
+            _validate_argument_value(arguments)
             arguments_raw = json.dumps(
-                arguments, ensure_ascii=False, separators=(",", ":")
+                arguments,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except _ArgumentLimitError as exc:
+            return ParsedToolArguments(
+                arguments={},
+                arguments_raw=None,
+                parse_error=_error(exc.kind, str(exc)),
             )
         except (TypeError, ValueError, RecursionError):
             return ParsedToolArguments(
                 arguments={},
                 arguments_raw=None,
                 parse_error=_error(
-                    "arguments_too_large", "工具参数对象无法在安全边界内序列化"
+                    "invalid_arguments_type", "工具参数对象无法安全序列化"
                 ),
             )
-        if len(arguments_raw) > _MAX_RAW_ARGUMENTS:
+        if len(arguments_raw.encode("utf-8")) > _MAX_RAW_ARGUMENTS:
             return ParsedToolArguments(
                 arguments={},
                 arguments_raw=None,
@@ -113,7 +203,7 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
             parse_error=None,
         )
     if isinstance(value, str):
-        if len(value) > _MAX_RAW_ARGUMENTS:
+        if len(value.encode("utf-8")) > _MAX_RAW_ARGUMENTS:
             return ParsedToolArguments(
                 arguments={},
                 arguments_raw=None,
@@ -133,13 +223,11 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
             parse_error=_error("invalid_arguments_type", "工具参数字段类型无效"),
         )
     else:
-        arguments_raw = str(value)
-        if len(arguments_raw) > _MAX_RAW_ARGUMENTS:
-            return ParsedToolArguments(
-                arguments={},
-                arguments_raw=None,
-                parse_error=_error("arguments_too_large", "工具参数原始内容超过大小上限"),
-            )
+        return ParsedToolArguments(
+            arguments={},
+            arguments_raw=None,
+            parse_error=_error("invalid_arguments_type", "工具参数字段类型无效"),
+        )
 
     if _raw_json_nesting_exceeds(arguments_raw, limit=_MAX_ARGUMENT_DEPTH):
         return ParsedToolArguments(
@@ -149,7 +237,23 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
         )
 
     try:
-        parsed = json.loads(arguments_raw)
+        parsed = json.loads(
+            arguments_raw,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_non_finite,
+        )
+    except _DuplicateKeyError:
+        return ParsedToolArguments(
+            arguments={},
+            arguments_raw=arguments_raw,
+            parse_error=_error("duplicate_key", "工具参数 JSON 包含重复键"),
+        )
+    except _ArgumentLimitError as exc:
+        return ParsedToolArguments(
+            arguments={},
+            arguments_raw=arguments_raw,
+            parse_error=_error(exc.kind, str(exc)),
+        )
     except RecursionError:
         return ParsedToolArguments(
             arguments={},
@@ -167,6 +271,14 @@ def parse_tool_arguments(value: Any = MISSING) -> ParsedToolArguments:
             arguments={},
             arguments_raw=arguments_raw,
             parse_error=_error("non_object", "工具参数 JSON 根节点必须是对象"),
+        )
+    try:
+        _validate_argument_value(parsed)
+    except _ArgumentLimitError as exc:
+        return ParsedToolArguments(
+            arguments={},
+            arguments_raw=arguments_raw,
+            parse_error=_error(exc.kind, str(exc)),
         )
     return ParsedToolArguments(
         arguments=parsed,

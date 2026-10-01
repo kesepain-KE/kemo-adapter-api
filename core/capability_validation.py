@@ -11,6 +11,7 @@ import base64
 import binascii
 import ipaddress
 import socket
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from typing import Any, Never
 from urllib.parse import urlparse
@@ -18,6 +19,8 @@ from urllib.parse import urlparse
 from core.assets import detect_mime
 from core.models import ErrorObject, KemoRequest, ModelCapabilities
 from core.provider_contract import AssetAccess, ProviderException
+from provider.protocol.validation import validate_provider_options
+from provider.protocol.errors import ProtocolValidationError
 
 
 _TEXT_CONTENT_TYPES = frozenset({"text", "json"})
@@ -65,6 +68,19 @@ def validate_llm_request_capabilities(
                 "capabilities_model": capabilities.model,
             },
         )
+    options_profile = capabilities.extensions.get("provider_options")
+    if request.provider_options:
+        try:
+            validate_provider_options(
+                request.provider_options,
+                {"provider_options": options_profile} if options_profile is not None else None,
+            )
+        except ProtocolValidationError as exc:
+            _fail(
+                "CAPABILITY_ERROR",
+                str(exc),
+                details={"path": exc.path or "provider_options"},
+            )
     if capabilities.task != "llm":
         _fail(
             "MODEL_TASK_MISMATCH",
@@ -122,7 +138,8 @@ def validate_llm_request_capabilities(
         )
     if (
         request.tools
-        and bool((request.generation or {}).get("parallel_tool_calls", True))
+        and request.tool_choice.mode != "none"
+        and request.parallel_tool_calls
         and not capabilities.tools.parallel_calls
     ):
         _fail(
@@ -130,6 +147,77 @@ def validate_llm_request_capabilities(
             "该模型未声明支持并行工具调用。",
             details={"model": request.model},
         )
+
+    if capabilities.limits.max_tools is not None and len(request.tools) > capabilities.limits.max_tools:
+        _fail(
+            "CAPABILITY_ERROR",
+            "工具数量超过模型能力上限。",
+            details={"requested": len(request.tools), "limit": capabilities.limits.max_tools},
+        )
+    if request.tools and request.tool_choice.mode not in capabilities.tools.tool_choice_modes:
+        _fail(
+            "CAPABILITY_ERROR",
+            "模型不支持请求的 tool_choice 模式。",
+            details={"mode": request.tool_choice.mode, "supported": list(capabilities.tools.tool_choice_modes)},
+        )
+    if request.structured_output is not None:
+        if not capabilities.structured_output.supported:
+            _fail("STRUCTURED_OUTPUT_UNSUPPORTED", "模型未声明支持结构化输出。", details={"model": request.model})
+        if request.structured_output.strict and not capabilities.structured_output.strict:
+            _fail("STRUCTURED_OUTPUT_UNSUPPORTED", "模型不支持 strict json_schema。", details={"model": request.model})
+        if request.structured_output.type not in capabilities.structured_output.schema_subset:
+            _fail("STRUCTURED_OUTPUT_UNSUPPORTED", "模型不支持请求的结构化输出类型。", details={"type": request.structured_output.type})
+    if request.generation.n > 1:
+        if not capabilities.supports_multiple_choices or request.generation.n > capabilities.limits.max_choices:
+            _fail("CAPABILITY_ERROR", "模型不支持请求的候选数量。", details={"n": request.generation.n, "max_choices": capabilities.limits.max_choices})
+    if request.prediction is not None:
+        if not capabilities.supports_prediction:
+            _fail("PREDICTION_UNSUPPORTED", "模型未声明支持 prediction。", details={"model": request.model})
+        prediction_content = request.prediction.get("content") if isinstance(request.prediction, Mapping) else None
+        if isinstance(prediction_content, list):
+            declared = capabilities.extensions.get("prediction_content_types")
+            if not isinstance(declared, (list, tuple, set, frozenset)):
+                _fail("PREDICTION_UNSUPPORTED", "模型未显式声明 prediction 内容块类型。", details={"path": "prediction.content"})
+            requested_types = {str(block.get("type") or "") for block in prediction_content if isinstance(block, Mapping)}
+            unsupported = requested_types - {str(value) for value in declared}
+            if unsupported:
+                _fail("PREDICTION_UNSUPPORTED", "模型不支持 prediction 内容块类型。", details={"types": sorted(unsupported)})
+    for item_index, item in enumerate(request.input):
+        if not isinstance(item, Mapping) or item.get("type") != "reasoning":
+            continue
+        state = item.get("provider_state")
+        if not isinstance(state, Mapping):
+            continue
+        if not capabilities.reasoning.persisted_state:
+            _fail("REASONING_UNSUPPORTED", "模型未声明支持 persisted provider state。", details={"input_index": item_index})
+        if str(state.get("provider") or "") != capabilities.provider_id:
+            _fail("CAPABILITY_ERROR", "provider_state 不得跨 Provider 重解释。", details={"input_index": item_index})
+        state_model = state.get("model")
+        if state_model is not None and str(state_model) != request.model:
+            _fail("CAPABILITY_ERROR", "provider_state 与请求模型不一致。", details={"input_index": item_index})
+        expires_at = state.get("expires_at")
+        if isinstance(expires_at, datetime) and expires_at <= datetime.now(timezone.utc):
+            _fail("CAPABILITY_ERROR", "provider_state 已过期。", details={"input_index": item_index})
+    if request.service.tier is not None and request.service.tier not in capabilities.service_tiers:
+        _fail("CAPABILITY_ERROR", "模型不支持请求的 service tier。", details={"tier": request.service.tier, "supported": capabilities.service_tiers})
+
+    decoding_checks = {
+        "temperature": request.generation.temperature,
+        "top_p": request.generation.top_p,
+        "top_k": request.generation.top_k,
+        "stop": request.generation.stop,
+        "seed": request.generation.seed,
+        "logit_bias": request.generation.logit_bias,
+        "presence_penalty": request.generation.presence_penalty,
+        "frequency_penalty": request.generation.frequency_penalty,
+        "verbosity": request.generation.verbosity,
+    }
+    for field, value in decoding_checks.items():
+        if value is not None and not getattr(capabilities.decoding, field):
+            _fail("CAPABILITY_ERROR", f"模型不支持采样字段 {field}。", details={"field": field})
+    if request.generation.logprobs and request.generation.logprobs.enabled:
+        if not capabilities.decoding.logprobs or request.generation.logprobs.top_k > capabilities.decoding.top_logprobs_max:
+            _fail("CAPABILITY_ERROR", "模型不支持请求的 logprobs。", details={"top_k": request.generation.logprobs.top_k})
 
     reasoning = request.reasoning or {}
     if bool(reasoning.get("enabled", False)):
@@ -150,7 +238,11 @@ def validate_llm_request_capabilities(
                     "effort": effort,
                     "supported_efforts": sorted(supported_efforts),
                 },
-        )
+            )
+        if reasoning.return_mode not in capabilities.reasoning.returns:
+            _fail("CAPABILITY_ERROR", "模型不支持请求的 reasoning return 模式。", details={"return": reasoning.return_mode})
+        if reasoning.context not in capabilities.reasoning.contexts:
+            _fail("CAPABILITY_ERROR", "模型不支持请求的 reasoning context。", details={"context": reasoning.context})
 
 
 async def validate_media_url_networks(request: KemoRequest) -> None:
@@ -186,7 +278,7 @@ async def validate_media_url_networks(request: KemoRequest) -> None:
             raise ProviderException(
                 ErrorObject(
                     type="media_source_error",
-                    code="MEDIA_SOURCE_UNREACHABLE",
+                    code="ASSET_API_UNAVAILABLE",
                     message="外部媒体主机暂时无法安全解析。",
                     retryable=True,
                     details={"exception_type": type(exc).__name__},
@@ -426,6 +518,28 @@ def _validate_media_sources(
                     )
             source = block.get("source")
             if isinstance(source, Mapping):
+                # A block may carry both the authenticated Kemo asset handle
+                # and a provider-facing source hint, but the two references
+                # must be provably identical.  Never silently prefer one and
+                # ignore the other: that permits confused-deputy content
+                # substitution at the adapter boundary.
+                if asset_id:
+                    source_kind = str(source.get("kind") or "")
+                    source_uri = str(source.get("uri") or "")
+                    source_file_id = str(source.get("file_id") or "")
+                    same_asset = (
+                        source_kind == "object_store"
+                        and source_uri in {asset_id, f"asset://{asset_id}"}
+                    ) or (
+                        source_kind == "provider_file_id"
+                        and source_file_id == asset_id
+                    )
+                    if not same_asset:
+                        _fail(
+                            "INVALID_MEDIA",
+                            "asset_id 与 source 必须指向同一内容。",
+                            details={"location": location, "asset_id": asset_id},
+                        )
                 _validate_inline_source(
                     source,
                     block_type,
@@ -594,6 +708,26 @@ def _validate_inline_mime(
 
 
 def _fail(code: str, message: str, *, details: dict[str, Any]) -> Never:
+    closed_codes = {
+        "CAPABILITIES_MODEL_MISMATCH",
+        "MODEL_TASK_MISMATCH",
+        "UNSUPPORTED_INPUT_MODALITY",
+        "UNSUPPORTED_OUTPUT_MODALITY",
+        "STREAMING_UNSUPPORTED",
+        "TOOLS_UNSUPPORTED",
+        "PARALLEL_TOOLS_UNSUPPORTED",
+        "REASONING_UNSUPPORTED",
+        "REASONING_EFFORT_UNSUPPORTED",
+        "STRUCTURED_OUTPUT_UNSUPPORTED",
+        "PREDICTION_UNSUPPORTED",
+        "ASSET_API_UNAVAILABLE",
+        "INVALID_MEDIA",
+        "REQUEST_TOO_LARGE",
+        "CAPABILITY_ERROR",
+    }
+    if code not in closed_codes:
+        details = {"kind": code.casefold(), **details}
+        code = "CAPABILITY_ERROR"
     raise ProviderException(
         ErrorObject(
             type="capability_validation",
