@@ -56,7 +56,7 @@ def test_template_defaults_and_adapter_consistency(tmp_path, monkeypatch):
 def test_console_presets_never_infer_verified_from_structure(tmp_path, monkeypatch):
     with instance(tmp_path, monkeypatch) as (client, _):
         templates = state(client)["templates"]
-        assert len(templates) == 53
+        assert len(templates) == 55
         assert {item["id"] for item in templates if item["verification"] == "verified"} == {"deepseek", "command-code"}
         assert all(item["verification"] == "declared" for item in templates if item["id"] not in {"deepseek", "command-code"})
         assert {item["id"] for item in templates if item["category"] == "coding_service"} == {"opencode", "command-code"}

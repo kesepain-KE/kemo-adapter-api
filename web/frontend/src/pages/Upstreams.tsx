@@ -223,7 +223,9 @@ function UpstreamEditor({ upstream, onSave, onClose }: {
               setReferences(result.reference_models || [])
             }) }}><Radar size={14} />{t('发现模型')}</button></div>
           {!selectedAdapter?.discovery && <p className="hint">{t('此协议不提供模型发现，请手动添加模型名。')}</p>}
-          <p className="hint">{t('模型目录可能不完整；可手动填写准确模型 ID，登记时会实际探测。')}</p>
+          <p className="hint">{t(selectedAdapter?.capability_discovery
+            ? '此协议直接读取上游能力声明，登记和探测不会生成内容；测试模型会发送真实请求。'
+            : '模型目录可能不完整；可手动填写准确模型 ID，登记时会实际探测。')}</p>
           {discoveryNotice && <p className="hint" role="status">{discoveryNotice}</p>}
           {!!references.length && <div className="row-actions"><span className="small muted">{t('未验证的模板参考')}</span>
             {references.map(model => <button key={model} className="btn btn-sm mono" disabled={action.busy || discovered.includes(model)} onClick={() => {
@@ -256,7 +258,8 @@ function UpstreamEditor({ upstream, onSave, onClose }: {
               {!models.length && <tr><td colSpan={2}><Empty text="暂无数据" /></td></tr>}
             </tbody></table></div>
           </div>}
-          <div className="model-register-footer"><p className="hint">{t('能力检测仅对选中模型运行，会发送少量真实请求并产生上游费用。')}</p>
+          <div className="model-register-footer">{!selectedAdapter?.capability_discovery &&
+            <p className="hint">{t('能力检测仅对选中模型运行，会发送少量真实请求并产生上游费用。')}</p>}
             <button className="btn btn-primary" disabled={action.busy || !Object.keys(selected).length || Object.values(selected).some(value => !value.trim())} onClick={() => { void action.run(async () => {
               setRegistering(true)
               try {

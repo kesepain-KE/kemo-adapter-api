@@ -16,6 +16,7 @@ Kemo Gateway brings model services together for AI agents. Connect your provider
 - **Track actual usage**: inspect calls, success rates, tokens, costs and runtime status in the web console.
 - **Support agent workflows**: normalize model capabilities, tool calls, streaming output and usage for Kemo agents and other compatible clients.
 - **Connect media services**: carry images, audio, video and files through supported adapters for understanding, generation and result retrieval.
+- **Connect other Kemo services**: use Kemo 2.0 gateways or archived 1.0 services as upstreams, import capabilities, and relay tool results and media.
 
 ## Let an agent manage the gateway
 

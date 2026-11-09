@@ -1,0 +1,5 @@
+id: kemo-v2
+name: Kemo Protocol 2.0
+version: 1.0.0
+contract_version: "1.0"
+description: 接入 Kemo 2.0 上游，登记时导入上游能力声明；实际可用性通过模型测试确认。

@@ -18,6 +18,7 @@ from gateway.adapters.builtin.common import unsupported
 from gateway.domain import Catalog, Upstream
 from gateway.auth import RequestHeaders
 from gateway.connection import validate_connection
+from gateway.federation import validate_self_target
 from gateway.extensions import WorkerAdapter, read_manifest, extension_digest
 from gateway.keys import KeyPolicyError, KeyService
 from gateway.metering import Metering
@@ -351,9 +352,10 @@ class Router:
 
 class RuntimeRegistry:
     def __init__(self, project_root: Path, store: Store, vault: SecretVault, *, transport_factory=Transport,
-                 log_detail_max_bytes=4 * 1024 * 1024, log_detail_mode="full"):
+                 log_detail_max_bytes=4 * 1024 * 1024, log_detail_mode="full", gateway_urls=()):
         self.project_root, self.store, self.vault = project_root, store, vault
         self.transport_factory = transport_factory
+        self.gateway_urls = gateway_urls
         self.keys = KeyService(store, vault)
         self.router = Router(self, self.keys, Metering(
             store, log_detail_max_bytes=log_detail_max_bytes, log_detail_mode=log_detail_mode,
@@ -412,6 +414,7 @@ class RuntimeRegistry:
                     if definition["adapter_id"] != upstream.adapter_id:
                         raise ValueError("上游协议与所选模板不一致")
                 validate_connection(manifest, upstream)
+                validate_self_target(upstream.base_url, self.gateway_urls)
                 for key in upstream.credentials:
                     self.vault.decrypt(key.encrypted, f"{upstream.id}:{key.id}")
                 document = upstream.model_dump(mode="json")
@@ -492,7 +495,7 @@ class RuntimeRegistry:
             if not manifest.reasoning_returns:
                 raise ValueError("当前适配器未实现推理参数映射")
             levels = upstream.profile.get("reasoning_effort_map", manifest.reasoning_levels)
-            if set(caps.reasoning.efforts) - set(levels):
+            if not manifest.dynamic_reasoning and set(caps.reasoning.efforts) - set(levels):
                 raise ValueError("推理档位超出适配器 Profile 映射")
             if (set(caps.reasoning.returns) - set(manifest.reasoning_returns)
                     or caps.reasoning.summary and "summary" not in manifest.reasoning_returns):

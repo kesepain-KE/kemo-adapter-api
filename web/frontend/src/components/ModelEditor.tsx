@@ -39,6 +39,7 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
   const action = useAction()
   const targetDeployment = deployments.find(d => d.id === target)
   const targetUpstream = data!.upstreams.find(u => u.id === targetDeployment?.upstream_id)
+  const nativeCapabilities = data!.adapters.find(a => a.id === targetUpstream?.adapter_id)?.capability_discovery
   const canRun = !!targetDeployment?.enabled && !!targetUpstream?.enabled
   const stale = data!.revision !== revision
   const supported = (side: 'input' | 'output') => modalities.filter(modality => deployments.every(d => {
@@ -49,11 +50,11 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
   let recorded: Entity = {}
   try {
     const evidence = JSON.parse(model.evidence)
-    if (evidence.source === 'registration-probe') recorded = evidence.checks
+    if (['registration-probe', 'upstream-capabilities'].includes(evidence.source)) recorded = evidence.checks
   } catch { /* Operator declarations are plain text. */ }
   const checks: Entity = report?.checks || recorded
   const checkNames: Record<string, string> = {
-    text: '文本生成', streaming: '流式输出', tools: '工具调用', 'tools.parallel_calls': '并行工具',
+    text: '文本生成', streaming: '流式输出', tools: '工具调用', 'tools.parallel_calls': '并行工具', capabilities: '能力声明',
     structured_output: '结构化输出',
     vision: '图片输入', audio: '音频输入', video: '视频输入', file: '文件输入',
     image_generation: '图片生成', image_edit: '图片编辑', audio_transcription: '音频转写',
@@ -95,6 +96,10 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
   }) }
   const applyDetected = () => {
     const detected = report!.capabilities
+    if (report!.source === 'upstream-capabilities') {
+      setYaml(stringify(detected))
+      return
+    }
     const patch: Entity = { limits: { ...caps.limits, ...detected.limits } }
     if (model.task !== 'llm') {
       if (model.task === 'embedding') patch.embedding = { ...caps.embedding,
@@ -186,9 +191,11 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
         <button className="btn" disabled={action.busy || !canRun || stale} onClick={() => run('probe')}>
           {operation === 'probe' ? <LoaderCircle size={14} className="spin" /> : <Radar size={14} />}{t(operation === 'probe' ? '探测中' : '探测能力')}</button>
       </div>
-      <p className="hint">{t('使用已保存的连接配置。测试发送一次请求，能力探测发送多次请求，产生的用量计入日志。')}</p>
-      {model.task === 'llm' && <p className="hint">{t('能力探测内置音频、视频和 PDF 样本，按适配器支持范围发送并核对回答。')}</p>}
-      {model.task === 'llm' && <p className="hint">{t('媒体模型会实际生成音频、视频或文件，探测可能产生费用。')}</p>}
+      {nativeCapabilities
+        ? <p className="hint">{t('此协议直接读取上游能力声明，登记和探测不会生成内容；测试模型会发送真实请求。')}</p>
+        : <><p className="hint">{t('使用已保存的连接配置。测试发送一次请求，能力探测发送多次请求，产生的用量计入日志。')}</p>
+          {model.task === 'llm' && <p className="hint">{t('能力探测内置音频、视频和 PDF 样本，按适配器支持范围发送并核对回答。')}</p>}
+          {model.task === 'llm' && <p className="hint">{t('媒体模型会实际生成音频、视频或文件，探测可能产生费用。')}</p>}</>}
       {test && <div className="model-test-result" role="status">
         <div className="probe-result"><strong>{t(test.status === 'supported' ? '测试成功' : '测试未通过')}</strong><span className="muted">{test.latency_ms} ms{test.provider_status ? ` · HTTP ${test.provider_status}` : ''}</span></div>
         {test.preview && <pre>{test.preview}</pre>}
@@ -255,7 +262,9 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
     {!!Object.keys(checks).length && <details className="edit-section" open={report ? true : undefined}><summary>{t(report ? '本次探测结果' : '检测记录')}</summary>
       {report && <div className="model-probe-actions">
         <span className="hint">{t(deployments.length > 1 ? '此模型有多个部署，单个部署的探测结果仅供参考，请确认全部部署后手动调整。' : '应用已确认结果会更新当前表单，未知项保留原值，保存配置后生效。')}</span>
-        <button className="btn btn-sm" disabled={action.busy || invalid || stale || deployments.length !== 1 || report.verification !== 'verified'} onClick={applyDetected}>{t('应用已确认能力')}</button>
+        <button className="btn btn-sm" disabled={action.busy || invalid || stale || deployments.length !== 1
+          || report.verification !== 'verified' && report.source !== 'upstream-capabilities'} onClick={applyDetected}>
+          {t(report.source === 'upstream-capabilities' ? '应用上游声明' : '应用已确认能力')}</button>
       </div>}
       <div className="probe-results">{Object.entries(checks).map(([key, value]) => <div className="probe-result" key={key}>
         <span>{t(checkNames[key] || (key.startsWith('reasoning.') ? '推理能力' : key))}{key.startsWith('reasoning.') ? ` · ${key.split('.')[1]}` : ''}</span>

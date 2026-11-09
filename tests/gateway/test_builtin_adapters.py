@@ -693,4 +693,5 @@ def test_runtime_registers_new_builtins():
         "openai-embedding", "cohere-rerank", "cohere-chat", "perplexity-agent", "cloudflare-workers-ai",
         "openai-images", "openai-transcription", "openai-speech", "openai-audio-chat",
         "openai-video", "openai-files", "gemini-speech", "gemini-video",
+        "kemo-v2", "kemo-v1",
     }

@@ -115,6 +115,8 @@ python update.py --resources-apply --branch kemo-preview --yes
 
 稳定分支使用 `--branch main`。无参数更新菜单也有“只更新内置协议适配器和提供商模板”。CLI 可显式指定 `--repo-url`；管理网页和 HTTP 更新固定从项目官方 GitHub 获取，只接受 `main` 或 `kemo-preview` 分支。
 
+资源包仍须与已安装框架兼容。首次使用 `kemo-v2` / `kemo-v1` 时，先更新包含原生能力读取、Asset 转移和环路入口的框架源码并重启；仅更新资源目录无法补齐旧框架入口。资源启动预检失败会回滚，具体范围见 [Kemo 协议上游](kemo-upstreams.md)。
+
 智能体通过 HTTP：
 
 ```python

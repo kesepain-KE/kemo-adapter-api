@@ -16,7 +16,7 @@ import zlib
 
 import jsonschema
 
-from core.models import EmbeddingRequest, KemoRequest, RerankRequest, Usage
+from core.models import EmbeddingRequest, KemoRequest, ModelCapabilities, RerankRequest, Usage
 from core.provider_contract import ProviderEventKind as Kind, ProviderException, RequestContext
 from core.yaml_config import read_yaml
 from gateway.domain import Deployment, PublicModel
@@ -200,8 +200,11 @@ class ModelProbe:
             )
             return await self.call("rerank", request, method="rerank", accept=lambda value: bool(value.results))
         if self.image_output:
+            image = {"type": "image", "mime_type": "image/png", "source": {
+                "kind": "data_url", "uri": probe_image()[1],
+            }} if self.primary_check == "image_edit" else None
             return await self.call(
-                "image_generation", self.image_request(),
+                self.primary_check, self.image_request(image),
                 accept=lambda value: value.status == "completed" and bool(response_images(value)),
             )
         if self.media_operation:
@@ -284,7 +287,26 @@ class ModelProbe:
 
     async def test(self, *, first_token=False):
         started = time.perf_counter()
-        streaming = first_token and self.task == "llm" and self.adapter.manifest.streaming and not self.media_operation
+        streaming_available = self.adapter.manifest.streaming
+        if self.adapter.manifest.capability_discovery:
+            caps = await self.upstream_capabilities()
+            streaming_available = caps.streaming
+            if self.task == "llm":
+                operations = caps.extensions.get("operations", {})
+                def supports(name):
+                    value = operations.get(name)
+                    return value is True or isinstance(value, dict) and value.get("supported") is True
+                if "image" in caps.output_modalities and "text" not in caps.output_modalities:
+                    self.image_output = True
+                    self.primary_check = "image_generation" if supports("image_generation") else "image_edit"
+                elif "text" not in caps.output_modalities:
+                    self.primary_check = next((name for name in (
+                        "speech_generation", "speech_to_speech", "video_generation",
+                    ) if supports(name)), "file_generation" if "file" in caps.output_modalities else "text")
+                elif "text" not in caps.input_modalities and supports("audio_transcription"):
+                    self.primary_check = "audio_transcription"
+                self.media_operation = self.primary_check if self.primary_check != "text" else None
+        streaming = first_token and self.task == "llm" and streaming_available and not self.media_operation
         stream_report = {"first_token_ms": None, "preview": ""}
         if streaming:
             result = await self.call(
@@ -316,6 +338,19 @@ class ModelProbe:
         return report
 
     async def run(self):
+        if self.adapter.manifest.capability_discovery:
+            caps = await self.upstream_capabilities()
+            value = caps.model_dump(mode="json")
+            for name in ("protocol_version", "model", "provider_id", "provider_model", "task"):
+                value.pop(name)
+            self.checks["capabilities"] = {"status": "declared", "reason": "upstream-capabilities"}
+            model = PublicModel(
+                id=self.deployment.public_model, task=caps.task, capabilities=value, verification="declared",
+                evidence=json.dumps({"source": "upstream-capabilities", "upstream_id": self.upstream.id,
+                                     "upstream_model": self.deployment.upstream_model, "checks": self.checks}),
+            )
+            return model, {"model": model.id, "verification": model.verification,
+                           "source": "upstream-capabilities", "checks": self.checks}
         caps = {"input_modalities": ["text"], "output_modalities": ["text"], "streaming": False}
         result = await self.basic()
         if self.task == "embedding":
@@ -393,6 +428,16 @@ class ModelProbe:
                                  "upstream_model": self.deployment.upstream_model, "checks": self.checks}),
         )
         return model, {"model": model.id, "verification": model.verification, "checks": self.checks}
+
+    async def upstream_capabilities(self):
+        async with asyncio.timeout(min(self.upstream.timeout, 20)):
+            value = await self.adapter.describe_model(self.source, self.deployment.upstream_model, self.headers)
+        caps = ModelCapabilities.model_validate(value["capabilities"])
+        if self.task is not None and caps.task != self.task:
+            raise upstream_error(code="KEMO_CAPABILITIES_TASK_MISMATCH", retryable=False)
+        self.task = caps.task
+        self.registry.validate_declaration(self.adapter, caps, self.upstream)
+        return caps
 
     async def media(self, modality, caps):
         sample, block = await self.sample_block(modality)

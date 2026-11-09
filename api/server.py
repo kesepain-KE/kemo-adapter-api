@@ -31,6 +31,7 @@ from core.executor import GatewayExecutor
 from gateway.runtime import RuntimeRegistry, ControlView
 from gateway.store import Store
 from gateway.security import SecretVault
+from gateway.federation import FederationMiddleware
 from gateway.transport import Transport
 from core.retrieval_executor import RetrievalExecutor
 from core.runtime_state import GatewayRuntimeState
@@ -122,6 +123,10 @@ def create_app(
         transport_factory=partial(Transport, json_max_bytes=resolved_settings.upstream_json_max_bytes),
         log_detail_max_bytes=resolved_settings.log_detail_max_bytes,
         log_detail_mode=resolved_settings.log_detail_mode,
+        gateway_urls=tuple(filter(None, (
+            f"http://{('[' + resolved_settings.host + ']') if ':' in resolved_settings.host else resolved_settings.host}:{resolved_settings.port}",
+            resolved_settings.base_url,
+        ))),
     )
     live_config = ControlView(registry)
     runtime_state = GatewayRuntimeState(
@@ -213,6 +218,7 @@ def create_app(
         ),
         path_prefixes=frozenset({"/admin/api/"}),
     )
+    app.add_middleware(FederationMiddleware)
     app.state.settings = resolved_settings
     app.state.registry = registry
     app.state.downstream_keys = registry.keys

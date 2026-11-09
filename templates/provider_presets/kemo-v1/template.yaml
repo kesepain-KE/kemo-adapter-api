@@ -1,0 +1,8 @@
+adapter_id: kemo-v1
+name: Kemo Protocol 1.0
+base_url: https://{gateway-host}
+auth_scheme: bearer
+headers: {}
+profile: {}
+catalog: []
+note: 面向归档 1.0 服务；不支持强制或命名工具选择、结构化输出、多候选、prediction 与 service 选项。请先测试真实上游。

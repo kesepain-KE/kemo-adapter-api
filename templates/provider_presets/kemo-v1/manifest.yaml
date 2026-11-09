@@ -1,0 +1,5 @@
+id: kemo-v1
+name: Kemo Protocol 1.0
+version: 1.0.0
+contract_version: "1.0"
+description: 接入归档 Kemo 1.0 上游，边界转换为本地 2.0；未确认的高级选项明确拒绝。

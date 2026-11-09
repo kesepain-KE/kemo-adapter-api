@@ -27,6 +27,7 @@ class AdapterManifest(Document):
     auth_schemes: tuple[AuthScheme, ...] = STANDARD_AUTH
     streaming: bool = False
     discovery: bool = True
+    capability_discovery: bool = False
     endpoints: dict[str, str] = Field(default_factory=dict)
     fixed_headers: dict[str, str] = Field(default_factory=dict)
     body_fields: tuple[str, ...] = (
@@ -46,6 +47,7 @@ class AdapterManifest(Document):
     structured_output: bool = False
     reasoning_returns: tuple[str, ...] = ()
     reasoning_levels: tuple[str, ...] = ()
+    dynamic_reasoning: bool = False
     persisted_reasoning: bool = False
     multimodal_tool_results: bool = False
     prediction: bool = False

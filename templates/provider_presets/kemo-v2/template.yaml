@@ -1,0 +1,8 @@
+adapter_id: kemo-v2
+name: Kemo Protocol 2.0
+base_url: https://{gateway-host}
+auth_scheme: bearer
+headers: {}
+profile: {}
+catalog: []
+note: 填写上游网关根地址和下游密钥；私网地址需显式允许私网，媒体转发需要 asset:read 与 asset:write 权限。

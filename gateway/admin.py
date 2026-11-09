@@ -350,13 +350,15 @@ async def register_models(identity: str, body: Mutation, request: Request):
         if model_id in selected or (model_id, item["upstream_model"]) in registered:
             raise HTTPException(422, "模型已登记或公开模型名重复")
         selected.add(model_id)
-        task = item.get("task", adapter.manifest.operations[0])
-        if task not in adapter.manifest.operations:
+        task = item.get("task", None if adapter.manifest.capability_discovery else adapter.manifest.operations[0])
+        if task not in adapter.manifest.operations and not (
+                task is None and adapter.manifest.capability_discovery and "task" not in item):
             raise HTTPException(422, "任务类型超出适配器能力")
         deployment = Deployment(id="dep_" + uuid4().hex[:16], upstream_id=identity,
                                 upstream_model=item["upstream_model"], public_model=model_id)
         if model_id not in {m["id"] for m in value["models"]}:
-            model = PublicModel(id=model_id, task=task, capabilities=item.get("capabilities", {}))
+            model = PublicModel(id=model_id, task=task or adapter.manifest.operations[0],
+                                capabilities=item.get("capabilities", {}))
             value["models"].append(model.model_dump(mode="json"))
         if "capabilities" not in item:
             pending.append((deployment, task))
