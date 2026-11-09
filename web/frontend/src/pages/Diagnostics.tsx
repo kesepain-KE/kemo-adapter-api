@@ -5,17 +5,12 @@ import type { Entity } from '../console'
 import { PageHeader, Toggle } from '../components/UI'
 import { Empty, ErrorBar } from '../components/Form'
 import { getLanguage, t } from '../i18n'
+import { formatCost } from '../costs'
 
 const number = (value: number | null) => value == null ? '—' : value.toLocaleString(getLanguage())
 const rate = (value: number | null) => value == null ? '—' : `${(value * 100).toFixed(1)}%`
 const latency = (value: number | null) => value == null ? '—' : `${Math.round(value)} ms`
 const periods = [['today', '今天'], ['7d', '近 7 天'], ['30d', '近 30 天'], ['all', '全部数据']]
-
-function costs(metrics: Entity) {
-  const values = Object.entries(metrics.costs).map(([currency, value]) => `${Number(value).toFixed(4)} ${currency}`)
-  if (!values.length) return '—'
-  return `${metrics.unknown_cost_calls || metrics.estimated_calls ? '≈ ' : ''}${values.join(' · ')}`
-}
 
 export default function Diagnostics() {
   const { data, refresh } = useConsole()
@@ -63,9 +58,10 @@ export default function Diagnostics() {
         ['缓存命中率', rate(metrics.cache_hit_rate), t('按已知输入 Token 加权')],
         ['缓存命中 Token', number(metrics.cached_tokens), `${t('已知缓存用量')} ${number(metrics.cache_samples)}`],
         ['平均响应延迟', latency(metrics.latency_ms), `${t('平均首字延迟')} ${latency(metrics.first_token_ms)}`],
-        ['成本总计', costs(metrics), `${t('价格未知调用')} ${number(metrics.unknown_cost_calls)}`],
+        ['成本总计', formatCost(metrics.display_cost), `${t('价格未知调用')} ${number(metrics.unknown_cost_calls)}`],
       ].map(([label, value, foot]) => <div className="stat-card" key={label}>
-        <div className="stat-label">{t(label)}</div><div className="stat-value">{value}</div><div className="stat-foot">{foot}</div>
+        <div className="stat-label">{t(label)}</div><div className={`stat-value${label === '成本总计' ? ' cost-value' : ''}`}
+          title={value}>{value}</div><div className="stat-foot">{foot}</div>
       </div>)}
     </div>
       <section className="ranking-section"><div className="ranking-head"><h2 className="panel-title">{t('调用排行')}</h2>
@@ -75,7 +71,7 @@ export default function Diagnostics() {
         </div></div><div className="ranking-table-wrap">
         <table className={`ranking-table${dimension === 'provider' ? '' : ' extended'}`} aria-label={t('调用排行')}>
           <thead><tr><th scope="col">{t(dimension === 'provider' ? '提供商' : dimension === 'model' ? '模型' : '密钥')}</th>
-            {rankingColumns.map(label => <th scope="col" key={label}>{t(label)}</th>)}
+            {rankingColumns.map(label => <th scope="col" key={label} className={label === '成本总计' ? 'ranking-cost' : undefined}>{t(label)}</th>)}
           </tr></thead><tbody>
           {overview.rankings[dimension].map((item: Entity, index: number) => <tr className="ranking-row" key={item.id}>
             <th scope="row"><div className="ranking-title"><span className="ranking-position">{index + 1}</span><div>
@@ -87,8 +83,9 @@ export default function Diagnostics() {
               number(item.calls), rate(item.success_rate),
               ...(dimension === 'provider' ? [] : [number(item.total_tokens)]),
               rate(item.cache_hit_rate), latency(item.first_token_ms),
-              ...(dimension === 'provider' ? [] : [costs(item)]),
-            ].map((value, column) => <td key={rankingColumns[column]}>{value}</td>)}
+              ...(dimension === 'provider' ? [] : [formatCost(item.display_cost)]),
+            ].map((value, column) => <td key={rankingColumns[column]} title={value}
+              className={rankingColumns[column] === '成本总计' ? 'ranking-cost' : undefined}>{value}</td>)}
           </tr>)}
           {!overview.rankings[dimension].length && <tr><td colSpan={rankingColumns.length + 1}><Empty text="暂无调用记录" /></td></tr>}
           </tbody>

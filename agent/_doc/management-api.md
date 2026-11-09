@@ -1,5 +1,7 @@
 # 管理操作速查
 
+高级插件使用独立库存 revision，管理路径和授权流程见 [高级插件手册](advanced-plugins.md)，开发契约见 [SDK v1](plugins-sdk.md)。
+
 新增适配器、模板、来源分类与版本替换的完整步骤见 [资源手册](resources.md)；图片模型见 [图片手册](images.md)。
 
 | 资源管理 | 方法与路径 | 请求与结果 |
@@ -20,6 +22,8 @@
 由当前源码路由核对。管理接口不属于 Kemo 2.0 公开协议，统一前缀 `/admin/api`。普通读取/目录修改需要 `admin:web` 或 owner；密钥和扩展修改、重启、启动文件读取与编辑需要 owner。认证入口按登录阶段开放。Cookie 写请求要求同源与 CSRF。
 
 目录及密钥写操作正文为 `{expected_revision, value}`，并发冲突返回 409。扩展安装使用 multipart 的 `expected_revision` 和 ZIP `file`。发现为显式只读上游目录请求。
+
+成本显示币种通过 `PATCH /admin/api/settings` 的 `value.cost_display_currency` 保存，默认 `USD`；可选币种及固定汇率日期从 `/admin/api/console` 的 `cost_exchange_rates` 读取。诊断汇总、排行及调用记录返回 `display_cost`（`amount/currency/approximate/unconverted_currencies`），原始 `costs`、单次 `cost/currency` 和价格快照保持原计费币种。换算使用随代码保存的固定参考汇率，不联网刷新；没有对应汇率时 `amount` 为 null 并列出无法换算的币种，不能将其当作零成本。
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |

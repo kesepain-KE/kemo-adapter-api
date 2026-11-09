@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "title": "本地文本处理",
+  "containers": [
+    {"kind": "status", "title": "运行状态", "fields": [
+      {"key": "status", "label": "状态", "type": "badge"},
+      {"key": "usage", "label": "用量测量", "type": "text"}
+    ]},
+    {"kind": "config", "title": "文本转换", "fields": [
+      {"key": "mode", "label": "转换模式", "type": "enum", "options": [
+        {"value": "uppercase", "label": "大写"}, {"value": "lowercase", "label": "小写"},
+        {"value": "title", "label": "标题格式"}, {"value": "reverse", "label": "反转"}
+      ]},
+      {"key": "prefix", "label": "输出前缀", "type": "string"}
+    ], "presets": [
+      {"name": "英文大写", "values": {"mode": "uppercase", "prefix": ""}},
+      {"name": "标题格式", "values": {"mode": "title", "prefix": ""}}
+    ]},
+    {"kind": "action", "title": "操作", "controls": [
+      {"type": "button", "label": "本地自检", "command": "self-check"}
+    ]}
+  ]
+}

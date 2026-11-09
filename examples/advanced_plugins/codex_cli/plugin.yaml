@@ -1,0 +1,40 @@
+schema_version: 1
+id: codex_cli
+name: Codex CLI Bridge
+version: 1.0.0
+author: Kemo Gateway
+category: cli_provider
+summary: 通过本机 Codex CLI 非交互入口调用已授权模型；配置后显式探测成功才登记模型。
+compatibility:
+  gateway: ">=2.0.0,<3.0.0"
+runtime:
+  kind: process
+  entry: backend/main.py
+  protocol: kemo-plugin-rpc-v1
+  timeout: 300
+  concurrency: 1
+provider:
+  provider_id: codex-cli
+ui:
+  fallback_panel: module/panel.json
+permissions:
+  requested: [model.register, model.invoke, process.cli.execute, account.status.read, network.access, plugin.config.write]
+config_schema:
+  type: object
+  additionalProperties: false
+  required: [executable, auth_home, model]
+  properties:
+    executable:
+      type: string
+      minLength: 1
+      title: Codex 原生可执行文件绝对路径
+    auth_home:
+      type: string
+      minLength: 1
+      title: 本机已授权的 CODEX_HOME
+    model:
+      type: string
+      minLength: 1
+      maxLength: 100
+      pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+      title: 待验证模型 ID

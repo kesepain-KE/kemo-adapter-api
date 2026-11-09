@@ -59,7 +59,8 @@ async def update_startup_config(body: StartupMutation, request: Request, _: Prin
 async def diagnostic_usage(request: Request, period: Literal["today", "24h", "7d", "30d", "all"] = "today",
                            _: Principal = Depends(require_admin)):
     return await asyncio.to_thread(usage_overview, request.app.state.registry.store, period,
-                                   request.app.state.settings.statistics_timezone)
+                                   request.app.state.settings.statistics_timezone,
+                                   display_currency=request.app.state.registry.current.options.cost_display_currency)
 
 
 @router.get("/diagnostics/activity")

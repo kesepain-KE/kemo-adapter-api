@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>本地文本工作台</title><link rel="stylesheet" href="style.css"></head>
+<body><main><span class="eyebrow">KEMO · LOCAL PROVIDER</span><h1>文本工作台</h1>
+<p>独立进程执行文本转换，通过 Kemo 协议返回结果。无需账户或网络。</p>
+<div class="cards"><article><span>运行状态</span><strong id="status">正在连接宿主</strong></article>
+<article><span>已注册模型</span><strong id="models">—</strong></article></div>
+<section><h2>转换配置</h2><div id="config" class="config-form">
+<label>转换模式<select id="mode"><option value="uppercase">大写</option><option value="lowercase">小写</option><option value="title">标题格式</option><option value="reverse">反转</option></select></label>
+<label>输出前缀<input id="prefix" maxlength="200"></label><button id="save" type="button">保存配置</button>
+</div><p id="feedback" role="status"></p></section></main><script src="plugin.js"></script></body></html>

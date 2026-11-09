@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 import { t } from './i18n'
 
 export type Entity = Record<string, any>
@@ -9,7 +10,9 @@ export interface ConsoleData {
   resources: { running: Record<string, Entity>; restart_required: boolean }
   credential_health: Record<string, Record<string, Entity>>
   upstreams: Entity[]; models: Entity[]; deployments: Entity[]; keys: Entity[]
+  plugin_models: Entity[]
   adapters: Entity[]; templates: Entity[]; attempts: Entity[]; settings: Entity
+  cost_exchange_rates: { date: string; base: string; rates: Record<string, number> }
   model_vendors: Record<string, string>
   tokenizers: { id: string; label: string }[]
   retired_generations: number
@@ -44,6 +47,8 @@ interface ConsoleState {
 }
 const Context = createContext<ConsoleState>(null!)
 export function ConsoleProvider({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation()
+  const refreshInterval = pathname === '/' ? 60000 : 15000
   const [data, setData] = useState<ConsoleData | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const refresh = useCallback(async () => {
@@ -61,11 +66,13 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   }, [])
   useEffect(() => {
     void refresh().catch(() => {})
+  }, [refresh])
+  useEffect(() => {
     const timer = window.setInterval(() => {
       if (!document.hidden) void refresh().catch(() => {})
-    }, 15000)
+    }, refreshInterval)
     return () => window.clearInterval(timer)
-  }, [refresh])
+  }, [refresh, refreshInterval])
   const mutate = async (path: string, method: string, value: Entity = {}, key = false, expectedRevision?: string) => {
     if (!data) throw new Error(t('正在加载'))
     const result = await api(path, { method, body: JSON.stringify({

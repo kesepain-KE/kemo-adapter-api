@@ -9,6 +9,7 @@ const TITLES: Record<string, string> = {
   '/': '总览',
   '/upstreams': '上游服务',
   '/models': '模型管理',
+  '/advanced-plugins': '高级插件',
   '/routing': '路由策略',
   '/keys': '下游密钥',
   '/logs': '调用记录',

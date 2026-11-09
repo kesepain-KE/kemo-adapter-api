@@ -140,11 +140,25 @@ async def web_auth_methods(request: Request, response: Response) -> dict[str, ob
     _no_store(response)
     local_bypass = control_plane_local_bypass(request)
     password_required, password_valid = _password_auth_state(request)
+    token_required = bool(request.app.state.settings.web_token.strip()) and not local_bypass
+    session = request.app.state.web_auth.resolve(
+        request.cookies.get(WEB_SESSION_COOKIE, ""), stage="complete"
+    )
+    preauth = request.app.state.web_auth.resolve(
+        request.cookies.get(WEB_PREAUTH_COOKIE, ""), stage="password"
+    )
+    next_step = "complete"
+    if session is None:
+        if token_required and preauth is None:
+            next_step = "token"
+        elif password_required:
+            next_step = "password"
     return {
-        "token_required": bool(request.app.state.settings.web_token.strip()) and not local_bypass,
+        "token_required": token_required,
         "password_required": password_required,
         "configuration_valid": password_valid,
         "session_ttl_seconds": request.app.state.web_auth.ttl_seconds,
+        "next_step": next_step,
     }
 
 

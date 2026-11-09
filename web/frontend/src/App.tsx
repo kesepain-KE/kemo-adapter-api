@@ -14,6 +14,7 @@ import Templates from './pages/Templates'
 import Diagnostics from './pages/Diagnostics'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
+import AdvancedPlugins from './pages/AdvancedPlugins'
 import { ApiError, ConsoleProvider, useConsole } from './console'
 import { useLanguage, t } from './i18n'
 
@@ -57,6 +58,7 @@ function Shell() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/upstreams" element={<Upstreams />} />
             <Route path="/models" element={<Models />} />
+            <Route path="/advanced-plugins" element={<AdvancedPlugins />} />
             <Route path="/routing" element={<Routing />} />
             <Route path="/keys" element={<Keys />} />
             <Route path="/logs" element={<Logs />} />

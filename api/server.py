@@ -43,6 +43,8 @@ from web.backend.router import router as operations_router
 from web.backend.auth_service import WebAuthService
 from web.backend.restart_service import RestartService
 from web.backend.system_inspector import SystemInspector
+from gateway.plugins.manager import AdvancedPluginManager
+from gateway.plugins.routes import router as plugins_router, ui_router as plugins_ui_router
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -129,6 +131,7 @@ def create_app(
         ))),
     )
     live_config = ControlView(registry)
+    advanced_plugins = AdvancedPluginManager(registry, _project_version())
     runtime_state = GatewayRuntimeState(
         max_concurrent_executions=resolved_settings.max_concurrent_executions
     )
@@ -160,6 +163,7 @@ def create_app(
         await assets.initialize()
         await executions.initialize()
         await registry.initialize()
+        await advanced_plugins.initialize()
         await runtime_state.mark_running()
         await restart_service.start_watcher()
         yield
@@ -202,6 +206,16 @@ def create_app(
             "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         )
+        if (request.url.path.startswith("/admin/plugin-ui/") or
+                request.url.path.startswith("/admin/api/advanced-plugins/") and "/ui/assets/" in request.url.path):
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+            response.headers["Content-Security-Policy"] = (
+                "sandbox allow-scripts; default-src 'none'; script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'none'; object-src 'none'; base-uri 'none'; "
+                "frame-ancestors 'self'; form-action 'none'"
+            )
         admin_document = request.url.path.startswith("/admin") and not (
             request.url.path.startswith("/admin/assets/")
             or request.url.path == "/admin/logo.png"
@@ -221,6 +235,7 @@ def create_app(
     app.add_middleware(FederationMiddleware)
     app.state.settings = resolved_settings
     app.state.registry = registry
+    app.state.advanced_plugins = advanced_plugins
     app.state.downstream_keys = registry.keys
     app.state.live_config = live_config
     app.state.runtime_state = runtime_state
@@ -261,6 +276,8 @@ def create_app(
     app.include_router(admin_router)
     app.include_router(auth_router)
     app.include_router(operations_router)
+    app.include_router(plugins_router)
+    app.include_router(plugins_ui_router)
 
     frontend_dist = PROJECT_ROOT / "web" / "frontend" / "dist"
     if frontend_dist.exists():

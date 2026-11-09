@@ -68,7 +68,14 @@ function ModelScopePicker({ value, onChange }: { value: string[]; onChange: (val
     id: upstream.id as string, name: upstream.name as string,
     models: [...new Set(data!.deployments.filter(d => d.upstream_id === upstream.id).map(d => d.public_model as string))],
   })).filter(group => group.models.length)
+  for (const model of data!.plugin_models || []) {
+    const identity = '/plugin/' + model.plugin_id
+    const group = groups.find(group => group.id === identity)
+    if (group) group.models.push(model.id)
+    else groups.push({ id: identity, name: model.plugin_name, models: [model.id] })
+  }
   const unassigned = [...new Set([...data!.models.map(m => m.id as string), ...value])].filter(id =>
+    !(data!.plugin_models || []).some(model => model.id === id) &&
     !data!.deployments.some(d => d.public_model === id))
   if (unassigned.length) groups.push({ id: '/unassigned', name: t('未关联提供商'), models: unassigned })
   const active = groups.find(group => group.id === provider) || groups[0]

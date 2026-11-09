@@ -25,6 +25,63 @@ def record(store, identity, at, *, log_type="request", status="completed", usage
             db.execute("INSERT INTO cost_records VALUES(?,1,?,?,1)", (identity, cost, currency))
 
 
+@pytest.mark.parametrize(("currency", "expected"), [
+    ("USD", 2.233), ("CNY", 14.897), ("EUR", 2), ("JPY", 353.54),
+])
+def test_cost_display_converts_mixed_currencies_without_changing_billing(tmp_path, monkeypatch, currency, expected):
+    with instance(tmp_path, monkeypatch) as (client, app):
+        now = datetime.now(timezone.utc)
+        record(app.state.registry.store, "usd", now, cost=1.1165)
+        record(app.state.registry.store, "cny", now, cost=7.4485, currency="CNY")
+        response = mutate(client, "/settings", {"cost_display_currency": currency}, method="PATCH")
+        assert response.status_code == 200, response.text
+        overview = client.get("/admin/api/diagnostics/usage?period=all").json()
+        for metrics in (overview["summary"], overview["rankings"]["model"][0], overview["rankings"]["key"][0]):
+            assert metrics["costs"] == {"USD": 1.1165, "CNY": 7.4485}
+            assert metrics["display_cost"] == {
+                "amount": pytest.approx(expected), "currency": currency,
+                "approximate": True, "unconverted_currencies": [],
+            }
+        items = {item["request_id"]: item for item in client.get("/admin/api/logs").json()["items"]}
+        assert (items["usd"]["cost"], items["usd"]["currency"]) == (1.1165, "USD")
+        assert (items["cny"]["cost"], items["cny"]["currency"]) == (7.4485, "CNY")
+        for item in items.values():
+            assert item["display_cost"]["amount"] == pytest.approx(expected / 2)
+            assert item["display_cost"]["currency"] == currency
+
+
+def test_cost_display_setting_survives_reopen_and_rejects_unavailable_currency(tmp_path, monkeypatch):
+    with instance(tmp_path, monkeypatch) as (client, app):
+        assert client.get("/admin/api/console").json()["settings"]["cost_display_currency"] == "USD"
+        assert mutate(client, "/settings", {"cost_display_currency": "CNY"}, method="PATCH").status_code == 200
+        assert mutate(client, "/settings", {"max_attempts": 2}, method="PATCH").status_code == 200
+        assert mutate(client, "/settings", {"cost_display_currency": "ZZZ"}, method="PATCH").status_code == 422
+        assert app.state.registry.store.catalog().settings.cost_display_currency == "CNY"
+    with instance(tmp_path, monkeypatch) as (client, _):
+        data = client.get("/admin/api/console").json()
+        assert data["settings"]["cost_display_currency"] == "CNY"
+        assert data["settings"]["max_attempts"] == 2
+        assert {"USD", "CNY", "EUR", "JPY"} <= data["cost_exchange_rates"]["rates"].keys()
+
+
+def test_cost_display_preserves_unknown_costs_and_reports_unavailable_exchange_rates(tmp_path, monkeypatch):
+    with instance(tmp_path, monkeypatch) as (client, app):
+        now = datetime.now(timezone.utc)
+        record(app.state.registry.store, "unknown", now)
+        record(app.state.registry.store, "zero", now, cost=0)
+        record(app.state.registry.store, "unavailable-rate", now, cost=5, currency="RUB")
+        overview = client.get("/admin/api/diagnostics/usage?period=all").json()
+        assert overview["summary"]["costs"] == {"USD": 0, "RUB": 5}
+        assert overview["summary"]["unknown_cost_calls"] == 1
+        assert overview["summary"]["display_cost"]["amount"] is None
+        assert overview["summary"]["display_cost"]["unconverted_currencies"] == ["RUB"]
+        items = {item["request_id"]: item for item in client.get("/admin/api/logs").json()["items"]}
+        assert items["zero"]["display_cost"]["amount"] == 0
+        assert items["unknown"]["display_cost"]["amount"] is None
+        assert items["unknown"]["display_cost"]["unconverted_currencies"] == []
+        assert items["unavailable-rate"]["cost"] == 5
+
+
 def test_overview_aggregates_full_history_known_cache_and_separate_currencies(tmp_path, monkeypatch):
     now = datetime.now(timezone.utc)
     with instance(tmp_path, monkeypatch) as (client, app):
@@ -136,7 +193,8 @@ def test_overview_rolling_24_hours_and_distinct_routes_follow_the_selected_windo
             summary = usage_overview(store, period, "Asia/Shanghai", now=now)["summary"]
             assert (summary["calls"], summary["upstream_count"], summary["deployment_count"]) == (4, 3, 3)
         monkeypatch.setattr("web.backend.router.usage_overview",
-                            lambda store, period, zone: usage_overview(store, period, zone, now=now))
+                            lambda store, period, zone, *, display_currency: usage_overview(
+                                store, period, zone, now=now, display_currency=display_currency))
         response = client.get("/admin/api/diagnostics/usage?period=24h")
         assert response.status_code == 200 and response.json()["summary"] == rolling["summary"]
 

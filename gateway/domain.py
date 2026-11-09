@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from core.models import ModelCapabilities
+from gateway.currency import EXCHANGE_RATES
 
 
 TokenizerName = Literal[
@@ -124,6 +125,14 @@ class RuntimeOptions(Document):
     system_prompt: str = Field(default="", max_length=100000)
     max_attempts: int = Field(default=3, ge=1, le=10)
     cooldown_seconds: int = Field(default=30, ge=1, le=3600)
+    cost_display_currency: str = "USD"
+
+    @field_validator("cost_display_currency")
+    @classmethod
+    def supported_cost_currency(cls, value: str) -> str:
+        if value not in EXCHANGE_RATES:
+            raise ValueError("请选择支持的成本显示币种")
+        return value
 
 
 class ExtensionState(Document):

@@ -1,0 +1,41 @@
+schema_version: 1
+id: local_text
+name: 本地文本处理
+version: 1.0.0
+author: Kemo Gateway
+category: provider_extension
+summary: 离线执行 Unicode 文本转换，展示完整 Provider 安装、流式与热更新链路。它不运行语言模型。
+compatibility:
+  gateway: ">=2.0.0,<3.0.0"
+runtime:
+  kind: process
+  entry: backend/main.py
+  protocol: kemo-plugin-rpc-v1
+provider:
+  provider_id: local-text
+ui:
+  mode: sandbox
+  entry: ui/index.html
+  fallback_panel: module/panel.json
+  pages:
+    - id: overview
+      title: 文本工作台
+      entry: ui/index.html
+permissions:
+  requested: [model.register, model.invoke, plugin.config.write]
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    mode:
+      type: string
+      enum: [uppercase, lowercase, title, reverse]
+      default: uppercase
+      title: 转换模式
+    prefix:
+      type: string
+      maxLength: 200
+      default: ""
+      title: 输出前缀
+actions:
+  self-check: plugin.config.write

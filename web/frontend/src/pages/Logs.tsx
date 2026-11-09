@@ -7,6 +7,7 @@ import { Empty, ErrorBar, Field } from '../components/Form'
 import { Select } from '../components/Select'
 import { DateTimePicker } from '../components/DateTimePicker'
 import { t } from '../i18n'
+import { formatCost } from '../costs'
 
 const emptyFilters = { start: '', end: '', model: '', task: '', log_type: '', status: '' }
 type Filters = typeof emptyFilters
@@ -17,7 +18,7 @@ const time = (value: number | null | undefined) => value == null ? '—' : `${Ma
 const count = (value: number | null | undefined) => value == null ? '—' : value.toLocaleString()
 const cacheRatio = (usage: Entity | null) => usage && usage.input_tokens > 0 && usage.cached_input_tokens != null
   ? `${(100 * usage.cached_input_tokens / usage.input_tokens).toFixed(1)}%` : '—'
-const cost = (item: Entity) => item.cost == null ? t('未知') : `${item.complete ? '' : '≈ '}${Number(item.cost).toFixed(6)} ${item.currency}`
+const cost = (item: Entity) => item.cost == null ? t('未知') : formatCost(item.display_cost, 6)
 const source = (item: Entity) => item.key_name || item.key_id || (logLabels[item.subject_id] ? t(logLabels[item.subject_id]) : item.subject_id) || t('历史记录')
 
 export default function Logs() {

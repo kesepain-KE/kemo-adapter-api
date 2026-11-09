@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "title": "Codex CLI 配置",
+  "containers": [
+    {"kind": "status", "title": "本机授权状态", "fields": [
+      {"key": "installed", "label": "CLI 已安装", "type": "badge"},
+      {"key": "authenticated", "label": "CLI 已登录", "type": "badge"},
+      {"key": "version", "label": "CLI 版本", "type": "text"},
+      {"key": "quota", "label": "账户额度", "type": "text"}
+    ]},
+    {"kind": "config", "title": "受限非交互调用", "fields": [
+      {"key": "executable", "label": "Codex 原生可执行文件绝对路径", "type": "string"},
+      {"key": "auth_home", "label": "本机已授权的 CODEX_HOME", "type": "string"},
+      {"key": "model", "label": "模型 ID（探测通过后注册）", "type": "string"}
+    ]}
+  ]
+}

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Check, CircleAlert, FlaskConical, Layers, LoaderCircle, Search, X } from 'lucide-react'
 import { useAction, useConsole } from '../console'
 import type { Entity } from '../console'
@@ -23,15 +24,21 @@ export default function Models() {
     const timer = window.setTimeout(() => setFeedback(null), 3000)
     return () => window.clearTimeout(timer)
   }, [feedback])
-  const models = data!.models.filter(m => m.enabled)
+  const models = [...data!.models, ...(data!.plugin_models || [])].filter(m => m.enabled)
   const groups = data!.upstreams.map(upstream => ({
     id: upstream.id as string, name: upstream.name as string,
     models: models.filter(m => data!.deployments.some(d => d.public_model === m.id && d.upstream_id === upstream.id)),
   }))
   groups.push({
     id: '/unassigned', name: t('未关联提供商'),
-    models: models.filter(m => !data!.deployments.some(d => d.public_model === m.id)),
+    models: models.filter(m => !m.plugin_id && !data!.deployments.some(d => d.public_model === m.id)),
   })
+  for (const model of data!.plugin_models || []) {
+    const identity = '/plugin/' + model.plugin_id
+    const group = groups.find(group => group.id === identity)
+    if (group) group.models.push(model)
+    else groups.push({ id: identity, name: model.plugin_name, models: [model] })
+  }
   const providerGroups = groups.filter(group => group.models.length)
   const activeProvider = providerGroups.find(group => group.id === provider)
   const search = query.trim().toLowerCase()
@@ -99,6 +106,7 @@ export default function Models() {
       <div className="panel-head"><h2 className="panel-title" id="model-provider-title">{activeProvider?.name ?? t('全部提供商')}</h2><span className="tag">{visibleModels.length} {t('模型')}</span></div>
     <div className="table-scroll"><table className="model-table"><thead><tr>{['公开模型', '任务类型', '路由', '状态', '操作'].map(label => <th key={label}>{t(label)}</th>)}</tr></thead><tbody>
       {visibleModels.map(m => <Fragment key={m.id}><tr><td><div className="model-id" title={m.id}>{m.id}</div><div className="muted small model-display-name" title={m.display_name}>{m.display_name}</div></td><td>{m.task}</td><td>{data!.deployments.filter(d => d.public_model === m.id).length}</td><td><VerifyBadge status={m.verification} /></td><td className="model-actions-cell"><div className="row-actions model-actions">
+        {m.plugin_id ? <Link className="btn btn-sm" to={`/advanced-plugins?plugin=${encodeURIComponent(m.plugin_id)}`}>{t('管理插件')}</Link> : <>
         <button className={`btn btn-sm model-test-button${feedback && feedback.modelId === m.id ? ` test-${feedback.status}` : ''}`} disabled={action.busy || !!testing || !data!.deployments.some(d => d.public_model === m.id && d.enabled && data!.upstreams.some(u => u.id === d.upstream_id && u.enabled))}
           onClick={() => { void testModel(m) }}>
           {testing === m.id ? <LoaderCircle size={13} className="spin" /> : !feedback || feedback.modelId !== m.id ? <FlaskConical size={13} /> : feedback.status === 'success' ? <Check size={13} /> : feedback.status === 'partial' ? <CircleAlert size={13} /> : <X size={13} />}
@@ -108,7 +116,7 @@ export default function Models() {
         <button className="btn btn-sm" disabled={action.busy || !!testing} onClick={() => { void action.run(() => mutate(`/models/${encodeURIComponent(m.id)}`, 'PATCH', { enabled: !m.enabled })) }}>{t(m.enabled ? '停用' : '启用')}</button>
         <button className="btn btn-sm" disabled={action.busy || !!testing} onClick={() => {
           if (window.confirm(t('确认删除此公开模型及其全部上游关联？历史调用记录将保留。'))) void action.run(() => mutate(`/models/${encodeURIComponent(m.id)}`, 'DELETE'))
-        }}>{t('删除')}</button>
+        }}>{t('删除')}</button></>}
       </div></td></tr>
         {testing === m.id && <tr className="model-test-row"><td colSpan={5}><div className="model-quick-test" role="status">
           <p className="hint">{t('逐个测试已启用的子模型；流式请求显示首字延迟，其余显示响应耗时。')}</p>

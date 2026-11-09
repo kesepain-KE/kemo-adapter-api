@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gateway.domain import Catalog, ConfigurationError, Credential, Deployment, ExtensionState, PublicModel, RuntimeOptions, Upstream
+from gateway.currency import EXCHANGE_RATE_DATE, EXCHANGE_RATES, display_cost
 from gateway.extensions import install, read_manifest, extension_digest
 from gateway.runtime import BUILTINS, adapter_modalities
 from gateway.model_probe import ModelProbe
@@ -182,8 +183,15 @@ async def console(request: Request, principal=Depends(require_admin)):
                       "restart_required": registry.resource_stamp != resource_stamp(SOURCE_ROOT)},
         "upstreams": [redact_upstream(u, registry.vault) for u in current.upstreams],
         "models": [{**m.model_dump(mode="json"), "declaration": m.declaration().model_dump(mode="json")} for m in current.models],
+        "plugin_models": [{"id": caps.model, "display_name": caps.provider_model, "task": caps.task,
+                           "enabled": True, "verification": "declared", "source": "advanced_plugin",
+                           "plugin_id": identity, "plugin_name": package.manifest.name,
+                           "declaration": caps.model_dump(mode="json")}
+                          for identity, package in registry._external.items() if package.available
+                          for caps in package.declarations.values()],
         "deployments": [d.model_dump(mode="json") for d in current.deployments],
         "settings": current.settings.model_dump(mode="json"),
+        "cost_exchange_rates": {"date": EXCHANGE_RATE_DATE, "base": "EUR", "rates": EXCHANGE_RATES},
         "keys": registry.keys.list(), "adapters": builtins + extensions["protocol_adapters"],
         "templates": templates + extensions["provider_templates"],
         "model_vendors": TEMPLATE_VENDORS,
@@ -549,10 +557,18 @@ async def logs(request: Request, limit: int = Query(100, ge=1, le=200), offset: 
         raise HTTPException(422, "日志时间必须包含时区")
     if start and end and start > end:
         raise HTTPException(422, "结束时间不能早于开始时间")
-    return {"items": runtime(request).store.attempts(
+    registry = runtime(request)
+    items = registry.store.attempts(
         limit, offset, model, start=start.astimezone(timezone.utc).isoformat() if start else None,
         end=end.astimezone(timezone.utc).isoformat() if end else None, status=status, task=task, log_type=log_type,
-    )}
+    )
+    for item in items:
+        item["display_cost"] = display_cost(
+            {item["currency"]: item["cost"]} if item["cost"] is not None else {},
+            registry.current.options.cost_display_currency,
+            approximate=not item["complete"] or item["source"] == "estimate",
+        )
+    return {"items": items}
 
 
 @router.get("/logs/{request_id}/{attempt_no}")

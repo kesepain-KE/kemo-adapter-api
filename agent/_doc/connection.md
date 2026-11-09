@@ -63,6 +63,8 @@ finally:
 
 直接本机回环访问支持免登录；代理、公网地址与当前认证设置会影响是否需要登录，以认证查询和实际响应为准。不能因为连接到 `127.0.0.1` 就断言必定免登录。
 
+网页登录分为 `/admin/#/auth/token` 与 `/admin/#/auth/user` 两个独立页面，同时配置两项认证时先验证 Token，再输入用户名和密码。`GET /admin/api/auth/methods` 的 `next_step` 返回当前会话应执行的 `token`、`password` 或 `complete`；Token 通过后的预认证状态保存在 HttpOnly Cookie 中，刷新用户认证页可继续，失效后返回 Token 页。仅启用一项认证时只显示对应页面。
+
 `admin:web` 可以读取管理状态并修改提供商、上游凭据、模型、路由和运行策略。下游密钥写入/复制/删除、扩展修改、启动文件读取/编辑和重启需要 `owner`。先查看快照的 `permissions`，服务端仍会校验每次操作。
 
 Cookie 会话的写请求携带 `X-CSRF-Token`，浏览器还需同源。Bearer 管理客户端不需要 Cookie CSRF Token；不要通过伪造 Origin 或移除鉴权绕过 403。

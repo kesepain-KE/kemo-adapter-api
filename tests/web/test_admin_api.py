@@ -71,6 +71,7 @@ def test_loopback_web_console_bypasses_stale_web_credentials(tmp_path: Path) -> 
     assert methods.json()["token_required"] is False
     assert methods.json()["password_required"] is False
     assert methods.json()["configuration_valid"] is True
+    assert methods.json()["next_step"] == "complete"
     assert console.status_code == 200
 
 
@@ -101,6 +102,7 @@ def test_web_token_issues_two_hour_control_plane_session_only(tmp_path: Path) ->
 
     with TestClient(app) as client:
         assert client.get("/admin/api/console").status_code == 401
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "token"
         assert client.get(
             "/admin/api/console",
             headers={"Authorization": "Bearer web-control-token"},
@@ -113,6 +115,7 @@ def test_web_token_issues_two_hour_control_plane_session_only(tmp_path: Path) ->
         assert session.json()["expires_in"] == 7200
         assert "session_token" not in session.json()
         assert session.json()["csrf_token"].startswith("csrf_")
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "complete"
         cookie = session.headers["set-cookie"].lower()
         assert "kemo_web_session=" in cookie
         assert "httponly" in cookie
@@ -232,6 +235,7 @@ def test_web_token_precedes_password_and_both_sessions_last_two_hours(
             "password_required": True,
             "configuration_valid": True,
             "session_ttl_seconds": 7200,
+            "next_step": "token",
         }
         assert client.post(
             "/admin/api/auth/password",
@@ -247,6 +251,12 @@ def test_web_token_precedes_password_and_both_sessions_last_two_hours(
         assert token_step.json()["csrf_token"] is None
         assert "session_token" not in token_step.json()
         assert client.get("/admin/api/console").status_code == 401
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "password"
+        assert client.post(
+            "/admin/api/auth/password",
+            json={"username": "kemo", "password": "wrong-password"},
+        ).status_code == 401
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "password"
 
         password_step = client.post(
             "/admin/api/auth/password",
@@ -259,6 +269,25 @@ def test_web_token_precedes_password_and_both_sessions_last_two_hours(
         assert "session_token" not in password_step.json()
         assert client.get("/admin/api/console").status_code == 200
         assert client.get("/admin/api/auth/session").json()["authenticated"] is True
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "complete"
+
+
+def test_web_auth_returns_to_token_step_when_preauth_is_revoked(tmp_path: Path) -> None:
+    app = create_app(
+        Settings(web_token="first-factor", web_username="kemo", web_password="password"),
+        live_config_root=no_auth_project(tmp_path),
+    )
+    with TestClient(app) as client:
+        assert client.post(
+            "/admin/api/auth/token", json={"token": "first-factor"}
+        ).status_code == 200
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "password"
+        app.state.web_auth.revoke(client.cookies["kemo_web_preauth"])
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "token"
+        assert client.post(
+            "/admin/api/auth/password",
+            json={"username": "kemo", "password": "password"},
+        ).status_code == 401
 
 
 def test_web_password_can_authenticate_without_web_token(tmp_path: Path) -> None:
@@ -268,6 +297,7 @@ def test_web_password_can_authenticate_without_web_token(tmp_path: Path) -> None
         live_config_root=root,
         )
     with TestClient(app) as client:
+        assert client.get("/admin/api/auth/methods").json()["next_step"] == "password"
         session = client.post(
             "/admin/api/auth/password",
             json={"username": "kemo", "password": "password"},

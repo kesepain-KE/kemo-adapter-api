@@ -96,6 +96,6 @@ export function Select({ value, options, onChange, disabled, id: suppliedId, cla
           {option.description && <span className="select-option-description">{option.description}</span>}</span>
         {option.value === value && <Check size={16} />}
       </div>)}
-    </div>, document.body)}
+    </div>, document.fullscreenElement || document.body)}
   </>
 }

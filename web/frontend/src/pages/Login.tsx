@@ -1,40 +1,77 @@
-import { useEffect, useState } from 'react'
-import { api, setCsrf, useAction, useConsole } from '../console'
-import { ErrorBar, Field } from '../components/Form'
-import { getLanguage, languages, setLanguage, t } from '../i18n'
-import { Select } from '../components/Select'
+import { useEffect, useRef, useState } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { LoaderCircle } from 'lucide-react'
+import { ApiError, api, setCsrf, useAction, useConsole } from '../console'
+import { ErrorBar } from '../components/Form'
+import { LoginLayout } from '../components/LoginLayout'
+import { t } from '../i18n'
+import TokenLogin from './TokenLogin'
+import UserLogin from './UserLogin'
+
+type AuthMethods = {
+  token_required: boolean; password_required: boolean; configuration_valid: boolean
+  next_step: 'token' | 'password' | 'complete'
+}
+type AuthSession = { next_step: 'password'; csrf_token: null } | { next_step: 'complete'; csrf_token: string }
 
 export default function Login() {
   const { refresh } = useConsole()
-  const [methods, setMethods] = useState({ token_required: false, password_required: false })
-  const [token, setToken] = useState('')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const returnTo = useRef(location.state?.returnTo ?? (location.pathname.startsWith('/auth/') ? '/' : location.pathname + location.search))
+  const [methods, setMethods] = useState<AuthMethods | null>(null)
+  const [loadError, setLoadError] = useState('')
+  const [reload, setReload] = useState(0)
   const action = useAction()
-  useEffect(() => { void action.run(async () => setMethods(await api('/auth/methods'))) }, [])
-  return <div className="login-page"><form className="card login-card" onSubmit={e => {
-    e.preventDefault()
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoadError('')
+    void api<AuthMethods>('/auth/methods', { signal: controller.signal }).then(async next => {
+      if (controller.signal.aborted) return
+      setMethods(next)
+      if (next.configuration_valid && next.next_step === 'complete') {
+        await refresh()
+        navigate(returnTo.current, { replace: true })
+      }
+    }).catch(cause => { if (!controller.signal.aborted) setLoadError(cause.message) })
+    return () => controller.abort()
+  }, [refresh, navigate, reload])
+
+  const authenticate = (step: 'token' | 'password', credentials: { token: string } | { username: string; password: string }) => {
     void action.run(async () => {
-      if (methods.token_required) {
-        const session = await api('/auth/token', { method: 'POST', body: JSON.stringify({ token }) })
-        if (session.csrf_token) setCsrf(session.csrf_token)
+      let session: AuthSession
+      try {
+        session = await api<AuthSession>(`/auth/${step}`, { method: 'POST', body: JSON.stringify(credentials) })
+      } catch (cause) {
+        if (step === 'password' && cause instanceof ApiError && cause.status === 401) {
+          setMethods(await api<AuthMethods>('/auth/methods'))
+        }
+        throw cause
       }
-      if (methods.password_required) {
-        const session = await api('/auth/password', { method: 'POST', body: JSON.stringify({ username, password }) })
+      if (session.next_step === 'password') {
+        setMethods(current => ({ ...current!, next_step: 'password' }))
+      } else {
         setCsrf(session.csrf_token)
+        await refresh()
+        navigate(returnTo.current, { replace: true })
       }
-      await refresh()
     })
-  }}>
-    <h1>Kemo Gateway</h1><p className="muted">{t('登录管理控制台')}</p>
-    <Select aria-label={t('语言')} value={getLanguage()} onChange={value => setLanguage(value as typeof languages[number]['code'])}
-      options={languages.map(language => ({ value: language.code, label: language.name }))} />
-    <ErrorBar error={action.error} />
-    {methods.token_required && <Field label="Web Token"><input className="input" type="password" required autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></Field>}
-    {methods.password_required && <>
-      <Field label="用户名"><input className="input" autoComplete="username" required value={username} onChange={e => setUsername(e.target.value)} /></Field>
-      <Field label="密码"><input className="input" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></Field>
-    </>}
-    <button className="btn btn-primary" disabled={action.busy}>{t('登录')}</button>
-  </form></div>
+  }
+
+  if (!methods || !methods.configuration_valid || methods.next_step === 'complete' || loadError) {
+    const error = loadError || (methods && !methods.configuration_valid ? 'WEB_USERNAME 与 WEB_PASSWORD 必须同时配置' : '')
+    return <LoginLayout title="登录管理控制台" description="Kemo Gateway">
+      {error ? <><ErrorBar error={error} /><button className="btn" onClick={() => setReload(value => value + 1)}>{t('重试')}</button></>
+        : <p className="login-status" role="status"><LoaderCircle size={18} className="spin" />{t('正在加载')}</p>}
+    </LoginLayout>
+  }
+  const tokenStep = methods.next_step === 'token'
+  const path = tokenStep ? '/auth/token' : '/auth/user'
+  const twoSteps = methods.token_required && methods.password_required
+  return <Routes>
+    <Route path={path} element={tokenStep
+      ? <TokenLogin twoSteps={twoSteps} busy={action.busy} error={action.error} onSubmit={token => authenticate('token', { token })} />
+      : <UserLogin twoSteps={twoSteps} busy={action.busy} error={action.error} onSubmit={credentials => authenticate('password', credentials)} />} />
+    <Route path="*" element={<Navigate to={path} replace state={{ returnTo: returnTo.current }} />} />
+  </Routes>
 }

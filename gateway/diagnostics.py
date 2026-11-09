@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from gateway.currency import display_cost
+
 
 def new_metrics():
     return {
@@ -44,7 +46,7 @@ def accumulate(metrics, row, usage):
     metrics["estimated_calls"] += row["source"] == "estimate"
 
 
-def finish(metrics):
+def finish(metrics, display_currency=None):
     result = {**metrics}
     result["success_rate"] = metrics["successful"] / metrics["finished"] if metrics["finished"] else None
     result["cache_hit_rate"] = metrics["cache_hits_for_rate"] / metrics["cache_input_tokens"] if metrics["cache_input_tokens"] else None
@@ -55,10 +57,15 @@ def finish(metrics):
                           ("total_tokens", "token_samples"), ("cached_tokens", "cache_samples")):
         if metrics["calls"] and not metrics[samples]:
             result[field] = None
+    if display_currency is not None:
+        result["display_cost"] = display_cost(
+            metrics["costs"], display_currency,
+            approximate=bool(metrics["unknown_cost_calls"] or metrics["estimated_calls"]),
+        )
     return result
 
 
-def usage_overview(store, period, timezone_name, *, now=None):
+def usage_overview(store, period, timezone_name, *, now=None, display_currency="USD"):
     now = now or datetime.now(timezone.utc)
     local = now.astimezone(ZoneInfo(timezone_name))
     if period == "today":
@@ -100,8 +107,8 @@ def usage_overview(store, period, timezone_name, *, now=None):
     return {
         "period": period, "timezone": timezone_name,
         "start": start.isoformat() if start is not None else None, "end": now.isoformat(),
-        "summary": {**finish(total), "upstream_count": len(groups["provider"]), "deployment_count": len(deployments)},
-        "rankings": {dimension: sorted((finish(group) for group in values.values()),
+        "summary": {**finish(total, display_currency), "upstream_count": len(groups["provider"]), "deployment_count": len(deployments)},
+        "rankings": {dimension: sorted((finish(group, display_currency) for group in values.values()),
                                       key=lambda item: (-item["calls"], item["id"]))
                      for dimension, values in groups.items()},
     }

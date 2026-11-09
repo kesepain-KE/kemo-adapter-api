@@ -67,6 +67,7 @@ function GatewaySettings({ section }: { section: string }) {
   const [revision, setRevision] = useState(data!.revision)
   const action = useAction()
   const toast = useToast()
+  const currencyNames = new Intl.DisplayNames(getLanguage(), { type: 'currency' })
   return <>
     <ErrorBar error={action.error} />
     <section className="settings-section" hidden={section !== 'runtime'}><div className="card settings-section-body">
@@ -76,9 +77,15 @@ function GatewaySettings({ section }: { section: string }) {
     </div><div className="panel-body form-grid two">
       <Field label="最大尝试次数"><input className="input" type="number" min="1" max="10" value={settings.max_attempts} onChange={e => setSettings({ ...settings, max_attempts: Number(e.target.value) })} /></Field>
       <Field label="冷却时间（秒）"><input className="input" type="number" min="1" max="3600" value={settings.cooldown_seconds} onChange={e => setSettings({ ...settings, cooldown_seconds: Number(e.target.value) })} /></Field>
+      <Field label="成本金额种类显示" hint={t('使用固定汇率（{date}）换算，仅影响金额显示。', { date: data!.cost_exchange_rates.date })}>
+        <Select value={settings.cost_display_currency} onChange={cost_display_currency => setSettings({ ...settings, cost_display_currency })}
+          options={Object.keys(data!.cost_exchange_rates.rates).map(currency => ({
+            value: currency, label: `${currencyNames.of(currency)} (${currency})`,
+          }))} />
+      </Field>
     </div><div className="panel-foot settings-actions"><button className="btn btn-primary" disabled={action.busy} onClick={() => { void action.run(async () => {
-        const { enabled, max_attempts, cooldown_seconds } = settings
-        const result = await mutate('/settings', 'PATCH', { enabled, max_attempts, cooldown_seconds }, false, revision)
+        const { enabled, max_attempts, cooldown_seconds, cost_display_currency } = settings
+        const result = await mutate('/settings', 'PATCH', { enabled, max_attempts, cooldown_seconds, cost_display_currency }, false, revision)
         setRevision(result.revision); toast(t('配置已保存'))
       }) }}><Save size={14} />{t('保存运行策略')}</button>
     </div></div></section>

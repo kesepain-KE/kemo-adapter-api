@@ -365,6 +365,7 @@ class RuntimeRegistry:
         self._references = {}
         self._retired = {}
         self._executions = {}
+        self._external = {}
         self.last_error = None
         # Resource updates take effect on restart. Publications in this process
         # retain the same official templates and imported adapter classes.
@@ -516,6 +517,9 @@ class RuntimeRegistry:
                 raise RevisionConflict("目录已更新，请刷新后重试")
             candidate = await self.build(catalog)
             try:
+                reserved = {identity for package in self._external.values() for identity in (*package.models, package.provider_id)}
+                if set(candidate.routes).intersection(reserved):
+                    raise ValueError("公开模型 ID 与高级插件模型冲突")
                 self.store.save(catalog, expected, actor, model_renames=model_renames)
             except BaseException:
                 await self._close_generation(candidate)
@@ -527,9 +531,33 @@ class RuntimeRegistry:
 
     @property
     def providers(self):
-        return self.current.routes if self.current else {}
+        return {**(self.current.routes if self.current else {}),
+                **{package.provider_id: package for package in self._external.values() if package.available}}
+
+    async def publish_external(self, identity, package, commit):
+        """Validate and atomically switch one independently owned process generation."""
+        async with self._lock:
+            if package is not None:
+                occupied = set(self.current.routes)
+                provider_ids = {"gateway", *self.current.routes}
+                for key, other in self._external.items():
+                    if key != identity:
+                        occupied.update(other.models)
+                        provider_ids.add(other.provider_id)
+                if occupied.intersection(package.models) or package.provider_id in provider_ids:
+                    raise ValueError("插件 Provider 或模型 ID 与现有目录冲突")
+            commit()
+            previous = self._external.pop(identity, None)
+            if package is not None:
+                self._external[identity] = package
+            if previous is not None:
+                self._retired[id(previous)] = previous
+                await self._reap(previous)
 
     def resolve(self, model):
+        for package in self._external.values():
+            if model in package.models and package.available:
+                return package
         route = self.current.routes.get(model) if self.current else None
         if route is None or not any(d.public_model == model and d.enabled and self.current.upstreams[d.upstream_id].enabled
                                     for d in self.current.deployments):
@@ -570,6 +598,9 @@ class RuntimeRegistry:
             await self._close_generation(generation)
 
     async def _close_generation(self, generation):
+        if not isinstance(generation, Generation):
+            await generation.close()
+            return
         for adapter in generation.adapters.values():
             if isinstance(adapter, WorkerAdapter):
                 await adapter.close()
@@ -579,9 +610,11 @@ class RuntimeRegistry:
         generations = {**self._retired}
         if self.current:
             generations[id(self.current)] = self.current
+        generations.update({id(package): package for package in self._external.values()})
         for generation in generations.values():
             await self._close_generation(generation)
         self._retired.clear()
+        self._external.clear()
 
 
 class ControlView:
