@@ -1,0 +1,14 @@
+adapter_id: openai-images
+name: CodexManager Images
+base_url: http://127.0.0.1:48760/v1
+auth_scheme: api-key
+allow_private_network: true
+timeout: 180
+headers: {}
+profile: {}
+tokenizer: openai
+catalog:
+  - gpt-image-2
+  - gpt-image-2.5-flare
+  - gpt-image-2.5-sunburst
+note: 图片服务请单独创建上游，保留已有文本上游；参考模型不代表已验证可用。

@@ -22,6 +22,9 @@ from gateway.keys import KeyPolicyError
 from gateway.security import preview
 from gateway.store import RevisionConflict, dump, revision
 from gateway.transport import validate_url
+from gateway.resources import SOURCE_ROOT, inventory, resource_stamp
+from update._utils import UpdateError
+from update.lock import UpdateLock, UpdateLockError
 from web.backend.auth_routes import require_admin, require_owner, require_write_csrf
 from api.middleware import control_plane_auth_required
 
@@ -41,6 +44,10 @@ class ManagementRoute(APIRoute):
                 return JSONResponse(status_code=422, content={"detail": {
                     "code": exc.code, "field": exc.field, "message": str(exc), "details": exc.details,
                 }})
+            except UpdateLockError:
+                raise HTTPException(409, "已有更新正在运行，请稍后重试") from None
+            except UpdateError as exc:
+                raise HTTPException(422, str(exc)) from None
             except ValidationError as exc:
                 fields = [".".join(str(part) for part in item["loc"]) for item in exc.errors()]
                 return JSONResponse(status_code=422, content={"detail": {
@@ -145,9 +152,11 @@ def extension_catalog(registry):
             try:
                 manifest = read_manifest(path, kind)
                 document = manifest.model_dump(mode="json") if hasattr(manifest, "model_dump") else manifest
-                result[kind].append({**document, "enabled": state.get((kind, path.name), False), "valid": True})
+                result[kind].append({**document, "source": "user", "builtin": False,
+                                     "enabled": state.get((kind, path.name), False), "valid": True})
             except (ValueError, OSError):
-                result[kind].append({"id": path.name, "enabled": False, "valid": False})
+                result[kind].append({"id": path.name, "source": "user", "builtin": False,
+                                     "enabled": False, "valid": False})
     return result
 
 
@@ -157,7 +166,8 @@ async def console(request: Request, principal=Depends(require_admin)):
     current = registry.store.catalog()
     attempts = registry.store.attempts(100)
     extensions = extension_catalog(registry)
-    builtins = [{**cls.manifest.model_dump(mode="json"), "modalities": adapter_modalities(cls)} for cls in BUILTINS]
+    builtins = [{**cls.manifest.model_dump(mode="json"), "source": "builtin",
+                 "modalities": adapter_modalities(cls)} for cls in BUILTINS]
     templates = []
     for value in registry.current.templates.values():
         template = json.loads(value)
@@ -168,6 +178,8 @@ async def console(request: Request, principal=Depends(require_admin)):
     return {
         "revision": registry.current.revision, "key_revision": key_revision(registry),
         "version": version, "protocol_version": "2.0",
+        "resources": {"running": registry.resource_inventory,
+                      "restart_required": registry.resource_stamp != resource_stamp(SOURCE_ROOT)},
         "upstreams": [redact_upstream(u, registry.vault) for u in current.upstreams],
         "models": [{**m.model_dump(mode="json"), "declaration": m.declaration().model_dump(mode="json")} for m in current.models],
         "deployments": [d.model_dump(mode="json") for d in current.deployments],
@@ -296,7 +308,13 @@ async def discover(identity: str, request: Request):
             source = json.loads(upstream.worker_document) if isinstance(adapter, WorkerAdapter) else upstream
             models = await adapter.list_models(source, registry.router.headers(generation, upstream, credential))
         registry.router.record_credential(generation, upstream, credential)
-        return {"models": models, "source": "upstream", "verification": "unknown"} if models else discovery_reference(registry, generation, identity)
+        if not models:
+            return discovery_reference(registry, generation, identity)
+        reference = discovery_reference(registry, generation, identity)
+        missing = [model for model in reference["models"] if model not in models]
+        return {"models": models, "source": "upstream", "verification": "unknown",
+                "reference_models": missing, "reference_verification": "unverified",
+                "message": "上游目录可能不完整；模板另有未验证的参考模型，可核对后手动添加" if missing else ""}
     except ProviderException as exc:
         registry.router.record_credential(generation, upstream, credential, exc.error)
         if exc.error.provider_status == 404:
@@ -373,6 +391,7 @@ async def register_models(identity: str, body: Mutation, request: Request):
                     if (required.task != detected.task
                             or required.streaming and not detected.streaming
                             or set(required.input_modalities) - set(detected.input_modalities)
+                            or set(required.output_modalities) - set(detected.output_modalities)
                             or required.tools.function_calling and not detected.tools.function_calling
                             or required.structured_output.supported and not detected.structured_output.supported
                             or set(required.reasoning.efforts) - set(detected.reasoning.efforts)):
@@ -573,16 +592,51 @@ async def delete_key(identity: str, body: Mutation, request: Request):
 
 
 @router.post("/extensions/{kind}/install", dependencies=[Depends(require_owner), Depends(require_write_csrf)])
-async def install_extension(kind: str, request: Request, expected_revision: str = Form(...), file: UploadFile = File(...)):
+async def install_extension(kind: str, request: Request, expected_revision: str = Form(...),
+                            replace: bool = Form(False), file: UploadFile = File(...)):
     registry = runtime(request)
     async with registry._lock:
         if registry.current.revision != expected_revision:
             raise HTTPException(409, "目录已更新")
         content = await file.read(16 * 1024 * 1024 + 1)
-        identity = install(registry.project_root, kind, content)
+        reserved = {cls.manifest.id for cls in BUILTINS} if kind == "protocol_adapters" else set(registry.builtin_templates)
+        active = {s.id for s in registry.store.catalog().extensions if s.kind == kind and s.enabled}
+        with UpdateLock(registry.project_root):
+            reserved |= inventory(SOURCE_ROOT).get(kind, {}).get("items", {}).keys()
+            identity = install(registry.project_root, kind, content, reserved_ids=reserved,
+                               active_ids=active, replace=replace)
         registry.store.audit("web-console", "install-extension", f"{kind}/{identity}")
     # Installation is intentionally inactive; enabling runs full candidate validation.
     return {"id": identity, "enabled": False}
+
+
+@router.post("/resources/check", dependencies=[Depends(require_owner), Depends(require_write_csrf)])
+async def check_resources(body: Mutation, request: Request):
+    from update import resources
+    registry = runtime(request)
+    if body.expected_revision != registry.current.revision:
+        raise HTTPException(409, "目录已更新")
+    if set(body.value) - {"branch"} or body.value.get("branch", "main") not in {"main", "kemo-preview"}:
+        raise HTTPException(422, "资源更新分支只能为 main 或 kemo-preview")
+    plan = await asyncio.to_thread(resources.check, registry.project_root, branch=body.value.get("branch", "main"))
+    registry.resource_update_plan = plan
+    return plan
+
+
+@router.post("/resources/apply", dependencies=[Depends(require_owner), Depends(require_write_csrf)])
+async def apply_resources(body: Mutation, request: Request):
+    from update import resources
+    registry = runtime(request)
+    async with registry._lock:
+        if body.expected_revision != registry.current.revision:
+            raise HTTPException(409, "目录已更新")
+        plan = registry.resource_update_plan
+        if (set(body.value) != {"target_commit", "resource_revision"} or plan is None
+                or any(body.value[key] != plan[key] for key in body.value)):
+            raise HTTPException(409, "请先检查资源更新，再确认同一份更新计划")
+        result = await asyncio.to_thread(resources.apply, registry.project_root, plan)
+        registry.resource_update_plan = None
+        return result
 
 
 @router.patch("/extensions/{kind}/{identity}", dependencies=[Depends(require_owner), Depends(require_write_csrf)])

@@ -34,6 +34,11 @@ def response_text(result):
     )
 
 
+def response_images(result):
+    return [block for item in result.output if item["type"] == "message"
+            for block in item.get("content", []) if block["type"] == "image" and block.get("asset_id")]
+
+
 def probe_image():
     color, rgb = secrets.choice((("red", (255, 0, 0)), ("green", (0, 255, 0)), ("blue", (0, 0, 255))))
     def chunk(kind, data):
@@ -55,6 +60,8 @@ class ModelProbe:
         self.assets = assets
         self.subject = subject
         self.checks = {}
+        self.image_output = task == "llm" and self.adapter.manifest.media.output == ("image",)
+        self.primary_check = task if task != "llm" else "image_generation" if self.image_output else "text"
 
     def request(self, text="Reply with OK.", **fields):
         return KemoRequest.create(
@@ -79,7 +86,7 @@ class ModelProbe:
         call_started = time.perf_counter()
         usage, error, cancelled = Usage(), None, False
         try:
-            async with asyncio.timeout(min(self.upstream.timeout, 20)):
+            async with asyncio.timeout(self.upstream.timeout if self.image_output else min(self.upstream.timeout, 20)):
                 if method == "stream":
                     terminal, text = False, False
                     async with aclosing(started.events(self.adapter.stream(
@@ -180,8 +187,27 @@ class ModelProbe:
                 query="hello", documents=[{"id": "one", "text": "hello"}, {"id": "two", "text": "goodbye"}],
             )
             return await self.call("rerank", request, method="rerank", accept=lambda value: bool(value.results))
+        if self.image_output:
+            return await self.call(
+                "image_generation", self.image_request(),
+                accept=lambda value: value.status == "completed" and bool(response_images(value)),
+            )
         return await self.call("text", self.request(),
                                accept=lambda value: value.status == "completed" and bool(response_text(value)))
+
+    def image_request(self, image=None):
+        operation = "image_edit" if image is not None else "image_generation"
+        request = self.request(
+            "Draw a small blue square on a white background." if image is None else
+            "Change this image to a red square on a white background.",
+            metadata={"capability": operation},
+            output={"modalities": ["image"], "image": {"format": "png", "size": "1024x1024"}},
+        )
+        if image is not None:
+            value = request.model_dump(mode="json")
+            value["input"][0]["content"].append(image)
+            request = KemoRequest.model_validate(value)
+        return request
 
     async def test(self, *, first_token=False):
         started = time.perf_counter()
@@ -194,7 +220,7 @@ class ModelProbe:
             )
         else:
             result = await self.basic()
-        check = self.checks[self.task if self.task != "llm" else "text"]
+        check = self.checks[self.primary_check]
         report = {**check, "latency_ms": round((time.perf_counter() - started) * 1000)}
         if first_token:
             report.update(streaming=streaming, first_token_ms=stream_report["first_token_ms"])
@@ -206,6 +232,8 @@ class ModelProbe:
             if self.task == "llm":
                 if not streaming:
                     report["preview"] = response_text(result)[:1000]
+                    if self.image_output:
+                        report["output_images"] = response_images(result)
             elif self.task == "embedding":
                 report["dimensions"] = len(result.embeddings[0].vector)
             else:
@@ -229,6 +257,20 @@ class ModelProbe:
             if result is None:
                 raise upstream_error(code="RERANK_PROBE_FAILED")
             caps.update(output_modalities=[], rerank={"max_documents": 2})
+        elif self.image_output:
+            caps["output_modalities"] = ["image"]
+            self.checks["output.image"] = dict(self.checks["image_generation"])
+            operations = caps.setdefault("extensions", {}).setdefault("operations", {})
+            operations["image_generation"] = result is not None
+            if result is not None and "image" in self.adapter.manifest.media.input:
+                source = response_images(result)[0]
+                edited = await self.call(
+                    "image_edit", self.image_request(source),
+                    accept=lambda value: value.status == "completed" and bool(response_images(value)),
+                )
+                operations["image_edit"] = edited is not None
+                if edited is not None:
+                    caps["input_modalities"].append("image")
         else:
             if result is not None:
                 await self.llm(caps)
@@ -248,7 +290,7 @@ class ModelProbe:
                     "reason": "sample-required" if modality in modalities["output"] else "adapter-not-implemented",
                 }
         caps["limits"] = await self.metadata(caps)
-        supported = self.checks.get(self.task if self.task != "llm" else "text", {}).get("status") == "supported"
+        supported = self.checks.get(self.primary_check, {}).get("status") == "supported"
         model = PublicModel(
             id=self.deployment.public_model, task=self.task, capabilities=caps,
             verification="verified" if supported else "unknown",

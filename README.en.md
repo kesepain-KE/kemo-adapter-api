@@ -18,7 +18,7 @@ Kemo Gateway brings model services together for AI agents. Connect your provider
 
 ## Let an agent manage the gateway
 
-An agent can help add providers, update upstream credentials, discover and register models, select available models, adjust routing, and create, edit or disable calling keys. The agent and the web console work with the same configuration, so changes can be checked in the console.
+An agent can help add providers, update upstream credentials, discover and register models, select available models, adjust routing, and create, edit or disable calling keys. It can also install user adapters and templates, update built-in resources independently, edit startup configuration and restart the gateway. The agent and the web console work with the same configuration, so changes can be checked in the console.
 
 For any agent framework, start at **[agent/_doc/README.md](agent/_doc/README.md)**, the shared guide for controlling the gateway. The task guides explain how to connect, authenticate, inspect current state, make changes and verify the result, including concurrent edits, sensitive values and when changes take effect.
 

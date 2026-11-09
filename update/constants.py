@@ -20,6 +20,7 @@ BACKUP_KEEP = 10
 # 这些路径属于部署者或运行时，不允许远端更新覆盖。
 PROTECTED_PATTERNS = (
     "gateway.yaml",
+    ".env",
     "data/",
     "extensions/",
     "core/runtime/",

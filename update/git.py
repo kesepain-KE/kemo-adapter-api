@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import shutil
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import NamedTuple
@@ -342,6 +343,26 @@ def reset_to_commit(project_root: Path, commit: str) -> bool:
         return False
     result = _git(["reset", "--hard", commit], project_root, timeout=60)
     return result.returncode == 0
+
+
+def reset_builtin_resources(project_root: Path, commit: str) -> bool:
+    """Official directories are replaceable, including files added locally."""
+    paths = ("gateway/adapters/builtin", "templates/provider_presets")
+    result = _git(["ls-tree", "-d", "--name-only", commit, "--", *paths], project_root)
+    if result.returncode:
+        return False
+    tracked = result.stdout.splitlines()
+    for relative in tracked:
+        if relative not in paths:
+            return False
+        target = project_root / relative
+        if target.is_symlink() or not target.resolve().is_relative_to(project_root.resolve()):
+            return False
+        if target.exists():
+            shutil.rmtree(target)
+    if not tracked:
+        return True
+    return _git(["restore", f"--source={commit}", "--staged", "--worktree", "--", *tracked], project_root).returncode == 0
 
 
 def get_unmerged_files(project_root: Path) -> list[str]:

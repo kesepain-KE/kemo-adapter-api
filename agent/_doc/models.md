@@ -29,6 +29,8 @@
 
 省略 `capabilities` 会探测所选模型，可能产生多次计费请求和较长耗时。仅在用户已授权测试时使用，适当增加客户端请求超时，读取 `detection` 的逐项证据。HTTP 200 不表示每项能力都已确认；未知项保留未知。手动声明状态为 `declared`，不能直接写 `verification` 或 `verified_at`。
 
+模型无需先出现在发现目录里；准确的手工 `upstream_model` 走同一真实探测链路。`openai-images` 使用生成和编辑探测，不使用文本提示端点；配置与调用见 [图片模型](images.md)。给已有公开模型新增来源时，探测会检查输入和输出模态等共同能力，不能把只返回文本的来源挂到已公开的图片模型上。
+
 网页“登记选中模型”走此自动探测流程，包含推理档位检查。OpenAI Chat 先用提供商 Profile 的 `reasoning_effort_map`；未配置映射的自定义提供商逐项尝试 `minimal / low / medium / high / xhigh / max`，只发布有推理 Token 或推理输出证据的档位。原厂目录若返回 `effort.supported_levels`，会将可编码的档位记录为原厂声明，与响应验证分开；明确被拒绝的档位不会由元数据重新开放。返回普通文字但不含推理证据的结果仍为未知，不能把所有候选档位批量标成支持。
 
 DeepSeek 的 Profile 应保留 `thinking_mode: true` 与 `reasoning_effort_map: {low: low, high: high, max: max}`；显式开关对应原厂 `thinking.type`，档位对应 `reasoning_effort`。模板更新不会覆盖已经创建的上游，编辑已有连接时合并 Profile 并保留原密钥。自定义档位可通过映射声明；OpenAI Responses 使用原生 `reasoning.effort`。模板与映射只说明如何调用，实际支持范围仍由具体模型的证据决定。

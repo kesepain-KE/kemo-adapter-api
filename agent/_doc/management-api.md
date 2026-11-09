@@ -1,5 +1,18 @@
 # 管理操作速查
 
+新增适配器、模板、来源分类与版本替换的完整步骤见 [资源手册](resources.md)；图片模型见 [图片手册](images.md)。
+
+| 资源管理 | 方法与路径 | 请求与结果 |
+| --- | --- | --- |
+| 查看来源和运行版本 | `GET /admin/api/console` | `adapters/templates[].source` 为 builtin/user；`resources.running` 为运行版本，`restart_required` 表示文件已更新但未重启 |
+| 安装用户包 | `POST /admin/api/extensions/{kind}/install` | owner；multipart `expected_revision/file`；可选 `replace=true`，替换前需停用同 ID；kind 为 protocol_adapters/provider_templates |
+| 启停用户资源 | `PATCH /admin/api/extensions/{kind}/{id}` | owner；`{expected_revision,value:{enabled}}`；被引用时停用需先处理引用 |
+| 用户适配器日志 | `GET /admin/api/extensions/protocol_adapters/{id}/logs` | 当前 worker 的脱敏日志 |
+| 检查内置资源更新 | `POST /admin/api/resources/check` | owner；`{expected_revision,value:{branch:"main"或"kemo-preview"}}` |
+| 执行已检查更新 | `POST /admin/api/resources/apply` | owner；`{expected_revision,value:{target_commit,resource_revision}}`，必须与刚检查计划一致 |
+
+上述写操作沿用 CSRF、同源和 revision 校验。资源更新不修改目录数据或框架版本，成功需重启；失败恢复原资源。资源更新冲突返回 409，不兼容返回 422。
+
 [返回操作入口](README.md) · 先完成 [连接与认证](connection.md)
 
 本页供第三方智能体查询管理请求路径、权限与字段语义。具体操作顺序见 [提供商与上游凭据](providers.md)、[模型与路由](models.md)、[下游密钥](keys.md) 和 [运行与维护](operations.md)。

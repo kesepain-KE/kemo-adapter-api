@@ -1,0 +1,6 @@
+id: codexmanager-images
+name: CodexManager Images
+version: "1.0.0"
+contract_version: "1.0"
+description: CodexManager 图片端点参考配置；目录可能不返回图片模型，请核对 ID 后手动登记并探测。
+verification: declared

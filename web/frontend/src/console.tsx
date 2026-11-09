@@ -6,6 +6,7 @@ export type Entity = Record<string, any>
 export interface ConsoleData {
   revision: string; key_revision: string
   version: Entity; runtime: Entity; health: Record<string, number>; startup: Entity
+  resources: { running: Record<string, Entity>; restart_required: boolean }
   credential_health: Record<string, Record<string, Entity>>
   upstreams: Entity[]; models: Entity[]; deployments: Entity[]; keys: Entity[]
   adapters: Entity[]; templates: Entity[]; attempts: Entity[]; settings: Entity

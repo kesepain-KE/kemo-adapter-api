@@ -14,14 +14,6 @@ import jsonschema
 
 from core.models import ModelCapabilities, Usage
 from core.provider_contract import ProviderEventKind as Kind, ProviderException
-from gateway.adapters.builtin.openai_chat import OpenAIChat
-from gateway.adapters.builtin.openai_responses import OpenAIResponses
-from gateway.adapters.builtin.anthropic import Anthropic
-from gateway.adapters.builtin.gemini import Gemini
-from gateway.adapters.builtin.cohere_chat import CohereChat
-from gateway.adapters.builtin.perplexity_agent import PerplexityAgent
-from gateway.adapters.builtin.cloudflare_workers_ai import CloudflareWorkersAI
-from gateway.adapters.builtin.retrieval import OpenAIEmbedding, CohereRerank
 from gateway.adapters.builtin.common import unsupported
 from gateway.domain import Catalog, Upstream
 from gateway.auth import RequestHeaders
@@ -34,12 +26,10 @@ from gateway.store import Store, RevisionConflict, revision
 from gateway.transport import Transport, upstream_error
 from gateway.tracing import current_trace, document
 from gateway.store import utc_now
+from gateway.resources import SOURCE_ROOT, builtin_templates, inventory, load_builtin_adapters, resource_stamp
 
 
-BUILTINS = (
-    OpenAIChat, OpenAIResponses, Anthropic, Gemini,
-    CohereChat, PerplexityAgent, CloudflareWorkersAI, OpenAIEmbedding, CohereRerank,
-)
+BUILTINS = load_builtin_adapters()
 
 
 def adapter_modalities(adapter):
@@ -368,20 +358,19 @@ class RuntimeRegistry:
         self._retired = {}
         self._executions = {}
         self.last_error = None
+        # Resource updates take effect on restart. Publications in this process
+        # retain the same official templates and imported adapter classes.
+        self.builtin_templates = builtin_templates()
+        self.resource_inventory = inventory(SOURCE_ROOT)
+        self.resource_stamp = resource_stamp(SOURCE_ROOT)
+        self.resource_update_plan = None
 
     async def build(self, catalog: Catalog):
         transport = self.transport_factory()
         adapters = {cls.manifest.id: cls(transport) for cls in BUILTINS}
         templates = {}
         try:
-            preset_root = Path(__file__).resolve().parents[1] / "templates" / "provider_presets"
-            for path in sorted(preset_root.iterdir()):
-                if not path.is_dir():
-                    continue
-                manifest = read_manifest(path, "provider_templates")
-                if manifest["id"] != path.name:
-                    raise ValueError("内置模板清单 ID 与目录不一致")
-                templates[path.name] = json.dumps({**manifest, "builtin": True})
+            templates.update({identity: json.dumps(value) for identity, value in self.builtin_templates.items()})
             for state in catalog.extensions:
                 if not state.enabled:
                     continue
@@ -481,7 +470,7 @@ class RuntimeRegistry:
             supported.add("speech_to_speech")
         if any(value is True or isinstance(value, dict) and value.get("supported") is True
                for key, value in operations.items() if key not in supported):
-            raise ValueError("内置文本适配器未实现声明的媒体操作")
+            raise ValueError("当前适配器未实现声明的媒体操作")
         if (caps.supports_prediction and not manifest.prediction
                 or caps.service_tiers and not manifest.service_tiers
                 or caps.decoding.logprobs and not manifest.logprobs

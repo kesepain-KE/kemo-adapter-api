@@ -222,11 +222,6 @@ def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
 ) -> None:
     project = tmp_path / "gateway"
     project.mkdir()
-    first_port = _free_port()
-    second_port = _free_port()
-    while second_port == first_port:
-        second_port = _free_port()
-
     environment = os.environ.copy()
     startup_names = set(startup_values(PROJECT_ROOT / "gateway.yaml.example"))
     for name in list(environment):
@@ -238,6 +233,12 @@ def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
     environment["no_proxy"] = environment["NO_PROXY"]
     environment["PYTHONUNBUFFERED"] = "1"
     executable = _install_runtime_project(project, environment)
+    # Dependency installation opens many outbound sockets. Choose ports after
+    # installation so Windows cannot reuse an earlier choice in the meantime.
+    first_port = _free_port()
+    second_port = _free_port()
+    while second_port == first_port:
+        second_port = _free_port()
 
     log_path = project / "initial-gateway.log"
     initial: subprocess.Popen[bytes] | None = None

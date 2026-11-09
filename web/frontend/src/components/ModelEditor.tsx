@@ -119,8 +119,15 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
       patch.tools = { ...caps.tools, function_calling: false, parallel_calls: false }
     }
     const input = new Set<string>(caps.input_modalities || ['text'])
+    const output = checks['output.image']?.status === 'supported' ? detected.output_modalities : caps.output_modalities || ['text']
+    patch.output_modalities = output
     if (checks.text?.status === 'supported') input.add('text')
     const next = { ...caps.extensions?.operations }
+    for (const operation of ['image_generation', 'image_edit']) {
+      if (checks[operation]?.status === 'supported') next[operation] = true
+      if (checks[operation]?.status === 'unsupported') next[operation] = false
+    }
+    if (checks.image_edit?.status === 'supported') input.add('image')
     for (const [check, modality, operation] of [
       ['vision', 'image', 'vision'], ['audio', 'audio', 'audio_transcription'],
       ['video', 'video', 'video_understanding'], ['file', 'file', ''],
@@ -133,7 +140,7 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
     }
     for (const [key, required] of Object.entries(operations)) {
       if (!required.input.every(m => input.has(m))
-        || !required.output.every(m => (caps.output_modalities || ['text']).includes(m))) {
+        || !required.output.every(m => output.includes(m))) {
         if (key in next) next[key] = false
       }
     }
@@ -177,6 +184,7 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
       {test && <div className="model-test-result" role="status">
         <div className="probe-result"><strong>{t(test.status === 'supported' ? '测试成功' : '测试未通过')}</strong><span className="muted">{test.latency_ms} ms{test.provider_status ? ` · HTTP ${test.provider_status}` : ''}</span></div>
         {test.preview && <pre>{test.preview}</pre>}
+        {test.output_images?.map((image: Entity) => <p className="hint mono" key={image.asset_id}>{image.mime_type} · {image.asset_id}</p>)}
         {test.dimensions && <span>{t('向量维度')} · {test.dimensions}</span>}
         {test.result_count != null && <span>{t('排序结果数')} · {test.result_count}</span>}
         {test.usage && <span className="hint">{t('总 token')} · {test.usage.total_tokens ?? t('未知')}</span>}

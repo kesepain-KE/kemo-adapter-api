@@ -37,6 +37,16 @@ class RevisionConflict(ValueError):
     pass
 
 
+def read_catalog(db) -> Catalog:
+    result = {
+        name: [yaml.safe_load(row[0]) for row in db.execute(f"SELECT body FROM {name} ORDER BY id")]
+        for name in ("upstreams", "models", "deployments")
+    }
+    for identity, body in db.execute("SELECT id,body FROM options"):
+        result[identity] = yaml.safe_load(body)
+    return Catalog.model_validate(result)
+
+
 class Store:
     def __init__(self, root: Path, *, retention_days=7):
         root.mkdir(parents=True, exist_ok=True)
@@ -174,12 +184,7 @@ class Store:
 
     def catalog(self) -> Catalog:
         with self._lock:
-            result = {}
-            for name in ("upstreams", "models", "deployments"):
-                result[name] = [yaml.safe_load(row[0]) for row in self._db.execute(f"SELECT body FROM {name} ORDER BY id")]
-            for row in self._db.execute("SELECT id,body FROM options"):
-                result[row["id"]] = yaml.safe_load(row["body"])
-            return Catalog.model_validate(result)
+            return read_catalog(self._db)
 
     def save(self, catalog: Catalog, expected: str, actor: str, *, model_renames=None):
         with self.transaction() as db:

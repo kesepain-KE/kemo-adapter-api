@@ -62,6 +62,7 @@ def test_update_package_and_module_entrypoints_share_cli_main(monkeypatch) -> No
     "path",
     [
         "gateway.yaml",
+        ".env",
         "data/gateway.sqlite3",
         "extensions/provider_templates/example/template.yaml",
         "data/statistics/daily/2026-08-23.sqlite3",
@@ -414,6 +415,10 @@ def test_repair_creates_recovery_ref_before_exact_reset(monkeypatch) -> None:
         return True
 
     monkeypatch.setattr(update_git, "create_recovery_ref", recovery)
+    def reset_resources(_root, commit):
+        events.append(("resources", commit))
+        return True
+    monkeypatch.setattr(update_git, "reset_builtin_resources", reset_resources)
     monkeypatch.setattr(update_git, "abort_in_progress_operations", lambda _root: None)
     monkeypatch.setattr(update_git, "hard_reset_to_fetch_head", reset)
     monkeypatch.setattr(update_transaction, "_install_deps", lambda _root: True)
@@ -428,7 +433,7 @@ def test_repair_creates_recovery_ref_before_exact_reset(monkeypatch) -> None:
         diff=GitDiff([]),
         target_commit=target,
     ) == 0
-    assert events == [("recovery", before), ("reset", target)]
+    assert events == [("recovery", before), ("resources", before), ("reset", target), ("resources", target)]
 
 
 def test_repair_ref_failure_prevents_hard_reset(monkeypatch) -> None:

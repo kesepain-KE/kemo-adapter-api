@@ -33,6 +33,8 @@ SUITES = {
         "tests/gateway/test_console_operations.py",
         "tests/gateway/test_provider_console.py",
         "tests/gateway/test_model_actions.py",
+        "tests/gateway/test_resource_management.py",
+        "tests/gateway/test_image_models.py",
         "tests/gateway/test_model_deletion.py",
         "tests/gateway/test_diagnostics.py",
         "tests/web/test_admin_api.py",
@@ -41,7 +43,7 @@ SUITES = {
     )),
     "version": Suite("版本契约", ("tests/maintenance/test_version_contract.py",)),
     "update-unit": Suite("更新单元安全测试", ("tests/maintenance/test_update.py",)),
-    "update": Suite("更新与临时 Git 仓库集成", ("tests/maintenance/test_update.py", "tests/maintenance/test_update_git_integration.py")),
+    "update": Suite("更新与临时 Git 仓库集成", ("tests/maintenance/test_update.py", "tests/maintenance/test_update_git_integration.py", "tests/maintenance/test_resource_updates.py")),
     "update-git": Suite("更新临时 Git 仓库集成", ("tests/maintenance/test_update_git_integration.py",)),
     "restart-e2e": Suite("干净安装、前端资源与真实进程替换：仅在临时目录", ("tests/integration",)),
 }

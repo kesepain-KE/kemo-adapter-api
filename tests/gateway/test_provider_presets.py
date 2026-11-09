@@ -56,7 +56,7 @@ def test_template_defaults_and_adapter_consistency(tmp_path, monkeypatch):
 def test_console_presets_never_infer_verified_from_structure(tmp_path, monkeypatch):
     with instance(tmp_path, monkeypatch) as (client, _):
         templates = state(client)["templates"]
-        assert len(templates) == 46
+        assert len(templates) == 47
         assert {item["id"] for item in templates if item["verification"] == "verified"} == {"deepseek", "command-code"}
         assert all(item["verification"] == "declared" for item in templates if item["id"] not in {"deepseek", "command-code"})
         assert {item["id"] for item in templates if item["category"] == "coding_service"} == {"opencode", "command-code"}
@@ -72,7 +72,11 @@ def test_provider_preset_contract(path):
     template = manifest["template"]
     adapter = ADAPTERS[template["adapter_id"]]
     assert template["auth_scheme"] in {scheme.id for scheme in adapter.auth_schemes}
-    assert template["catalog"] == []
+    if manifest["id"] == "codexmanager-images":
+        assert template["catalog"] == ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
+        assert manifest["verification"] == "declared"
+    else:
+        assert template["catalog"] == []
     jsonschema.validate(template["profile"], adapter.config_schema)
     if adapter.id != "openai-chat":
         assert template["profile"] == {}

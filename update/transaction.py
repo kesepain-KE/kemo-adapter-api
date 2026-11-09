@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -94,6 +95,9 @@ def _rollback(
         print(f"[KEMO] {backup_message}")
         restored = backup_ok
 
+    if backup_id and not _restore_builtin_resources(project_root, backup_id):
+        return False
+
     state = integrity.check_source_state(project_root)
     if not state.ok:
         _print_integrity_failure(state)
@@ -103,6 +107,19 @@ def _rollback(
         return False
     print("[KEMO] 已恢复到更新前可启动源码；未覆盖私有配置和运行数据。")
     return restored
+
+
+def _restore_builtin_resources(project_root: Path, backup_id: str) -> bool:
+    for relative in ("gateway/adapters/builtin", "templates/provider_presets"):
+        original = project_root / ".backup" / backup_id / relative
+        if original.is_dir():
+            target = project_root / relative
+            if target.is_symlink() or not target.resolve().is_relative_to(project_root.resolve()):
+                return False
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(original, target)
+    return True
 
 
 def perform_update(
@@ -143,6 +160,7 @@ def perform_update(
     backup_id: str | None = None
     stash_commit: str | None = None
     transitioned = False
+    resources_reset = False
     rollback_done = False
 
     def fail_with_rollback(code: int) -> int:
@@ -152,6 +170,10 @@ def perform_update(
         if rollback_done:
             return code
         rollback_done = True
+        if not transitioned and not stash_commit:
+            # A stash failure must not reset unrelated, unstashed source edits.
+            restored = backup_id is not None and _restore_builtin_resources(project_root, backup_id)
+            return code if restored else 7
         restored = _rollback(
             project_root,
             before_commit=before_commit,
@@ -183,30 +205,30 @@ def perform_update(
                 return 2
 
             operation_label = git.get_stash_label()
+            recovery_ref: str | None = None
             if is_repair:
                 print("[WARN] 修复模式会重新对齐已跟踪源码；现有源码已保存在冷备份中。")
+                recovery_ref = git.create_recovery_ref(project_root, label=operation_label, commit=before_commit)
+                if recovery_ref is None:
+                    print("[ERROR] 无法创建 Git 恢复引用，拒绝执行强制修复。")
+                    return 2
+                print(f"[KEMO] 已创建 Git 恢复引用: {recovery_ref}")
             elif git.has_local_changes(project_root):
                 print("[KEMO] 检测到本地未提交源码，准备创建精确安全 stash。")
                 if not yes and not confirm("暂存本地源码后继续？", default=True):
                     print("[KEMO] 已取消。冷备份仍然保留。")
                     return 0
+            # Do not stash/merge official resources: their local replacements
+            # belong to the resource updater and have already been backed up.
+            resources_reset = True
+            if not git.reset_builtin_resources(project_root, before_commit):
+                return fail_with_rollback(2)
+            if not is_repair and git.has_local_changes(project_root):
                 stash_commit = git.create_stash(project_root, operation_label)
                 if not stash_commit:
                     print("[ERROR] 本地源码暂存失败，操作已中止。")
-                    return 2
+                    return fail_with_rollback(2)
                 print(f"[KEMO] 本地源码已暂存: {stash_commit[:12]}")
-
-            recovery_ref: str | None = None
-            if is_repair:
-                recovery_ref = git.create_recovery_ref(
-                    project_root,
-                    label=operation_label,
-                    commit=before_commit,
-                )
-                if recovery_ref is None:
-                    print("[ERROR] 无法创建 Git 恢复引用，拒绝执行强制修复。")
-                    return 2
-                print(f"[KEMO] 已创建 Git 恢复引用: {recovery_ref}")
 
             if is_repair:
                 print(f"[KEMO] 正在将已跟踪源码修复到 {target_commit[:12]}...")
@@ -224,6 +246,8 @@ def perform_update(
 
             if not transitioned or git.get_current_commit(project_root) != target_commit:
                 print(f"[ERROR] {mode_name}未能切换到锁定提交。")
+                return fail_with_rollback(2)
+            if not git.reset_builtin_resources(project_root, target_commit):
                 return fail_with_rollback(2)
 
             if stash_commit:
@@ -283,7 +307,7 @@ def perform_update(
         print(f"[ERROR] {exc}")
         return 8
     except KeyboardInterrupt:
-        if before_commit and transitioned and not rollback_done:
+        if before_commit and (transitioned or resources_reset) and not rollback_done:
             try:
                 fail_with_rollback(130)
             except Exception as rollback_error:
@@ -291,7 +315,7 @@ def perform_update(
         print("\n[WARN] 更新被中断；已停止后续写入，请检查上方状态和 .backup/ 备份。")
         return 130
     except Exception as exc:
-        if before_commit and transitioned and not rollback_done:
+        if before_commit and (transitioned or resources_reset) and not rollback_done:
             try:
                 fail_with_rollback(7)
             except Exception as rollback_error:

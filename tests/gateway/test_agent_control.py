@@ -163,6 +163,11 @@ def test_management_roles_are_distinct_from_invocation_credentials(tmp_path, mon
         assert denied.status_code == 403
         assert client.get("/admin/api/system/startup-config", headers=ADMIN_HEADERS).status_code == 403
         assert client.get("/admin/api/system/restart", headers=ADMIN_HEADERS).status_code == 403
+        for operation in ("check", "apply"):
+            denied = client.post(f"/admin/api/resources/{operation}", headers=ADMIN_HEADERS, json={
+                "expected_revision": current["revision"], "value": {},
+            })
+            assert denied.status_code == 403
         assert client.get("/admin/api/console", headers=CALLER_HEADERS).status_code == 403
         denied = client.patch("/admin/api/upstreams/agent", headers=CALLER_HEADERS, json={
             "expected_revision": current["revision"], "value": {"enabled": False},

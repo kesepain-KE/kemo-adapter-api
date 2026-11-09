@@ -1,0 +1,13 @@
+contract_version: "1.0"
+version: "1.1.0"
+adapters:
+  - {id: openai-chat, version: "1.0.0", module: openai_chat, class_name: OpenAIChat}
+  - {id: openai-responses, version: "1.0.0", module: openai_responses, class_name: OpenAIResponses}
+  - {id: anthropic-messages, version: "1.0.0", module: anthropic, class_name: Anthropic}
+  - {id: gemini, version: "1.0.0", module: gemini, class_name: Gemini}
+  - {id: cohere-chat, version: "1.0.0", module: cohere_chat, class_name: CohereChat}
+  - {id: perplexity-agent, version: "1.0.0", module: perplexity_agent, class_name: PerplexityAgent}
+  - {id: cloudflare-workers-ai, version: "1.0.0", module: cloudflare_workers_ai, class_name: CloudflareWorkersAI}
+  - {id: openai-embedding, version: "1.0.0", module: retrieval, class_name: OpenAIEmbedding}
+  - {id: cohere-rerank, version: "1.0.0", module: retrieval, class_name: CohereRerank}
+  - {id: openai-images, version: "1.0.0", module: openai_images, class_name: OpenAIImages}

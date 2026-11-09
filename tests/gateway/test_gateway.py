@@ -444,7 +444,7 @@ def test_template_defaults_registration_and_reference_integrity(tmp_path, monkey
 def test_builtin_templates_are_visible_and_can_create_upstreams_without_install(tmp_path, monkeypatch):
     with instance(tmp_path, monkeypatch) as (client, app):
         templates = {item["id"]: item for item in state(client)["templates"]}
-        assert len(templates) == 46
+        assert len(templates) == 47
         assert {"openai", "anthropic", "gemini", "openai-responses"} <= templates.keys()
         assert all(item["builtin"] and item["enabled"] and item["valid"] for item in templates.values())
         assert not (tmp_path / "extensions").exists()
@@ -464,18 +464,21 @@ def test_builtin_templates_are_visible_and_can_create_upstreams_without_install(
             assert upstream["auth_scheme"] == auth
             assert upstream["name"] == templates[identity]["template"]["name"]
         assert app.state.registry.current.upstreams["openai"].profile["max_tokens_field"] == "max_completion_tokens"
-        assert len(app.state.registry.current.templates) == 46
-        assert len(state(client)["templates"]) == 46
+        assert len(app.state.registry.current.templates) == 47
+        assert len(state(client)["templates"]) == 47
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_installed_template_overrides_builtin_only_when_enabled(tmp_path, monkeypatch, enabled):
+def test_preexisting_user_template_and_its_references_survive_source_classification(tmp_path, monkeypatch, enabled):
+    # Older releases allowed a user template to share a built-in ID.
+    # Keep these installed files and references; new uploads reject collisions.
+    from gateway.extensions import install
+    content = extension_zip("provider_templates", identity="openai", template={
+        "adapter_id": "openai-chat", "name": "Custom OpenAI", "auth_scheme": "none",
+        "base_url": "http://127.0.0.1:8881",
+    })
+    install(tmp_path, "provider_templates", content)
     with instance(tmp_path, monkeypatch) as (client, _):
-        content = extension_zip("provider_templates", identity="openai", template={
-            "adapter_id": "openai-chat", "name": "Custom OpenAI", "auth_scheme": "none",
-            "base_url": "http://127.0.0.1:8881",
-        })
-        assert install_extension(client, "provider_templates", content).status_code == 200
         if enabled:
             response = mutate(client, "/extensions/provider_templates/openai", {"enabled": True}, method="PATCH")
             assert response.status_code == 200, response.text

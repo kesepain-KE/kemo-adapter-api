@@ -41,6 +41,7 @@ def _print_menu(project_root: Path) -> None:
     print("  4. 修复网关源码（高级操作）")
     print("  5. 预览更新计划（不改工作树；会刷新 Git 检查引用）")
     print("  6. 查看当前版本与源码状态")
+    print("  7. 只更新内置协议适配器和提供商模板")
     print("  0. 退出")
 
 
@@ -340,7 +341,7 @@ def interactive_menu(project_root: Path) -> int:
         _print_menu(project_root)
         choice = ui.read_choice(
             "请选择操作",
-            valid={"0", "1", "2", "3", "4", "5", "6"},
+            valid={"0", "1", "2", "3", "4", "5", "6", "7"},
             default="1",
         )
         if choice == "0":
@@ -373,6 +374,8 @@ def interactive_menu(project_root: Path) -> int:
             if result != 0:
                 print("[提示] 预览没有完成，请检查上面的错误说明。")
             continue
+        if choice == "7":
+            return resource_command(project_root, install=True)
         result = status(project_root)
         ui.pause()
         if result != 0:
@@ -389,6 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     actions.add_argument("--repair", action="store_true", help="显式修复 Git 已跟踪源码")
     actions.add_argument("--status", action="store_true", help="显示版本与 Git 状态")
     actions.add_argument("--list-backups", action="store_true", help="列出更新前备份")
+    actions.add_argument("--resources-check", action="store_true", help="检查内置适配器和模板的独立版本")
+    actions.add_argument("--resources-apply", action="store_true", help="只更新内置适配器和模板，保留用户资源和运行数据")
     actions.add_argument(
         "--restore-backup",
         type=str,
@@ -413,8 +418,8 @@ def main(argv: list[str] | None = None, *, project_root: Path = ROOT) -> int:
     parser = build_parser()
     effective_argv = sys.argv[1:] if argv is None else argv
     args = parser.parse_args(effective_argv)
-    if args.yes and not (args.apply or args.repair or args.restore_backup):
-        parser.error("--yes 只能与 --apply、--repair 或 --restore-backup 一起使用")
+    if args.yes and not (args.apply or args.repair or args.restore_backup or args.resources_apply):
+        parser.error("--yes 只能与 --apply、--repair、--restore-backup 或 --resources-apply 一起使用")
     if args.dry_run and not (args.apply or args.repair):
         parser.error("--dry-run 只能与 --apply 或 --repair 一起使用")
     if args.force and not (args.apply or args.repair):
@@ -423,6 +428,9 @@ def main(argv: list[str] | None = None, *, project_root: Path = ROOT) -> int:
     try:
         if not effective_argv:
             return interactive_menu(project_root)
+        if args.resources_check or args.resources_apply:
+            return resource_command(project_root, install=args.resources_apply, yes=args.yes,
+                                    branch=args.branch, remote_url=args.repo_url)
         if args.check:
             return check_command(
                 project_root,
@@ -478,3 +486,28 @@ def main(argv: list[str] | None = None, *, project_root: Path = ROOT) -> int:
     except KeyboardInterrupt:
         print("\n[KEMO] 已中断，未继续执行后续操作。", file=sys.stderr)
         return 130
+
+
+def resource_command(project_root: Path, *, install=False, yes=False, branch=DEFAULT_BRANCH, remote_url=None):
+    from update import resources
+    from update.lock import UpdateLockError
+    try:
+        result = resources.check(project_root, branch=branch, remote_url=remote_url)
+        for kind, group in result["groups"].items():
+            print(f"[KEMO] {kind}: {group['current']} → {group['target']}")
+            for item in group["changes"]:
+                print(f"       {item['id']}: {item['current'] or '新增'} → {item['target'] or '移除'}")
+        if not result["available"]:
+            print("[KEMO] 内置资源已是最新；框架、用户资源和运行数据未修改。")
+            return 0
+        if not install:
+            return 0
+        if not yes and not ui.confirm("仅覆盖上述内置资源，更新后需要重启网关。继续？", default=True):
+            return 0
+        updated = resources.apply(project_root, result)
+        print(f"[KEMO] 内置资源更新完成，原资源备份：{updated['backup']}")
+        print("[KEMO] 框架版本不变，用户资源和运行数据已保留。请运行 python restart.py 生效。")
+        return 0
+    except (UpdateError, UpdateLockError, ValueError) as exc:
+        print(f"[ERROR] {redact_text(exc)}", file=sys.stderr)
+        return 1

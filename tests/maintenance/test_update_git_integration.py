@@ -13,50 +13,10 @@ from update.git import GitDiff
 from update.version import VersionInfo
 
 from tests.support.paths import PROJECT_ROOT
+from tests.support.update_git import GIT, git as _git, repository as _repository
 
 
-GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(GIT is None, reason="git executable is required")
-
-
-def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
-        [GIT or "git", *args],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    return result.stdout.strip()
-
-
-def _repository(tmp_path: Path) -> tuple[Path, Path, str]:
-    seed = tmp_path / "seed"
-    seed.mkdir()
-    _git(seed, "init", "-b", "main")
-    _git(seed, "config", "user.name", "Kemo Test")
-    _git(seed, "config", "user.email", "kemo@example.invalid")
-    (seed / "version.yaml").write_text(
-        '{"version":"0.6.0","protocol_version":"1.0"}\n',
-        encoding="utf-8",
-    )
-    (seed / "README.txt").write_text("initial\n", encoding="utf-8")
-    _git(seed, "add", ".")
-    _git(seed, "commit", "-m", "初始版本")
-
-    remote = tmp_path / "remote.git"
-    _git(tmp_path, "init", "--bare", str(remote))
-    _git(seed, "remote", "add", "origin", remote.as_uri())
-    _git(seed, "push", "-u", "origin", "main")
-    _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
-
-    local = tmp_path / "local"
-    _git(tmp_path, "clone", str(remote), str(local))
-    _git(local, "config", "user.name", "Kemo Test")
-    _git(local, "config", "user.email", "kemo@example.invalid")
-    return seed, local, _git(local, "rev-parse", "HEAD")
 
 
 def test_release_ignores_runtime_data_without_hiding_frontend_source(tmp_path: Path) -> None:

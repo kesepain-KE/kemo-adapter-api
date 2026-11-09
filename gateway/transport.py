@@ -16,7 +16,7 @@ from gateway.tracing import current_trace
 from gateway.domain import ConfigurationError
 
 
-def upstream_error(status: int | None = None, code="UPSTREAM_ERROR") -> ProviderException:
+def upstream_error(status: int | None = None, code="UPSTREAM_ERROR", *, retryable: bool | None = None) -> ProviderException:
     wire_code = ("RATE_LIMITED" if status == 429 else
                  "PROVIDER_TIMEOUT" if code == "UPSTREAM_TIMEOUT" else
                  "PROVIDER_UNAVAILABLE" if status in {500, 502, 503, 504} or code in {"NO_HEALTHY_DEPLOYMENT", "UPSTREAM_UNAVAILABLE"} else
@@ -24,7 +24,7 @@ def upstream_error(status: int | None = None, code="UPSTREAM_ERROR") -> Provider
     return ProviderException(ErrorObject(
         type="rate_limit_error" if status == 429 else "upstream_error",
         code=wire_code, message="上游请求失败" if status else "上游连接失败",
-        retryable=status in {408, 429, 500, 502, 503, 504} or status is None,
+        retryable=(status in {408, 429, 500, 502, 503, 504} or status is None) if retryable is None else retryable,
         provider_status=status,
         details={"reason": code},
     ))
@@ -100,7 +100,7 @@ class Transport:
         self._proxy_clients = {}
 
     @asynccontextmanager
-    async def response(self, upstream, path, headers, *, body=None, method="POST"):
+    async def response(self, upstream, path, headers, *, body=None, method="POST", files=None):
         base_url = upstream.base_url.rstrip("/")
         if not path.startswith("/") or "#" in path or ".." in path:
             raise ValueError("适配器端点无效")
@@ -121,6 +121,9 @@ class Transport:
         exchange = None
         if trace is not None:
             exchange = {"method": method, "path": path, "request": body, "status": None, "response": ""}
+            if files is not None:
+                exchange["files"] = [{"field": name, "filename": value[0], "mime_type": value[2]}
+                                     for name, value in files]
             trace.exchanges.append(exchange)
         try:
             client = self.client
@@ -146,8 +149,14 @@ class Transport:
                     client = self._proxy_clients[cache_key]
             else:
                 host_header, extensions = url.netloc.decode(), {}
+            payload = {"json": body}
+            request_headers = {**headers, "Host": host_header}
+            if files is not None:
+                request_headers = {key: value for key, value in request_headers.items() if key.lower() != "content-type"}
+                payload = {"data": {key: value if isinstance(value, str) else json.dumps(value)
+                                    for key, value in (body or {}).items()}, "files": files}
             async with client.stream(
-                method, url, headers={**headers, "Host": host_header}, json=body,
+                method, url, headers=request_headers, **payload,
                 extensions=extensions, timeout=httpx.Timeout(upstream.timeout, connect=15.0),
             ) as response:
                 if exchange is not None:
@@ -181,8 +190,8 @@ class Transport:
         except httpx.HTTPError:
             raise upstream_error() from None
 
-    async def json(self, upstream, path, headers, *, body=None, method="POST"):
-        async with self.response(upstream, path, headers, body=body, method=method) as response:
+    async def json(self, upstream, path, headers, *, body=None, method="POST", files=None):
+        async with self.response(upstream, path, headers, body=body, method=method, files=files) as response:
             content = bytearray()
             trace = current_trace.get()
             if trace is not None and not trace.capture_details:

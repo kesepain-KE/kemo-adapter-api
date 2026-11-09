@@ -86,6 +86,7 @@ function UpstreamEditor({ upstream, onSave, onClose }: {
   const [headers, setHeaders] = useState(stringify(upstream?.headers || {}))
   const [discovered, setDiscovered] = useState<string[]>([])
   const [discoveryNotice, setDiscoveryNotice] = useState('')
+  const [references, setReferences] = useState<string[]>([])
   const [manual, setManual] = useState('')
   const [modelQuery, setModelQuery] = useState('')
   const [selected, setSelected] = useState<Record<string, string>>({})
@@ -219,9 +220,16 @@ function UpstreamEditor({ upstream, onSave, onClose }: {
               const result = await api(`/upstreams/${upstream.id}/discover`, { method: 'POST' })
               setDiscovered(result.models)
               setDiscoveryNotice(result.message || '')
+              setReferences(result.reference_models || [])
             }) }}><Radar size={14} />{t('发现模型')}</button></div>
           {!selectedAdapter?.discovery && <p className="hint">{t('此协议不提供模型发现，请手动添加模型名。')}</p>}
+          <p className="hint">{t('模型目录可能不完整；可手动填写准确模型 ID，登记时会实际探测。')}</p>
           {discoveryNotice && <p className="hint" role="status">{discoveryNotice}</p>}
+          {!!references.length && <div className="row-actions"><span className="small muted">{t('未验证的模板参考')}</span>
+            {references.map(model => <button key={model} className="btn btn-sm mono" disabled={action.busy || discovered.includes(model)} onClick={() => {
+              setDiscovered([...new Set([...discovered, model])])
+              if (!registered.has(model)) setSelected({ ...selected, [model]: defaultName(model) })
+            }}>{model}</button>)}</div>}
           <div className="key-add"><input className="input mono" placeholder={t('手动填写上游模型名')} aria-label={t('手动填写上游模型名')} value={manual} onChange={e => setManual(e.target.value)} />
             <button className="btn" disabled={action.busy || !manual.trim()} onClick={() => {
               const model = manual.trim(); setDiscovered([...new Set([...discovered, model])])

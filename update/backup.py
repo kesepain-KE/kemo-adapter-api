@@ -39,7 +39,7 @@ _EXCLUDE_SUFFIXES = frozenset({
     ".log",
     ".pid",
 })
-_EXCLUDE_FILES = frozenset({"gateway.yaml", ".update.lock", ".update.maintenance"})
+_EXCLUDE_FILES = frozenset({"gateway.yaml", ".env", ".update.lock", ".update.maintenance"})
 
 
 def _should_exclude(path: Path, project_root: Path) -> bool:

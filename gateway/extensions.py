@@ -90,13 +90,14 @@ def read_manifest(path: Path, kind: str):
     return {**manifest.model_dump(mode="json"), "template": template.model_dump(mode="json")}
 
 
-def install(root: Path, kind: str, content: bytes) -> str:
+def install(root: Path, kind: str, content: bytes, *, reserved_ids=(), active_ids=(), replace=False) -> str:
     if kind not in KINDS or len(content) > 16 * 1024 * 1024:
         raise ValueError("扩展类型或包大小无效")
     destination_root = root / "extensions" / kind
     destination_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=destination_root) as temporary:
-        staging = Path(temporary)
+        staging = Path(temporary) / "package"
+        staging.mkdir()
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             entries = archive.infolist()
             if len(entries) > 100 or sum(e.file_size for e in entries) > 32 * 1024 * 1024:
@@ -116,12 +117,28 @@ def install(root: Path, kind: str, content: bytes) -> str:
                 (staging / name).write_bytes(archive.read(entry))
         manifest = read_manifest(staging, kind)
         adapter_id = manifest.id if isinstance(manifest, AdapterManifest) else manifest["id"]
+        if adapter_id in reserved_ids:
+            raise ValueError("用户资源不能使用内置资源的 ID；请复制并使用独立 ID")
+        if replace and adapter_id in active_ids:
+            raise ValueError("请先停用此用户资源，再替换文件")
         if kind == "protocol_adapters" and not (staging / "adapter.py").is_file():
             raise ValueError("适配器缺少 adapter.py")
         target = destination_root / adapter_id
+        if target.is_symlink() or not target.resolve().is_relative_to(destination_root.resolve()):
+            raise ValueError("用户资源目录不能链接到目录外")
+        if target.exists() and not replace:
+            raise ValueError("同名用户资源已安装；停用后可显式选择替换")
+        previous = Path(temporary) / "previous"
         if target.exists():
-            raise ValueError("同名扩展已安装；请使用新的版本 ID 安装，再切换引用")
-        shutil.copytree(staging, target)
+            target.rename(previous)
+        try:
+            shutil.copytree(staging, target)
+        except BaseException:
+            if target.exists():
+                shutil.rmtree(target)
+            if previous.exists():
+                previous.rename(target)
+            raise
     return adapter_id
 
 
@@ -140,7 +157,7 @@ class WorkerAdapter:
     async def start(cls, path, manifest):
         source_root = Path(__file__).resolve().parents[1]
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-I", str(Path(__file__).with_name("extension_worker.py")),
+            sys.executable, "-I", "-B", str(Path(__file__).with_name("extension_worker.py")),
             str(source_root), str(path), stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             limit=2 * 1024 * 1024,
