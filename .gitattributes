@@ -1,2 +1,5 @@
-# Kemo 共享契约 Fixture 按字节比对 SHA-256，必须排除跨平台换行转换。
-tests/contracts/kemo_v1/fixtures/*.json text eol=lf
+# 内置 tokenizer 资源按 SHA-256 校验，跨平台检出时保留原始字节。
+gateway/tokenizers/** -text
+
+# 能力探测样本包含二进制媒体，禁止换行转换。
+gateway/probe_samples/** binary

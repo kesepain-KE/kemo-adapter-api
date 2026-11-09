@@ -1,0 +1,5 @@
+id: openai-embedding
+name: OpenAI Embeddings
+version: 1.0.0
+contract_version: '1.0'
+description: OpenAI Embeddings 连接预制，使用 openai-embedding；尚未进行真实厂商调用验证。

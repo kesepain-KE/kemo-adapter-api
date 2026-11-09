@@ -13,15 +13,13 @@ from tests.suites import DEFAULT_SUITES, SUITES, suite_files
 from tests.support.paths import PROJECT_ROOT
 
 
-def test_default_suite_covers_every_source_test_and_the_provider_template() -> None:
+def test_default_suite_covers_every_source_test() -> None:
     expected = {
         path for path in (PROJECT_ROOT / "tests").rglob("test_*.py")
-        if path.relative_to(PROJECT_ROOT / "tests").parts[0] not in {"integration", "local_providers"}
+        if path.relative_to(PROJECT_ROOT / "tests").parts[0] != "integration"
     }
-    expected.add(PROJECT_ROOT / "template/provider/test_contract.py")
     assert set(suite_files(["all"])) == expected
     assert set(suite_files(list(DEFAULT_SUITES))) == expected
-    assert not any(path.is_relative_to(PROJECT_ROOT / "providers") for path in expected)
 
 
 def test_pytest_default_paths_match_the_single_entry() -> None:

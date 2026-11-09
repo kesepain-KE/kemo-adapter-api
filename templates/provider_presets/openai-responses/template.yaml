@@ -1,0 +1,8 @@
+adapter_id: openai-responses
+name: OpenAI Responses
+base_url: https://api.openai.com/v1
+auth_scheme: bearer
+headers: {}
+profile: {}
+tokenizer: openai
+catalog: []

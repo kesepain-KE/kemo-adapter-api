@@ -1,9 +1,9 @@
 """共享的无网络检索 Provider 与请求数据。"""
 from __future__ import annotations
 from core.models import EmbeddingCapabilities, EmbeddingRequest, ModelCapabilities, RerankCapabilities, RerankRequest, Usage, UsageMeasurement
-from core.provider_contract import ProviderEmbedding, ProviderEmbeddingResult, ProviderPackage, ProviderRerankItem, ProviderRerankResult, RequestContext
+from core.provider_contract import ProviderEmbedding, ProviderEmbeddingResult, ProviderRerankItem, ProviderRerankResult, RequestContext
 
-class FakeRetrievalProvider(ProviderPackage):
+class FakeRetrievalProvider:
     provider_id = "retrieval"
 
     def __init__(self) -> None:

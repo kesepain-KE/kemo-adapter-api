@@ -61,11 +61,11 @@ def test_update_package_and_module_entrypoints_share_cli_main(monkeypatch) -> No
 @pytest.mark.parametrize(
     "path",
     [
-        ".env",
-        "api/keys.json",
-        "providers/deepseek/config.json",
-        "storage/daily/2026-08-23.sqlite3",
-        "storage/executions/executions.sqlite3",
+        "gateway.yaml",
+        "data/gateway.sqlite3",
+        "extensions/provider_templates/example/template.yaml",
+        "data/statistics/daily/2026-08-23.sqlite3",
+        "data/executions/executions.sqlite3",
         "core/runtime/gateway.pid.json",
         ".backup/20260823-120000/.env",
         "开发目录/obsidian/index.md",
@@ -78,23 +78,23 @@ def test_local_data_paths_are_protected(path: str) -> None:
     assert update_git._is_protected(path)
 
 
-def test_provider_namespace_file_remains_updateable() -> None:
-    assert not update_git._is_protected("providers/__init__.py")
+def test_gateway_source_remains_updateable() -> None:
+    assert not update_git._is_protected("gateway/__init__.py")
 
 
 def test_remote_diff_separates_source_from_protected_data(monkeypatch) -> None:
     monkeypatch.setattr(
         update_git,
         "get_remote_files",
-        lambda _root: ["update.py", "api/keys.json", "providers/__init__.py"],
+        lambda _root: ["update.py", "data/gateway.sqlite3", "gateway/__init__.py"],
     )
 
     assert update_git.get_remote_diff(PROJECT_ROOT).files == [
         "update.py",
-        "providers/__init__.py",
+        "gateway/__init__.py",
     ]
     assert update_git.get_protected_remote_diff(PROJECT_ROOT).files == [
-        "api/keys.json"
+        "data/gateway.sqlite3"
     ]
 
 
@@ -291,7 +291,7 @@ def test_apply_rejects_remote_changes_to_protected_paths(monkeypatch) -> None:
     monkeypatch.setattr(
         update_git,
         "get_protected_remote_diff",
-        lambda _root: GitDiff(["api/keys.json"]),
+        lambda _root: GitDiff(["data/gateway.sqlite3"]),
     )
 
     def unexpected_update(*_args, **_kwargs):
@@ -378,7 +378,7 @@ def test_repair_rejects_protected_paths_before_transaction(monkeypatch) -> None:
     monkeypatch.setattr(
         update_git,
         "get_protected_remote_diff",
-        lambda _root: GitDiff(["providers/example/secrets.json"]),
+        lambda _root: GitDiff(["extensions/protocol_adapters/example/manifest.yaml"]),
     )
     assert update_cli.repair(PROJECT_ROOT, yes=True) == 4
 
@@ -509,14 +509,14 @@ def test_backup_restore_rejects_path_traversal(tmp_path) -> None:
 
 
 def test_backup_excludes_private_and_runtime_data(tmp_path) -> None:
-    (tmp_path / ".env").write_text("SECRET=x", encoding="utf-8")
-    (tmp_path / "api").mkdir()
-    (tmp_path / "api" / "keys.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "providers" / "demo").mkdir(parents=True)
-    (tmp_path / "providers" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "providers" / "demo" / "secrets.json").write_text(
-        "{}", encoding="utf-8"
-    )
+    (tmp_path / "gateway.yaml").write_text("SECRET=x", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "gateway.sqlite3").write_bytes(b"database")
+    (tmp_path / "data" / ".master-key.dpapi").write_bytes(b"protected-key")
+    (tmp_path / "extensions" / "protocol_adapters" / "demo").mkdir(parents=True)
+    (tmp_path / "extensions" / "protocol_adapters" / "demo" / "manifest.yaml").write_text("id: demo\n", encoding="utf-8")
+    (tmp_path / "storage").mkdir()
+    (tmp_path / "storage" / "statistics.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tmp_path / "source.py").write_text("value = 1\n", encoding="utf-8")
 
     ok, _, backup_id = update_backup.create_snapshot(tmp_path)
@@ -524,10 +524,10 @@ def test_backup_excludes_private_and_runtime_data(tmp_path) -> None:
     assert ok and backup_id
     snapshot = tmp_path / ".backup" / backup_id
     assert (snapshot / "source.py").is_file()
-    assert (snapshot / "providers" / "__init__.py").is_file()
-    assert not (snapshot / ".env").exists()
-    assert not (snapshot / "api" / "keys.json").exists()
-    assert not (snapshot / "providers" / "demo").exists()
+    assert (snapshot / "storage" / "statistics.py").is_file()
+    assert not (snapshot / "gateway.yaml").exists()
+    assert not (snapshot / "data").exists()
+    assert not (snapshot / "extensions").exists()
 
 
 def test_failed_backup_removes_incomplete_staging_directory(
@@ -550,7 +550,7 @@ def test_failed_backup_removes_incomplete_staging_directory(
 def test_conflict_marker_scanner_reports_source_but_ignores_runtime(tmp_path) -> None:
     marker = "<<<" + "<<<< Updated upstream\n"
     (tmp_path / "start_web.py").write_text(marker + "value = 1\n", encoding="utf-8")
-    runtime = tmp_path / "storage" / "daily"
+    runtime = tmp_path / "data" / "statistics" / "daily"
     runtime.mkdir(parents=True)
     (runtime / "note.txt").write_text(marker, encoding="utf-8")
 

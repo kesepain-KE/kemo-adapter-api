@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
   "protocol_version": "2.0",
   "build": null,
-  "notes": "Kemo 网关 1.0.0：继续提供冻结的 Kemo 2.0 协议，完成与 kemo-agent 1.4.0、kemo-graph 1.6.0 的版本基线对齐。"
+  "notes": "Kemo Gateway 2.0.0: unified provider management, model routing, credentials and agent control."
 }

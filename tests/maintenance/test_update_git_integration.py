@@ -36,7 +36,7 @@ def _repository(tmp_path: Path) -> tuple[Path, Path, str]:
     _git(seed, "init", "-b", "main")
     _git(seed, "config", "user.name", "Kemo Test")
     _git(seed, "config", "user.email", "kemo@example.invalid")
-    (seed / "version.json").write_text(
+    (seed / "version.yaml").write_text(
         '{"version":"0.6.0","protocol_version":"1.0"}\n',
         encoding="utf-8",
     )
@@ -55,6 +55,34 @@ def _repository(tmp_path: Path) -> tuple[Path, Path, str]:
     _git(local, "config", "user.name", "Kemo Test")
     _git(local, "config", "user.email", "kemo@example.invalid")
     return seed, local, _git(local, "rev-parse", "HEAD")
+
+
+def test_release_ignores_runtime_data_without_hiding_frontend_source(tmp_path: Path) -> None:
+    _git(tmp_path, "init")
+    shutil.copyfile(Path(__file__).resolve().parents[2] / ".gitignore", tmp_path / ".gitignore")
+    private = (
+        "gateway.yaml",
+        ".env",
+        "data/gateway.sqlite3",
+        "data/gateway.sqlite3-wal",
+        "data/master.key",
+        "extensions/protocol_adapters/local/manifest.yaml",
+        "extensions/provider_templates/local/template.yaml",
+        "core/runtime/gateway.pid.json",
+    )
+    source = (
+        "gateway.yaml.example",
+        "web/frontend/src/data/types.ts",
+        "templates/protocol_adapter/manifest.yaml",
+    )
+    for relative in (*private, *source):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("local fixture\n", encoding="utf-8")
+
+    _git(tmp_path, "add", ".")
+
+    assert set(_git(tmp_path, "ls-files").splitlines()) == {".gitignore", *source}
 
 
 def test_fetch_fast_forwards_to_exact_utf8_commit(tmp_path: Path) -> None:

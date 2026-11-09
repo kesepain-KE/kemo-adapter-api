@@ -1,51 +1,60 @@
-# Web 管理端
+# 网关控制台
 
-本目录用于网关管理网页，包括 Provider 状态、模型能力、密钥元数据、Usage 和运行状态管理。
+需要智能体代用户完成配置时，从 [智能体操作指南](../agent/_doc/README.md) 开始；该指南与网页共用现有管理能力。
 
-Web 的内部接口不属于公开 LLM API，不写入顶层 `api.md`。Provider 厂商密钥、请求头和 Provider
-State 明文永远不得返回浏览器；Provider 密钥池及只读配置页由后端生成前五后三掩码，短值完全隐藏。
-网关调用 Token 只有 owner 通过会话、同源和 CSRF 校验后，才能由短时 reveal 接口按需查看，
-响应必须 `no-store`，前端在短生命周期结束后立即清除。
+控制台以提供的 kemo-gateway-console 为基础，使用白灰底色、细分隔线、紧凑侧栏、表格与内嵌编辑器。十个入口为总览、上游服务、模型管理、路由策略、下游密钥、调用记录、协议适配器、提供商模板、运行诊断、设置。页面使用真实管理 API，不加载旧网页的 Provider 数据层。
 
-## 技术栈与目录
+## 目录与运行
 
-- `frontend/`：React 19、TypeScript、Vite；生产构建由 FastAPI 挂载到 `/admin`。
-- `backend/`：FastAPI 私有管理路由，统一位于 `/admin/api/*`。
-
-浏览器先按 `.env` 配置完成 Web Token、用户名和密码流程，服务端签发 `HttpOnly` 会话 Cookie；
-前端内存只保存写请求需要的 CSRF Token，不把 Web 凭据或会话 Token 放进浏览器存储。
-管理接口也保留带 `admin:web` 或 `owner` scope 的直接 Bearer Token 兼容方式。
-Provider 密钥原文为只写字段，普通状态接口只返回掩码和状态。对外 LLM API 被停用时，管理面
-仍保持鉴权可用，以便管理员重新开启网关。三项 Web 凭据都为空时进入免登录 owner 模式，
-只适用于受信任本机或局域网；公网必须启用两阶段鉴权、HTTPS 和主机白名单。
-
-系统设置中的只读网关配置来自当前进程，不解析待生效 `.env`；修改环境变量后必须重启。
-该接口、管理文档和 HTML 响应使用 `no-store`，凭据预览不能用于鉴权或写回配置。
-
-## 启动
-
-先构建前端，再从项目根目录启动：
+- `frontend/`：React 19、TypeScript、Vite、i18next，生产产物挂载到 `/admin`。
+- `../gateway/admin.py`：目录、上游、模型、Deployment、下游密钥、Attempt、扩展与 YAML 导出。
+- `backend/auth_routes.py`、`auth_service.py`：Web 两阶段认证、Cookie、CSRF。
+- `backend/router.py`：统计和系统诊断/重启接口。
 
 ```powershell
-Set-Location web/frontend
-pnpm run build
-Set-Location ../..
+pnpm --dir web/frontend install --frozen-lockfile
+pnpm --dir web/frontend run build
 python start_web.py
 ```
 
-入口读取项目 `.env` 中的 `HOST`、`PORT` 和 `LOG_LEVEL`。`WEB_ACCESS_LOG` 控制 Uvicorn 访问
-日志，`WEB_OPEN_BROWSER` 控制启动后是否打开 `/admin`；进程环境同名变量优先。所有这些变量
-均为启动配置，修改后必须重启。
+默认打开 `http://127.0.0.1:7531/admin`。监听与认证从 `gateway.yaml` 或优先的进程环境读取。前端修改必须构建并在隔离服务确认 HTML 与哈希资源确实来自新产物；不要为验收重启现有用户实例。
 
-## 私有重启 API
+## 语言与界面数据
 
-重启接口只属于 Web 管理面，不写入公开 `api.md`：
+仅保留简体中文、English、Español、Français、Deutsch、Português (Brasil)、Русский、日本語、한국어。语言选择位于“设置 → 界面偏好”和登录页，偏好保存在本地；切换不重新挂载正在编辑的表单。资源为 `frontend/src/i18n/messages.ts`，自有文案通过 `t()` 读取，用户输入、协议字段和模型名称保持原值。
 
-| 方法与路径 | 权限 | 用途 |
-| --- | --- | --- |
-| `GET /admin/api/system/restart` | `owner` | 查询实例阶段、活动执行数和最近重启结果 |
-| `POST /admin/api/system/restart` | `owner` | 提交 Drain 后重启，返回 `202` 和 request_id |
+`frontend/src/console.tsx` 统一读取 `/admin/api/console`，提交实体级变更并刷新。每个编辑表单保留打开时的 revision，保存遇到冲突应让操作者重新审阅；不能在后台轮询后把旧表单配上新 revision。密钥创建结果只显示一次，刷新失败也须保留这次成功返回的 Token。
 
-提交正文为 `{"reason":"...","force":false}`。普通 `admin:web` 无权重启；并发重启返回
-`409`。前端可以轮询 GET 接口，依次展示 `queued → draining → stopping → starting → succeeded`
-或 `failed`。
+“上游服务”左侧选择提供商，右侧按模型、连接配置、凭据和高级配置分栏。新增上游时模板填好连接参数，默认只需输入 API Key。发现模型只读取目录；勾选后点击登记才检测能力，界面提前说明上游费用。登记结果显示在下方，每行“编辑”打开模型设置弹层，可调整上下文与 token 上限、常用能力或完整 YAML；“模型管理”复用同一个编辑器。
+
+鉴权方式来自适配器的 `auth_schemes`，保存为 `auth_scheme`。高级配置支持连接级 `extra_body`、`extra_query` 及独立 HTTP(S) 出口代理；冲突、未替换占位符等错误显示到相应字段。保存不解析 DNS。模型发现的 401/403 与网络故障直接显示错误；空目录和 404 可显示明确标注的未验证模板参考。提供商模板显示验证状态，编码工具服务单独分类。协议适配器页可读取当前 worker 的脱敏内存日志。
+
+## 鉴权与数据边界
+
+Web Token 和用户名/密码使用 HttpOnly 会话 Cookie，CSRF Token 只在内存中保存。直接管理 Bearer 需要 `admin:web` 或 `owner`；密钥和扩展修改、重启需要 owner。公网需要完整 Web 认证、HTTPS 和适当 Host 白名单。本机回环支持免登录管理。
+
+上游凭据普通接口只返回 ID、掩码和启停，不提供明文 reveal。下游 Token 使用哈希鉴权，原文加密保存，仅 owner 可显式复制；历史仅有哈希的 Token 不能恢复。认证配置、管理 HTML 和 API 响应使用 no-store。YAML 导出脱敏，仅用于记录与检查。
+
+## 运行诊断与设置
+
+总览顶部四张统计卡依次展示请求次数、Token 总量、缓存命中率和成功率，共用“当天 / 24 小时 / 7 天 / 30 天 / 总数据”范围选择，默认当天。“当天”按统计时区零点起算，其余有限范围从当前时间回溯；四项指标均查询完整持久化业务调用，不受最近调用列表条数限制。请求次数按真实上游调用统计，重试分别计数，不包含模型测试和能力探测；缓存命中率按同时具有输入与缓存用量的记录加权，成功率分母为已结束的调用。下方请求趋势保留独立的按天/按小时与历史时段导航。
+
+运行诊断支持今天、近 7 天、近 30 天和全部数据。今天按 `STATISTICS_TIMEZONE` 当地零点起算，近 7/30 天按当前时间回溯；统计直接查询持久化 Attempt，不受调用列表分页限制。重试分别计数，模型测试和能力探测不计入业务统计。成功率分母为已结束的 Attempt；缓存率按同时具有输入与缓存用量的记录加权。未知用量与延迟显示 `—`，不同币种费用分别汇总，不做隐式换算。排行可切换提供商、公开模型和下游密钥，已删除对象仍使用调用时保存的名称；早期未保存名称的记录使用现有目录名称。密钥排行仅展示名称，不展示 Token、掩码或内部密钥 ID；无名称时显示通用标签。
+
+调用摘要在开始与结束时持久化，完整正文先保存在内存，结束后只写一次；执行中的详情按需从内存读取并脱敏。启动项 `LOG_DETAIL_MODE` 默认为 `full`，保留所有详情；`errors` 仅保存失败或取消的详情；`off` 不收集上游原始交互、不保存正文。三种模式均保存摘要、Token 用量、费用和配额结算；`LOG_DETAIL_MAX_BYTES` 继续限制单条详情大小。模式变更需重启生效，已保存的历史详情按原保留期处理。
+
+每日统计的更新先进入有界内存缓冲，默认每 250 毫秒或累计 128 次更新时按日库批量提交。读取统计和正常关闭前会刷出缓冲，空闲时不循环写库；批次失败回滚，并在统计健康状态中报告丢弃数量。异常退出可能丢失最后一批尚未提交的辅助统计；执行恢复、流式重放、调用摘要、计费与额度结算保持原有持久化路径。
+
+启动终端展示 `start_web.py` 当前进程的 OUT/ERR，最多保留一小时、1000 行，每行最多 4096 字符；页面每 2 秒读取近期 300 行，可筛选输出流并跟随最新输出。它是只读内存视图，重启后重新采集；不读取历史终端文件、不执行命令，敏感字段在进入快照前脱敏。直接使用其他 ASGI 入口时会显示未采集。
+
+设置分为“界面偏好 / 网关配置 / 最高系统提示词 / 系统维护”。运行策略与系统提示词保存后实时发布。owner 可编辑源码根目录的 `gateway.yaml`：非敏感启动项使用 YAML 编辑器，认证项必须勾选后显式替换；未修改的敏感项和未知原有字段保持原值。保存前校验 YAML、监听、认证、时区与数值，基于文件 revision 原子替换；无效输入或并发冲突不覆盖原文件。主密钥不可从此编辑。进程环境仍优先于 YAML，保存启动配置后需在系统维护中重启。运行中的配置只读视图保持独立。
+
+系统维护提供启动信息、源码启动命令、待重启检测、优雅重启和显式版本检查。服务停止时，浏览器无法启动服务，应在源码目录执行 `python start_web.py`；运行中重启沿用 owner、同源和 CSRF 校验。
+
+## 管理接口
+
+完整列表见 [智能体管理操作速查](../agent/_doc/management-api.md)。公开 Kemo 调用接口独立记录在 [api.md](../api.md)。
+
+写入目录和密钥的正文为 `{expected_revision, value}`；`expected_revision` 来自读取时的目录或密钥 revision。`templates/provider_presets/` 中的内置模板随启动加载，在“提供商模板”和新建上游的模板选项中直接可用。自定义扩展安装使用 multipart，安装后保持停用；启用才构建候选、握手 worker 并发布。
+
+`POST /admin/api/system/restart` 需 owner 与 CSRF，正文为 `{reason, force}`，返回 202 和 request_id；GET 同路径读取状态。此流程用于部署运维，不应在日常浏览器验收中触发现有实例重启。

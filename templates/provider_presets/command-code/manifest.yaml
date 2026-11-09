@@ -1,0 +1,7 @@
+id: command-code
+name: Command Code Provider
+version: 1.0.0
+contract_version: '1.0'
+category: coding_service
+verification: verified
+description: 2026-11-09 以模板 Bearer 默认配置和 deepseek/deepseek-v4.1-flash 完成短文本非流式与流式调用；不覆盖全部模型及能力。

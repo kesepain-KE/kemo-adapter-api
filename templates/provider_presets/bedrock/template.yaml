@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: AWS Bedrock
+base_url: https://bedrock-runtime.{region}.amazonaws.com/openai/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_completion_tokens
+tokenizer: auto
+catalog: []

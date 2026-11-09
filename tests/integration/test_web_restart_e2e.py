@@ -29,7 +29,8 @@ def _copy_runtime_project(destination: Path) -> None:
             for name in names
             if name == "__pycache__"
             or name.endswith((".pyc", ".pyo"))
-            or name.endswith(".json")
+            or (name.endswith((".json", ".yaml", ".yml"))
+                and Path(_directory) != PROJECT_ROOT / "gateway" / "tokenizers")
             or name == "runtime"
         }
 
@@ -43,6 +44,8 @@ def _copy_runtime_project(destination: Path) -> None:
     shutil.copytree(PROJECT_ROOT / "api", destination / "api", ignore=ignore_runtime)
     shutil.copytree(PROJECT_ROOT / "vendor", destination / "vendor")
     shutil.copytree(PROJECT_ROOT / "core", destination / "core", ignore=ignore_runtime)
+    shutil.copytree(PROJECT_ROOT / "gateway", destination / "gateway", ignore=ignore_runtime)
+    shutil.copytree(PROJECT_ROOT / "templates" / "provider_presets", destination / "templates" / "provider_presets")
     (destination / "web").mkdir()
     shutil.copy2(PROJECT_ROOT / "web" / "__init__.py", destination / "web" / "__init__.py")
     shutil.copytree(PROJECT_ROOT / "web" / "backend", destination / "web" / "backend", ignore=ignore_runtime)
@@ -50,29 +53,11 @@ def _copy_runtime_project(destination: Path) -> None:
     if not (frontend_dist / "index.html").is_file():
         raise AssertionError("Web 前端尚未构建，无法执行网页重启端到端测试")
     shutil.copytree(frontend_dist, destination / "web" / "frontend" / "dist")
-    (destination / "providers").mkdir()
-    shutil.copy2(
-        PROJECT_ROOT / "providers" / "__init__.py",
-        destination / "providers" / "__init__.py",
-    )
     (destination / "storage").mkdir()
     # Copy source modules only, including new helpers such as read_cache.py.
     # Never copy daily databases, uploaded assets or execution history.
     for source in (PROJECT_ROOT / "storage").glob("*.py"):
         shutil.copy2(source, destination / "storage" / source.name)
-    (destination / "api" / "runtime.json").write_text(
-        '{"gateway_api":{"enabled":true}}\n', encoding="utf-8"
-    )
-    (destination / "api" / "keys.json").write_text(
-        '{"keys":{}}\n', encoding="utf-8"
-    )
-    (destination / "core" / "live_control.json").write_text(
-        (
-            '{"highest_priority_system_prompt":"",'
-            '"disabled_providers":[],"disabled_models":[]}\n'
-        ),
-        encoding="utf-8",
-    )
 
 
 def _free_port() -> int:
@@ -82,24 +67,24 @@ def _free_port() -> int:
 
 
 def _write_env(project: Path, port: str | int) -> None:
-    (project / ".env").write_text(
+    (project / "gateway.yaml").write_text(
         "\n".join(
             (
                 # Bind all interfaces so this E2E exercises the protected
                 # Token -> password path instead of the trusted loopback
                 # owner bypass. The client still connects through 127.0.0.1.
-                "HOST=0.0.0.0",
-                f"PORT={port}",
-                "WEB_OPEN_BROWSER=false",
-                "WEB_ACCESS_LOG=false",
-                "WEB_TOKEN=ci-web-token",
-                "WEB_USERNAME=ci-owner",
-                "WEB_PASSWORD=ci-password",
-                "STATUS_TOKEN=",
-                "API_DOCS_ENABLED=false",
-                "RESTART_DRAIN_TIMEOUT=10",
-                "RESTART_STARTUP_TIMEOUT=20",
-                "STATISTICS_TIMEZONE=UTC",
+                "HOST: 0.0.0.0",
+                f"PORT: {port}",
+                "WEB_OPEN_BROWSER: false",
+                "WEB_ACCESS_LOG: false",
+                "WEB_TOKEN: ci-web-token",
+                "WEB_USERNAME: ci-owner",
+                "WEB_PASSWORD: ci-password",
+                "STATUS_TOKEN: ",
+                "API_DOCS_ENABLED: false",
+                "RESTART_DRAIN_TIMEOUT: 10",
+                "RESTART_STARTUP_TIMEOUT: 20",
+                "STATISTICS_TIMEZONE: UTC",
                 "",
             )
         ),
@@ -217,7 +202,7 @@ def _stop_gateway(project: Path) -> None:
 
 @pytest.mark.skipif(
     not RUN_RESTART_E2E,
-    reason="设置 KEMO_RUN_RESTART_E2E=1 才执行真实进程替换测试",
+    reason="设置 KEMO_RUN_RESTART_E2E: 1 才执行真实进程替换测试",
 )
 def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
     tmp_path: Path,
@@ -276,6 +261,10 @@ def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
         csrf_token = str(password_result["csrf_token"])
         with client.open(f"{first_url}/admin", timeout=2.0) as response:
             assert response.status == 200
+        terminal = _client_json(client, first_url, "/admin/api/system/terminal-logs")
+        assert terminal["capturing"] is True
+        assert any("[KEMO] Web" in row["text"] for row in terminal["items"])
+        assert "ci-password" not in json.dumps(terminal)
 
         # A broken startup environment must fail preflight while the old
         # gateway remains healthy and keeps the same instance identity.
@@ -296,9 +285,18 @@ def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
         assert initial.poll() is None
 
         # The success path changes PORT before using the real Web owner API.
-        # The replacement must stop the old PID, read the new .env, bind the
+        # The replacement must stop the old PID, read the new gateway.yaml, bind the
         # new port, publish new PID metadata, and pass /healthz.
-        _write_env(project, second_port)
+        pending_config = _client_json(client, first_url, "/admin/api/system/startup-config")
+        edited_config = str(pending_config["yaml"]).replace("PORT: invalid-port", f"PORT: {second_port}")
+        assert f"PORT: {second_port}" in edited_config
+        saved_config = _client_json(
+            client, first_url, "/admin/api/system/startup-config", method="PUT",
+            payload={"expected_revision": pending_config["expected_revision"], "yaml": edited_config},
+            csrf_token=csrf_token,
+        )
+        assert saved_config["restart_required"] is True
+        assert "ci-password" not in json.dumps(saved_config)
         accepted = _client_json(
             client,
             first_url,
@@ -325,6 +323,9 @@ def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
         session = _client_json(client, second_url, "/admin/api/auth/session")
         assert session["authenticated"] is True
         assert session["csrf_token"] == csrf_token
+        terminal = _client_json(client, second_url, "/admin/api/system/terminal-logs")
+        assert terminal["capturing"] is True
+        assert any(f":{second_port}" in row["text"] for row in terminal["items"])
 
         metadata = read_json(project / "core" / "runtime" / "gateway.pid.json")
         assert metadata is not None

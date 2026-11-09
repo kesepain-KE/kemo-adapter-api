@@ -1,0 +1,5 @@
+id: custom-template
+name: Custom service
+version: 1.0.0
+contract_version: '1.0'
+description: Declarative defaults for an operator-configured service.

@@ -1,0 +1,8 @@
+adapter_id: perplexity-agent
+name: Perplexity
+base_url: https://api.perplexity.ai
+auth_scheme: bearer
+headers: {}
+profile: {}
+tokenizer: auto
+catalog: []

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 from datetime import UTC, datetime
 import hashlib
-import json
 from pathlib import Path
 import re
 import threading
@@ -28,19 +29,7 @@ def _excluded(relative: str) -> bool:
     parts = relative.split("/")
     if "__pycache__" in parts or relative.endswith((".pyc", ".pyo")):
         return True
-    if relative in {
-        "api/keys.json",
-        "api/runtime.json",
-        "core/live_control.json",
-    }:
-        return True
-    if relative.startswith(("core/runtime/", "storage/daily/")):
-        return True
-    if (
-        len(parts) >= 3
-        and parts[0] == "providers"
-        and parts[-1] in {"config.json", "secrets.json"}
-    ):
+    if relative.startswith("core/runtime/"):
         return True
     return False
 
@@ -49,11 +38,12 @@ class SystemInspector:
     """Keep a process-start snapshot without exposing file contents to clients."""
 
     _GROUP_PATTERNS: dict[str, tuple[str, ...]] = {
-        "environment": (".env",),
+        "environment": ("gateway.yaml",),
         "startup": ("start_web.py", "restart.py"),
         "backend": (
             "api/**/*.py",
             "core/**/*.py",
+            "gateway/**/*.py",
             "storage/**/*.py",
             "web/backend/**/*.py",
         ),
@@ -64,7 +54,6 @@ class SystemInspector:
             "web/frontend/vite.config.*",
             "web/frontend/tsconfig*.json",
         ),
-        "providers": ("providers/**/*",),
         "dependencies": (
             "setup.py",
             "pyproject.toml",
@@ -208,7 +197,7 @@ class SystemInspector:
         checked_at = _utc_now()
         try:
             local = self._local_version()
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        except (OSError, UnicodeError, ValueError):
             return {
                 "status": "unavailable",
                 "update_available": None,
@@ -223,7 +212,7 @@ class SystemInspector:
             remote = self._remote_version()
             local_key = self._version_key(local["version"])
             remote_key = self._version_key(remote["version"])
-        except (OSError, HTTPError, URLError, TimeoutError, UnicodeError, json.JSONDecodeError, ValueError):
+        except (OSError, HTTPError, URLError, TimeoutError, UnicodeError, ValueError):
             return {
                 "status": "unavailable",
                 "update_available": None,

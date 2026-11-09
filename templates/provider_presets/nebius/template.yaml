@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: Nebius Token Factory
+base_url: https://api.tokenfactory.nebius.com/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

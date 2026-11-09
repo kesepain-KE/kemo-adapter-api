@@ -43,7 +43,10 @@ jobs:
         run: python -m tests --suite version -q
 
       - name: Validate the Kemo 2.0 artifact contract
-        run: pytest tests/contracts/kemo_v2 -q
+        run: python -m tests --suite kemo-contract -q
+
+      - name: Run public and admin API safety tests
+        run: python -m tests --suite api --suite web -q
 
       - name: Run update unit safety tests
         run: python -m tests --suite update-unit -q
@@ -51,18 +54,18 @@ jobs:
       - name: Run temporary Git repository integration tests
         run: python -m tests --suite update-git -q
 
-      - name: Run Provider execution safety tests
+      - name: Run execution and persistence safety tests
         run: >-
-          python -m tests --suite protocol --suite providers --suite storage --suite architecture -q
+          python -m tests --suite protocol --suite storage --suite architecture -q
 
-      - name: Check offline Provider templates and guided examples
+      - name: Check gateway adapters, routing and extensions
         run: >-
-          python -m tests --suite templates -q
+          python -m tests --suite gateway -q
 
       - name: Check the real remote without modifying source
         run: python update.py --check
 
       - name: Verify UTF-8 Git boundary and source syntax
         run: |
-          python -m compileall -q update.py update core api providers web template tests
+          python -m compileall -q update.py update core api gateway storage web templates tests
           git diff --check

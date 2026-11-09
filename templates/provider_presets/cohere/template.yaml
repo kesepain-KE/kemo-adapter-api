@@ -1,0 +1,8 @@
+adapter_id: cohere-chat
+name: Cohere
+base_url: https://api.cohere.com
+auth_scheme: bearer
+headers: {}
+profile: {}
+tokenizer: cohere
+catalog: []

@@ -1,7 +1,7 @@
 """Kemo 网关与 Web 管理端的生产启动入口。
 
-环境变量在进程启动时一次性读取：进程环境优先，项目根目录 ``.env`` 只补充缺失值。
-运行时配置仍由 api/core/providers 下的受控 JSON 文件负责，不在这里热加载环境变量。
+环境变量在进程启动时一次性读取：进程环境优先，项目根目录 ``gateway.yaml`` 只补充缺失值。
+运行时目录通过控制台持久化并发布不可变快照，不在这里热加载环境变量。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 import webbrowser
 
-from dotenv import dotenv_values, load_dotenv
+from core.yaml_config import startup_values, load_startup_environment
 import uvicorn
 
 from core.restart_control import (
@@ -28,7 +28,7 @@ from core.restart_control import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-ENV_FILE = PROJECT_ROOT / ".env"
+ENV_FILE = PROJECT_ROOT / "gateway.yaml"
 FRONTEND_DIST = PROJECT_ROOT / "web" / "frontend" / "dist"
 LOG_LEVELS = frozenset({"critical", "error", "warning", "info", "debug", "trace"})
 
@@ -73,7 +73,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _startup_options() -> dict[str, Any]:
-    # 延迟导入，确保项目 .env 在 Settings 读取前已经加载。
+    # 延迟导入，确保项目 gateway.yaml 在 Settings 读取前已经加载。
     from core.config import Settings, is_loopback_host
 
     settings = Settings.from_env()
@@ -185,7 +185,7 @@ def preflight_main() -> int:
     """在独立进程中验证新环境、前端产物和后端导入，不监听端口。"""
 
     _ensure_project_import_path()
-    load_dotenv(ENV_FILE, override=False)
+    load_startup_environment(ENV_FILE, override=False)
     if not (FRONTEND_DIST / "index.html").is_file():
         return 2
     try:
@@ -201,10 +201,14 @@ def preflight_main() -> int:
 def main() -> int:
     # 保证从任意工作目录执行 ``python path/to/start_web.py`` 都能导入项目包。
     _ensure_project_import_path()
-    skip_dotenv = os.environ.pop("_KEMO_RESTART_SKIP_DOTENV", "") == "1"
+    skip_config = os.environ.pop("_KEMO_RESTART_SKIP_CONFIG", "") == "1"
     environment_override_names = list(os.environ)
-    if not skip_dotenv:
-        load_dotenv(ENV_FILE, override=False)
+    if not skip_config:
+        try:
+            load_startup_environment(ENV_FILE, override=False)
+        except (OSError, ValueError):
+            print("[ERROR] Invalid gateway.yaml configuration.", file=sys.stderr)
+            return 2
 
     index_file = FRONTEND_DIST / "index.html"
     if not index_file.is_file():
@@ -219,7 +223,7 @@ def main() -> int:
         open_browser = _env_bool("WEB_OPEN_BROWSER", False)
     except (KeyError, TypeError, ValueError):
         # 不打印原始配置或异常正文，避免 JSON 配置错误时意外回显密钥。
-        print("[ERROR] 启动环境变量无效，请检查 .env.example。", file=sys.stderr)
+        print("[ERROR] 启动环境变量无效，请检查 gateway.yaml.example。", file=sys.stderr)
         return 2
 
     paths = RestartPaths(PROJECT_ROOT)
@@ -267,7 +271,7 @@ def main() -> int:
         host=str(options["host"]),
         port=int(options["port"]),
         environment_override_names=environment_override_names,
-        dotenv_names=[name for name in dotenv_values(ENV_FILE) if name],
+        startup_names=[name for name in startup_values(ENV_FILE) if name],
         health_host_header=options["health_host_header"],
     )
     try:
@@ -283,4 +287,6 @@ def main() -> int:
 if __name__ == "__main__":
     if sys.argv[1:] == ["--preflight"]:
         raise SystemExit(preflight_main())
+    from core.terminal_logs import install_terminal_capture
+    install_terminal_capture()
     raise SystemExit(main())

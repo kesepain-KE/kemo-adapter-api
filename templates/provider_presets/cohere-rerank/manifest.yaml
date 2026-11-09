@@ -1,0 +1,5 @@
+id: cohere-rerank
+name: Cohere Rerank
+version: 1.0.0
+contract_version: '1.0'
+description: Cohere Rerank 连接预制，使用 cohere-rerank；尚未进行真实厂商调用验证。

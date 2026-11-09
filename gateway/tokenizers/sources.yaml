@@ -1,0 +1,247 @@
+deepseek.json.gz:
+  url: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/resolve/b5968e9190ef611bbf34a7229255be88a0e937c1/tokenizer.json
+  sha256: 9d829eaa02147b9fc8e3e58a3f35edd3a1620a3e4b77f7e7ee08bdbc396f4073
+  bytes: 1868505
+deepseek.LICENSE:
+  url: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/raw/b5968e9190ef611bbf34a7229255be88a0e937c1/LICENSE
+  sha256: f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040
+  bytes: 1084
+qwen.json.gz:
+  url: https://huggingface.co/Qwen/Qwen3-8B/resolve/b968826d9c46dd6066d109eabc6255188de91218/tokenizer.json
+  sha256: 91f25377c43890de0ace1712fa1e6b4fab60bc2eb7d90a06e85a67fb4cf97c59
+  bytes: 2059770
+qwen.LICENSE:
+  url: https://huggingface.co/Qwen/Qwen3-8B/raw/b968826d9c46dd6066d109eabc6255188de91218/LICENSE
+  sha256: 832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e
+  bytes: 11343
+openai.LICENSE:
+  url: https://raw.githubusercontent.com/openai/tiktoken/0.13.0/LICENSE
+  sha256: 418cb499b436128d653d79941333a5437b7be2ea9213dcc2f04d15d5d2c51d86
+  bytes: 1078
+cl100k_base.tiktoken:
+  url: https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken
+  sha256: 223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7
+  bytes: 1681126
+o200k_base.tiktoken:
+  url: https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
+  sha256: 446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d
+  bytes: 3613922
+glm.json.gz:
+  url: https://huggingface.co/zai-org/GLM-4.5/resolve/cbb2c7cfb52fa128a9660cb1a7a78e017899e115/tokenizer.json
+  sha256: 8b24cf0969880bf0da03181d1751e2fdd2fe1cce3c0bc2b4384f3d24a8c76068
+  bytes: 2963590
+  license: mit
+notices/glm.model-card.md:
+  url: https://huggingface.co/zai-org/GLM-4.5/resolve/cbb2c7cfb52fa128a9660cb1a7a78e017899e115/README.md
+  sha256: b88456f5d679312860924870b8c557e578d18c7e3612b4f9d1ea22be38ea95c3
+  bytes: 9670
+  license: mit
+minimax.json.gz:
+  url: https://huggingface.co/MiniMaxAI/MiniMax-M2/resolve/04312f0cfbdeefb912575595b7c045512a29293c/tokenizer.json
+  sha256: 7a2db105b4ffc8f3a9483703dd8986f6f08436f532a0a7eb4ff3d815f8338ac6
+  bytes: 2986234
+  license: other
+notices/minimax.model-card.md:
+  url: https://huggingface.co/MiniMaxAI/MiniMax-M2/resolve/04312f0cfbdeefb912575595b7c045512a29293c/README.md
+  sha256: a9b0e3b1f649531ebffb24952de6de97d340b5ef6a944a872cabe00060357965
+  bytes: 22044
+  license: other
+mistral.json.gz:
+  url: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/resolve/68faf511d618ef198fef186659617cfd2eb8e33a/tokenizer.json
+  sha256: 3f91fc10b3c6ae4f65320a9d6da6b1ecba2132697c6610754651498c22376bde
+  bytes: 2732916
+  license: apache-2.0
+notices/mistral.model-card.md:
+  url: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/resolve/68faf511d618ef198fef186659617cfd2eb8e33a/README.md
+  sha256: 68effd5695d7053fa8153feedaaae529ce10bd6481f86dad76374a59de3592e6
+  bytes: 19022
+  license: apache-2.0
+hunyuan.json.gz:
+  url: https://huggingface.co/tencent/Hunyuan-A13B-Instruct/resolve/290ddb9a56ed23c2c83a1c8081533e58925df952/tokenizer.json
+  sha256: d09b153395a7c43f55c99a9072944b53affe71541a4d1e4e98346ca588ce5b6e
+  bytes: 2448651
+  license: other
+notices/hunyuan.model-card.md:
+  url: https://huggingface.co/tencent/Hunyuan-A13B-Instruct/resolve/290ddb9a56ed23c2c83a1c8081533e58925df952/README.md
+  sha256: f7df4703f678f1baa19e4786be5fd8d55559bb3dc83c84cb6e015fb1aa08a969
+  bytes: 17674
+  license: other
+notices/hunyuan-0.LICENSE.txt:
+  url: https://huggingface.co/tencent/Hunyuan-A13B-Instruct/resolve/290ddb9a56ed23c2c83a1c8081533e58925df952/LICENSE
+  sha256: e3e51427556222cb152990f47991eedbd6ffa6561bb9346580d32e841e13530c
+  bytes: 15524
+  license: other
+ernie.json.gz:
+  url: https://huggingface.co/baidu/ERNIE-4.5-0.3B-PT/resolve/b565cf6caebdb7a1eadf00100857b1ed5e044f12/tokenizer.json
+  sha256: aa7027c89acacb84bd241209b4e5bdbb1f73b1289b5207f44208e939d7e083bb
+  bytes: 1860185
+  license: apache-2.0
+notices/ernie.model-card.md:
+  url: https://huggingface.co/baidu/ERNIE-4.5-0.3B-PT/resolve/b565cf6caebdb7a1eadf00100857b1ed5e044f12/README.md
+  sha256: 802c44b7e57d9a8322644b561aa0cc40965f129d84bea17c1b9421eb7f493121
+  bytes: 6860
+  license: apache-2.0
+notices/ernie-0.LICENSE.txt:
+  url: https://huggingface.co/baidu/ERNIE-4.5-0.3B-PT/resolve/b565cf6caebdb7a1eadf00100857b1ed5e044f12/LICENSE
+  sha256: 5d7deeaff0d6f92ef5c74658a46e4750ccbcd0602efcdfd24cd7ec6ae7c822f9
+  bytes: 11366
+  license: apache-2.0
+doubao.json.gz:
+  url: https://huggingface.co/ByteDance-Seed/Seed-OSS-36B-Instruct/resolve/497f1dca95ebdec98e41d517b9f060ee753c902f/tokenizer.json
+  sha256: 08cfabc9de7b33f803bcc3e9d718cedb29c2b901ed3a3bb964fd73de8cb89944
+  bytes: 2366128
+  license: apache-2.0
+notices/doubao.model-card.md:
+  url: https://huggingface.co/ByteDance-Seed/Seed-OSS-36B-Instruct/resolve/497f1dca95ebdec98e41d517b9f060ee753c902f/README.md
+  sha256: a8b639d3654d3453bed9037cd1470ea6bc43289b1058a71840f8e11a99a6ca49
+  bytes: 19944
+  license: apache-2.0
+notices/doubao-0.LICENSE.txt:
+  url: https://huggingface.co/ByteDance-Seed/Seed-OSS-36B-Instruct/resolve/497f1dca95ebdec98e41d517b9f060ee753c902f/LICENSE.txt
+  sha256: 41fe2167e8a52d375dd36304db345312bd629addb2e109e47104a7d34a2cf116
+  bytes: 11356
+  license: apache-2.0
+stepfun.json.gz:
+  url: https://huggingface.co/stepfun-ai/step3/resolve/e2d67fc936dc60f8f606f2429728f1dea503e10d/tokenizer.json
+  sha256: e55ae014d556b5c979fcb2c6d6d7aac6bd21290798f010c3fb8499ee0a06b7de
+  bytes: 1922196
+  license: apache-2.0
+notices/stepfun.model-card.md:
+  url: https://huggingface.co/stepfun-ai/step3/resolve/e2d67fc936dc60f8f606f2429728f1dea503e10d/README.md
+  sha256: c58140bb49bad463e45077d8f317290728d08696ae39e296ef76d1cc359613ba
+  bytes: 6079
+  license: apache-2.0
+notices/stepfun-0.LICENSE.txt:
+  url: https://huggingface.co/stepfun-ai/step3/resolve/e2d67fc936dc60f8f606f2429728f1dea503e10d/LICENSE
+  sha256: 58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
+  bytes: 11357
+  license: apache-2.0
+yi.json.gz:
+  url: https://huggingface.co/01-ai/Yi-1.5-9B-Chat/resolve/1a0fc698cf883c4f5c325f026ca79f0ebd9955a5/tokenizer.json
+  sha256: ecc1700bf7ac312b13d042e492674a56aecb30fbce374484a6ddaea9eb7653cc
+  bytes: 1030788
+  license: apache-2.0
+notices/yi.model-card.md:
+  url: https://huggingface.co/01-ai/Yi-1.5-9B-Chat/resolve/1a0fc698cf883c4f5c325f026ca79f0ebd9955a5/README.md
+  sha256: 5b245685718cc62faa5a588e87ccc215532ff93bb2a6f24f1fd698445432b460
+  bytes: 5779
+  license: apache-2.0
+mimo.json.gz:
+  url: https://huggingface.co/XiaomiMiMo/MiMo-V2-Flash/resolve/8b60b288e8325b7890fcdfe32bbb1d172c591a2d/tokenizer.json
+  sha256: 91f25377c43890de0ace1712fa1e6b4fab60bc2eb7d90a06e85a67fb4cf97c59
+  bytes: 2059770
+  license: mit
+notices/mimo.model-card.md:
+  url: https://huggingface.co/XiaomiMiMo/MiMo-V2-Flash/resolve/8b60b288e8325b7890fcdfe32bbb1d172c591a2d/README.md
+  sha256: 469313ae366a9c2554b1bcccc0d9bdb7e84cf06f3356172be0475f7e7a54ac05
+  bytes: 23118
+  license: mit
+sensenova.json.gz:
+  url: https://huggingface.co/sensenova/SenseNova-SI-1.3-InternVL3-8B/resolve/2081462c2453e1331d2aa95131140b95e647b49f/tokenizer.json
+  sha256: e0f69f77c83d9e623e7780248b926c518963748d1b736ddaaecce8dffa27a2dc
+  bytes: 1923759
+  license: apache-2.0
+notices/sensenova.model-card.md:
+  url: https://huggingface.co/sensenova/SenseNova-SI-1.3-InternVL3-8B/resolve/2081462c2453e1331d2aa95131140b95e647b49f/README.md
+  sha256: e591b71d3ec4ae61e6c6d1370fc556e251269e8b7250d93adb6286513212091e
+  bytes: 13288
+  license: apache-2.0
+baichuan.model:
+  url: https://huggingface.co/baichuan-inc/Baichuan2-7B-Chat/resolve/ea66ced17780ca3db39bc9f8aa601d8463db3da5/tokenizer.model
+  sha256: 79452955be6b419a65984273a9f08af86042e1c2a75ee3ba989cbf620a133cc2
+  bytes: 2001107
+notices/baichuan.model-card.md:
+  url: https://huggingface.co/baichuan-inc/Baichuan2-7B-Chat/resolve/ea66ced17780ca3db39bc9f8aa601d8463db3da5/README.md
+  sha256: 6942e7729cc56c1d654d9cd770b95643985b319aec14d4dd86e156d096b7940a
+  bytes: 16874
+notices/baichuan-0.LICENSE.pdf:
+  url: https://huggingface.co/baichuan-inc/Baichuan2-7B-Chat/resolve/ea66ced17780ca3db39bc9f8aa601d8463db3da5/Community
+    License for Baichuan2 Model.pdf
+  sha256: 858cbea167920a9004978c3781c6e09fc90c862c6b2dbfe8b8fc86881323b369
+  bytes: 202809
+internlm.model:
+  url: https://huggingface.co/internlm/internlm3-8b-instruct/resolve/28c99415adaf61767bd1c619f4f99f308fdfd223/tokenizer.model
+  sha256: bcacff3229854f5103ee7a85473a30ca9a8b3a68f3aae9b7479574b23ac2256b
+  bytes: 2475075
+  license: apache-2.0
+notices/internlm.model-card.md:
+  url: https://huggingface.co/internlm/internlm3-8b-instruct/resolve/28c99415adaf61767bd1c619f4f99f308fdfd223/README.md
+  sha256: 05952b9d45a7e470843502490354cb33f74d3fc76288dcf14c5632cbda96ac59
+  bytes: 39850
+  license: apache-2.0
+notices/internlm-0.LICENSE.txt:
+  url: https://huggingface.co/internlm/internlm3-8b-instruct/resolve/28c99415adaf61767bd1c619f4f99f308fdfd223/LICENSE.txt
+  sha256: 3650804584fdf501723ddff1af68da29c1d0129ee12a729900b7380e48f25eac
+  bytes: 11357
+  license: apache-2.0
+cohere.json.gz:
+  url: https://storage.googleapis.com/cohere-public/tokenizers/command-r-plus.json
+  sha256: fa9839f6e82db324c3f70fe1ec532ddbf1e79a80d866c1528d5c220a90871c92
+  bytes: 3886955
+  license: cc-by-nc-4.0
+gemini.model:
+  url: https://raw.githubusercontent.com/google/gemma_pytorch/014acb7ac4563a5f77c76d7ff98f31b568c16508/tokenizer/gemma3_cleaned_262144_v2.spiece.model
+  sha256: 1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c
+  bytes: 4689074
+  license: apache-2.0
+grok.model:
+  url: https://raw.githubusercontent.com/xai-org/grok-1/7050ed204b8206bb8645c7b7bbef7252f79561b0/tokenizer.model
+  sha256: 5c69d7cbad192fa2c9d14e2a77fbfdc11597c68907b043ddb0260e3d28eddd7f
+  bytes: 2229219
+  license: apache-2.0
+ai21-j2.model:
+  url: https://raw.githubusercontent.com/AI21Labs/ai21-tokenizer/5b2197dfcf127f28b46404c6555a0c4523e911b6/ai21_tokenizer/resources/j2-tokenizer/j2-tokenizer.model
+  sha256: 0da75c7b7590806e6eb791ecb2beeb89df79ef2b94728809a91d1349fa9b3d82
+  bytes: 6659225
+  license: apache-2.0
+llama.json.gz:
+  url: https://huggingface.co/unsloth/Llama-3.2-1B-Instruct/resolve/5a8abab4a5d6f164389b1079fb721cfab8d7126c/tokenizer.json
+  sha256: 1a2e2f77102a69304df6c8c0f137e1b6e695ff57f497f84885c7e108be7b461a
+  bytes: 2544614
+  license: llama3.2
+claude-legacy.json.gz:
+  url: https://raw.githubusercontent.com/anthropics/anthropic-tokenizer-typescript/4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b/claude.json
+  sha256: b6204b7499a6d22b77b073a4ad1266c09cf6b58d967b43d4809e8f7e12aca106
+  bytes: 313905
+  license: mit
+kimi.model:
+  url: https://huggingface.co/moonshotai/Kimi-K2-Instruct/resolve/fd1984e2b7a3350dbf7305fe73a4ede25c14de50/tiktoken.model
+  sha256: b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103
+  bytes: 2795286
+  license: modified-mit
+notices/cohere.LICENSE.txt:
+  url: https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt
+  sha256: 41003d4a74749c0220e33dd415042164b5a1093ed401f36277234f772d22d3d0
+  bytes: 19347
+notices/gemini.LICENSE:
+  url: https://raw.githubusercontent.com/google/gemma_pytorch/014acb7ac4563a5f77c76d7ff98f31b568c16508/LICENSE
+  sha256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4
+  bytes: 11357
+notices/grok.LICENSE:
+  url: https://raw.githubusercontent.com/xai-org/grok-1/7050ed204b8206bb8645c7b7bbef7252f79561b0/LICENSE.txt
+  sha256: cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+  bytes: 11358
+notices/ai21-j2.LICENSE:
+  url: https://raw.githubusercontent.com/AI21Labs/ai21-tokenizer/5b2197dfcf127f28b46404c6555a0c4523e911b6/LICENSE
+  sha256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4
+  bytes: 11357
+notices/llama.LICENSE:
+  url: https://raw.githubusercontent.com/meta-llama/llama-models/0e0b8c519242d5833d8c11bffc1232b77ad7f301/models/llama3_2/LICENSE
+  sha256: 8cc15535a8a34b41888f644b339a1a9eb428af793a4f5e24df58a3e5b1487d74
+  bytes: 7669
+notices/claude-legacy.LICENSE:
+  url: https://raw.githubusercontent.com/anthropics/anthropic-tokenizer-typescript/4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b/LICENSE
+  sha256: 8bf96984ff8bcfae7e48cae76a529e8a25317ba9e02abf7fd3cc64fdf95657a6
+  bytes: 1056
+notices/claude-legacy.README.md:
+  url: https://raw.githubusercontent.com/anthropics/anthropic-tokenizer-typescript/4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b/README.md
+  sha256: aec70d19fc41582d9726b9133d9d85b2c1a034e3e43217bfc62126208edbd91a
+  bytes: 1400
+notices/kimi.LICENSE:
+  url: https://huggingface.co/moonshotai/Kimi-K2-Instruct/resolve/fd1984e2b7a3350dbf7305fe73a4ede25c14de50/LICENSE
+  sha256: b280da6f496d75e0c5beb79b03520d190fce67dfe12f75cf3aadad8670839d93
+  bytes: 1463
+notices/kimi.THIRD_PARTY_NOTICES.md:
+  url: https://huggingface.co/moonshotai/Kimi-K2-Instruct/resolve/fd1984e2b7a3350dbf7305fe73a4ede25c14de50/THIRD_PARTY_NOTICES.md
+  sha256: 5d7789302c002ace2bef98ee1082a1278026b868b0a6bec0ee1eaf1b71022ade
+  bytes: 1664

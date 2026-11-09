@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 讯飞星火
+base_url: https://spark-api-open.xf-yun.com/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

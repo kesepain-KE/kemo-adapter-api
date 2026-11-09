@@ -17,14 +17,11 @@ VERSION_URL_TEMPLATE = (
 )
 BACKUP_KEEP = 10
 
-# 这些路径属于部署者、运行时或私有 Provider，不允许远端更新覆盖。
+# 这些路径属于部署者或运行时，不允许远端更新覆盖。
 PROTECTED_PATTERNS = (
-    ".env",
-    "providers/",
-    "api/keys.json",
-    "storage/daily/",
-    "storage/assets/",
-    "storage/executions/",
+    "gateway.yaml",
+    "data/",
+    "extensions/",
     "core/runtime/",
     ".backup/",
     "开发目录/",
@@ -35,7 +32,6 @@ PROTECTED_PATTERNS = (
     ".update.lock",
     ".update.maintenance",
 )
-PROTECTED_EXCEPTIONS = frozenset({"providers/__init__.py"})
 
 # 冲突标记只扫描发布源码和文档；运行数据、构建产物和备份不参与。
 INTEGRITY_EXCLUDED_DIRS = frozenset(
@@ -48,7 +44,8 @@ INTEGRITY_EXCLUDED_DIRS = frozenset(
         "__pycache__",
         "node_modules",
         "dist",
-        "storage",
+        "data",
+        "extensions",
         "开发目录",
     }
 )
@@ -63,8 +60,8 @@ INTEGRITY_SUFFIXES = frozenset(
 PYTHON_COMPILE_TARGETS = (
     "api",
     "core",
-    "providers",
-    "template",
+    "gateway",
+    "templates",
     "tests",
     "update",
     "web/backend",

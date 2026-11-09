@@ -1,0 +1,14 @@
+adapter_id: openai-chat
+name: 深度求索
+base_url: https://api.deepseek.com/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+  thinking_mode: true
+  reasoning_effort_map:
+    low: low
+    high: high
+    max: max
+tokenizer: deepseek
+catalog: []

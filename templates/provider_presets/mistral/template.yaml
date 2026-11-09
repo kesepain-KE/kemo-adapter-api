@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: Mistral
+base_url: https://api.mistral.ai/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: mistral
+catalog: []

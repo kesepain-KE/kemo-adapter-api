@@ -1,268 +1,94 @@
-import { useEffect, useRef, useState } from 'react'
-import { Check, Copy, Eye, EyeOff, KeyRound, LoaderCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react'
-import { useAdmin } from '../AdminContext'
-import { adminApi, type GatewayApiKey, type GatewayKeyModel } from '../adminApi'
-import { Badge, Card, EmptyState, SectionTitle, Subtabs } from '../components/UI'
-
-const numberFormat = new Intl.NumberFormat('zh-CN')
-
-function formatDate(value: string | null): string {
-  if (!value) return '未记录'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未记录'
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date)
-}
-
-function keyIdentity(key: GatewayApiKey): string {
-  return key.id ?? `${key.source}:${key.name}`
-}
-
-async function copyToClipboard(value: string): Promise<void> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value)
-      return
-    }
-  } catch {
-    // HTTP 局域网或浏览器权限策略可能拒绝 Clipboard API，继续使用兼容路径。
-  }
-  const input = document.createElement('textarea')
-  input.value = value
-  input.setAttribute('readonly', '')
-  input.style.position = 'fixed'
-  input.style.opacity = '0'
-  document.body.appendChild(input)
-  input.select()
-  const copied = document.execCommand('copy')
-  input.remove()
-  if (!copied) throw new Error('浏览器拒绝访问剪贴板')
-}
+import { useState } from 'react'
+import { Copy, Trash2 } from 'lucide-react'
+import { api, useAction, useConsole } from '../console'
+import type { Entity } from '../console'
+import { Modal, PageHeader, Toggle, useToast } from '../components/UI'
+import { Select } from '../components/Select'
+import { Empty, ErrorBar, Field } from '../components/Form'
+import { t } from '../i18n'
 
 export default function Keys() {
-  const { csrfToken: token } = useAdmin()
-  const [keys, setKeys] = useState<GatewayApiKey[]>([])
-  const [models, setModels] = useState<GatewayKeyModel[]>([])
+  const { data, mutate } = useConsole()
+  const [draft, setDraft] = useState<Entity | null>(null)
+  const [secret, setSecret] = useState('')
   const [revision, setRevision] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [selectedId, setSelectedId] = useState('')
-  const [detailTab, setDetailTab] = useState<'info' | 'usage' | 'models'>('info')
-  const [refreshVersion, setRefreshVersion] = useState(0)
-  const [refreshing, setRefreshing] = useState(false)
-  const [policyBusy, setPolicyBusy] = useState(false)
-  const [copyingKeyId, setCopyingKeyId] = useState('')
-  const [copiedKeyId, setCopiedKeyId] = useState('')
-  const [viewingKeyId, setViewingKeyId] = useState('')
-  const [revealedKeyId, setRevealedKeyId] = useState('')
-  const [revealedToken, setRevealedToken] = useState('')
-  const revealTimerRef = useRef<number | null>(null)
+  const action = useAction()
+  const toast = useToast()
+  const edit = (name: string, value: any) => setDraft({ ...draft, [name]: value })
+  return <div className="page"><PageHeader title="下游密钥"
+    actions={<button className="btn btn-primary" onClick={() => { setRevision(data!.key_revision); setDraft({ name: '', note: '', allowed_models: null,
+      allowed_ops: ['llm', 'embedding', 'rerank'], rpm: 0, tpm: 0, budget: null, currency: 'USD', enabled: true }) }}>{t('创建密钥')}</button>} />
+    <ErrorBar error={action.error} />
+    <div className="card table-scroll"><table className="model-table"><thead><tr>{['名称', '密钥', '允许模型', '额度', '状态', '操作'].map(l => <th key={l}>{t(l)}</th>)}</tr></thead><tbody>
+      {data!.keys.map(k => <tr key={k.id}><td>{k.name || k.id}<div className="muted small">{k.created_at}</div></td><td><div className="row-actions">
+        <span className="mono">{k.preview}</span><button className="icon-btn" disabled={action.busy || !k.can_copy}
+          title={t(k.can_copy ? '复制密钥' : '历史密钥仅有哈希，无法还原')} aria-label={`${t('复制密钥')} ${k.name || k.id}`}
+          onClick={() => { void action.run(async () => {
+            const result = await api(`/keys/${k.id}/reveal`, { method: 'POST', body: JSON.stringify({ expected_revision: data!.key_revision, value: {} }) })
+            await navigator.clipboard.writeText(result.token); toast(t('已复制'))
+          }) }}><Copy size={14} /></button>
+        <button className="icon-btn danger-text" disabled={action.busy} title={t('删除密钥')} aria-label={`${t('删除密钥')} ${k.name || k.id}`}
+          onClick={() => { if (window.confirm(t('确认删除此密钥？删除后立即停止接受新的调用。'))) void action.run(() => mutate(`/keys/${k.id}`, 'DELETE', {}, true)) }}><Trash2 size={14} /></button>
+        </div>{!k.can_copy && <span className="small muted">{t('历史密钥仅有哈希，无法还原')}</span>}</td><td>{k.allowed_models === null ? t('全部模型') : k.allowed_models.join(', ') || t('无')}</td>
+        <td>{k.rpm || '∞'} RPM · {k.tpm || '∞'} TPM<div className="small muted">{k.budget === null ? t('无预算上限') : `${k.budget} ${k.currency}`}</div></td>
+        <td><Toggle checked={k.enabled} disabled={action.busy} label={t('启用')} onChange={value => { void action.run(() => mutate(`/keys/${k.id}`, 'PATCH', { enabled: value }, true)) }} /></td>
+        <td><button className="btn btn-sm" onClick={() => { setDraft(k); setRevision(data!.key_revision) }}>{t('编辑')}</button></td></tr>)}
+    </tbody></table>{!data!.keys.length && <Empty text="暂无下游密钥" />}</div>
+    <Modal open={!!draft} onClose={() => setDraft(null)} title={draft?.id ? '编辑密钥' : '创建密钥'} width={760}>
+      {draft && <><ErrorBar error={action.error} /><div className="form-grid two">
+        <Field label="名称"><input className="input" value={draft.name} onChange={e => edit('name', e.target.value)} /></Field>
+        <Field label="备注"><input className="input" value={draft.note} onChange={e => edit('note', e.target.value)} /></Field>
+        <Field label="RPM 上限"><input type="number" min="0" className="input" value={draft.rpm} onChange={e => edit('rpm', Number(e.target.value))} /></Field>
+        <Field label="TPM 上限"><input type="number" min="0" className="input" value={draft.tpm} onChange={e => edit('tpm', Number(e.target.value))} /></Field>
+        <Field label="预算上限"><input type="number" min="0" step="any" className="input" placeholder={t('不限制')} value={draft.budget ?? ''} onChange={e => edit('budget', e.target.value === '' ? null : Number(e.target.value))} /></Field>
+        <Field label="币种"><Select value={draft.currency} onChange={value => edit('currency', value)} options={['USD', 'CNY', 'EUR', 'JPY', 'GBP'].map(c => ({ value: c, label: c }))} /></Field>
+      </div><Field label="允许模型"><label className="check-label"><input type="checkbox" checked={draft.allowed_models === null} onChange={e => edit('allowed_models', e.target.checked ? null : [])} />{t('全部模型')}</label>
+        {draft.allowed_models !== null && <ModelScopePicker value={draft.allowed_models} onChange={value => edit('allowed_models', value)} />}</Field>
+      <Field label="允许操作"><div className="cap-row">{['llm', 'embedding', 'rerank'].map(op => <label key={op} className="check-label"><input type="checkbox" checked={draft.allowed_ops.includes(op)} onChange={e => edit('allowed_ops', e.target.checked ? [...draft.allowed_ops, op] : draft.allowed_ops.filter((v: string) => v !== op))} />{op}</label>)}</div></Field>
+      <p className="hint">{t('0 表示不限制。启用 TPM 或预算前，请配置模型 token 硬上限和价格。')}</p>
+      <div className="editor-actions"><button className="btn btn-primary" disabled={action.busy || !draft.name.trim()} onClick={() => { void action.run(async () => {
+        const { id, prefix: _prefix, preview: _preview, created_at: _created, can_copy: _canCopy, ...value } = draft
+        const result = await mutate(id ? `/keys/${id}` : '/keys', id ? 'PATCH' : 'POST', value, true, revision)
+        if (result.token) setSecret(result.token)
+        setDraft(null)
+      }) }}>{t('保存配置')}</button></div></>}
+    </Modal>
+    <Modal open={!!secret} onClose={() => setSecret('')} title="保存密钥">
+      <p className="hint">{t('密钥已加密保存，之后可从列表复制。')}</p><code className="secret-once">{secret}</code>
+      <div className="editor-actions"><button className="btn" onClick={() => { void action.run(() => navigator.clipboard.writeText(secret)) }}>{t('复制')}</button><button className="btn btn-primary" onClick={() => setSecret('')}>{t('已保存')}</button></div>
+    </Modal>
+  </div>
+}
 
-  useEffect(() => {
-    let active = true
-    if (refreshVersion === 0) setLoading(true)
-    setError('')
-    adminApi.gatewayApiKeys(token)
-      .then(result => {
-        if (!active) return
-        setKeys(result.items)
-        setModels(result.models)
-        setRevision(result.revision)
-        setSelectedId(current => result.items.some(key => keyIdentity(key) === current) ? current : (result.items[0] ? keyIdentity(result.items[0]) : ''))
-      })
-      .catch(reason => {
-        if (active) setError(reason instanceof Error ? reason.message : 'API 密钥读取失败')
-      })
-      .finally(() => {
-        if (!active) return
-        setLoading(false)
-        setRefreshing(false)
-      })
-    return () => { active = false }
-  }, [refreshVersion, token])
-
-  const selectedKey = keys.find(key => keyIdentity(key) === selectedId) ?? keys[0]
-  const allowedRegisteredCount = selectedKey?.allowed_models?.filter(
-    id => models.some(model => model.id === id),
-  ).length ?? 0
-
-  useEffect(() => {
-    setRevealedKeyId('')
-    setRevealedToken('')
-    if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
-    revealTimerRef.current = null
-  }, [selectedId])
-
-  useEffect(() => () => {
-    if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
-  }, [])
-
-  const updateModelPolicy = async (allowedModels: string[] | null) => {
-    if (!selectedKey?.id || !selectedKey.writable || policyBusy) return
-    setPolicyBusy(true)
-    setError('')
-    try {
-      const result = await adminApi.updateKeyModelPolicy(
-        token,
-        selectedKey.id,
-        revision,
-        allowedModels,
-      )
-      setRevision(result.revision)
-      setKeys(current => current.map(key => keyIdentity(key) === keyIdentity(selectedKey) ? {
-        ...key,
-        allowed_models: result.allowed_models,
-        model_policy: result.model_policy,
-      } : key))
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '模型白名单保存失败')
-    } finally {
-      setPolicyBusy(false)
-    }
-  }
-
-  const toggleModel = (modelId: string) => {
-    if (!selectedKey) return
-    const current = selectedKey.allowed_models
-    if (current === null) {
-      void updateModelPolicy(models.map(model => model.id).filter(id => id !== modelId))
-      return
-    }
-    const registered = new Set(models.map(model => model.id))
-    const currentRegistered = current.filter(id => registered.has(id))
-    const next = currentRegistered.includes(modelId)
-      ? currentRegistered.filter(id => id !== modelId)
-      : [...currentRegistered, modelId]
-    void updateModelPolicy(next)
-  }
-
-  const copyKey = async () => {
-    if (!selectedKey?.id || copyingKeyId) return
-    const keyId = selectedKey.id
-    setCopyingKeyId(keyId)
-    setCopiedKeyId('')
-    setError('')
-    try {
-      const result = await adminApi.revealGatewayApiKey(token, keyId)
-      await copyToClipboard(result.token)
-      setCopiedKeyId(keyId)
-      window.setTimeout(() => setCopiedKeyId(current => current === keyId ? '' : current), 1800)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'API 密钥复制失败')
-    } finally {
-      setCopyingKeyId('')
-    }
-  }
-
-  const hideKey = () => {
-    if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
-    revealTimerRef.current = null
-    setRevealedKeyId('')
-    setRevealedToken('')
-  }
-
-  const viewKey = async () => {
-    if (!selectedKey?.id || viewingKeyId || copyingKeyId) return
-    if (revealedKeyId === selectedKey.id) {
-      hideKey()
-      return
-    }
-    const keyId = selectedKey.id
-    setViewingKeyId(keyId)
-    setError('')
-    try {
-      const result = await adminApi.revealGatewayApiKey(token, keyId)
-      setRevealedKeyId(keyId)
-      setRevealedToken(result.token)
-      if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
-      revealTimerRef.current = window.setTimeout(hideKey, 8000)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'API 密钥读取失败')
-    } finally {
-      setViewingKeyId('')
-    }
-  }
-
-  return <>
-    <SectionTitle title="API 密钥管理" description="查看当前网关密钥、累计真实用量和最后调用时间" action={<button className={`btn provider-refresh ${refreshing ? 'is-refreshing' : ''}`} disabled={loading || refreshing} onClick={() => { setRefreshing(true); setRefreshVersion(value => value + 1) }}><RefreshCw className={refreshing ? 'spin' : ''} size={15}/>刷新</button>}/>
-    {error && <div className="global-alert" role="alert"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
-    {loading ? <Card className="key-loading"><LoaderCircle className="spin"/><span>正在读取 API 密钥…</span></Card> : !keys.length ? <EmptyState title="没有 API 密钥" description="当前启动环境和 api/keys.json 都没有配置网关 API 密钥。"/> : selectedKey && <div className="key-master-detail">
-      <Card className="key-directory">
-        <header className="key-directory-head"><div><span>密钥行列</span><strong>{keys.length} 个密钥</strong></div><KeyRound size={18}/></header>
-        <div className="key-directory-list">{keys.map(key => { const identity = keyIdentity(key); return <button key={identity} className={keyIdentity(selectedKey) === identity ? 'active' : ''} onClick={() => setSelectedId(identity)}>
-          <div className="key-row-head"><strong title={key.name}>{key.name}</strong><Badge tone={key.source === 'runtime' ? 'primary' : 'muted'}>{key.source === 'runtime' ? '热配置' : '环境变量'}</Badge></div>
-          <div className="key-row-stats"><span><small>累计调用</small><b>{numberFormat.format(key.usage.calls)}</b></span><span><small>Token</small><b>{key.usage.total_tokens === null ? '—' : numberFormat.format(key.usage.total_tokens)}</b></span></div>
-          <small className="key-row-last">最近调用 · {formatDate(key.last_used_at)}</small>
-        </button> })}</div>
-      </Card>
-      <Card className="key-detail-panel">
-        <header className="key-detail-head"><div><span>API 密钥</span><h3>{selectedKey.name}</h3><p>当前选中密钥的配置与真实累计调用数据</p></div><Badge tone={selectedKey.source === 'runtime' ? 'primary' : 'muted'}>{selectedKey.source === 'runtime' ? '热配置' : '环境变量'}</Badge></header>
-        <Subtabs items={[{ id: 'info', label: '密钥信息' }, { id: 'usage', label: '调用情况' }, { id: 'models', label: '模型限制' }]} value={detailTab} onChange={setDetailTab}/>
-        {detailTab === 'info' ? <div className="key-detail-info">
-          <div className="api-key-secret">
-            <span>API 密钥（安全掩码）</span>
-            <div>
-              <code>{revealedKeyId === selectedKey.id ? revealedToken : selectedKey.masked_token}</code>
-              <button
-                className={`key-icon-button ${revealedKeyId === selectedKey.id ? 'revealed' : ''}`}
-                type="button"
-                disabled={!selectedKey.id || Boolean(viewingKeyId) || Boolean(copyingKeyId)}
-                onClick={() => void viewKey()}
-                title={revealedKeyId === selectedKey.id ? '立即隐藏' : '查看完整密钥 8 秒'}
-                aria-label={revealedKeyId === selectedKey.id ? '立即隐藏完整密钥' : `短暂查看 ${selectedKey.name} 的完整密钥`}
-              >
-                {viewingKeyId === selectedKey.id
-                  ? <LoaderCircle className="spin" size={14}/>
-                  : revealedKeyId === selectedKey.id
-                    ? <EyeOff size={14}/>
-                    : <Eye size={14}/>}
-              </button>
-              <button
-                className={`key-icon-button ${copiedKeyId === selectedKey.id ? 'copied' : ''}`}
-                type="button"
-                disabled={!selectedKey.id || Boolean(copyingKeyId) || Boolean(viewingKeyId)}
-                onClick={() => void copyKey()}
-                title={copiedKeyId === selectedKey.id ? '已复制' : '复制完整密钥'}
-                aria-label={copiedKeyId === selectedKey.id ? '完整密钥已复制' : `复制 ${selectedKey.name} 的完整密钥`}
-              >
-                {copyingKeyId === selectedKey.id
-                  ? <LoaderCircle className="spin" size={14}/>
-                  : copiedKeyId === selectedKey.id
-                    ? <Check size={14}/>
-                    : <Copy size={14}/>}
-              </button>
-            </div>
-            <small>可直接复制，或短暂查看 8 秒；离开当前密钥时立即隐藏。</small>
-          </div>
-          <div className="key-info-facts"><div><span>密钥来源</span><strong>{selectedKey.source === 'runtime' ? 'api/keys.json · 热加载' : '启动环境变量 · 重启生效'}</strong></div><div><span>创建日期</span><strong>{formatDate(selectedKey.created_at)}</strong></div><div><span>最近一次调用</span><strong>{formatDate(selectedKey.last_used_at)}</strong></div></div>
-        </div> : detailTab === 'usage' ? <div className="key-usage-panel">
-          <div className="key-usage-metrics"><div><span>累计调用</span><strong>{numberFormat.format(selectedKey.usage.calls)}</strong><small>全部日库真实请求</small></div><div><span>成功调用</span><strong>{numberFormat.format(selectedKey.usage.successes)}</strong><small>{selectedKey.usage.calls ? `${((selectedKey.usage.successes / selectedKey.usage.calls) * 100).toFixed(1)}% 成功率` : '尚无调用'}</small></div><div><span>失败及其他</span><strong>{numberFormat.format(Math.max(0, selectedKey.usage.calls - selectedKey.usage.successes))}</strong><small>失败、取消、未完成或在途</small></div><div><span>累计 Token</span><strong>{selectedKey.usage.total_tokens === null ? '—' : numberFormat.format(selectedKey.usage.total_tokens)}</strong><small>{selectedKey.usage.total_tokens === null ? '尚无可靠计量样本' : 'Provider 归一化计量'}</small></div></div>
-          <div className="key-usage-summary"><span>最近一次调用</span><strong>{formatDate(selectedKey.last_used_at)}</strong><p>当前接口提供累计真实用量；逐次调用明细和按模型拆分尚未由后端暴露。</p></div>
-        </div> : <div className="key-model-policy">
-          <header className="key-model-policy-head">
-            <div><span>模型调用白名单</span><strong>{selectedKey.allowed_models === null ? '全部模型允许' : allowedRegisteredCount ? `允许 ${allowedRegisteredCount} 个模型` : '全部模型禁止'}</strong><p>设置即时影响此密钥发起的后续请求；白名单使用网关对外完整模型名。</p></div>
-            <div className="key-model-policy-actions">
-              <button className={`btn ${selectedKey.allowed_models === null ? 'primary' : ''}`} disabled={policyBusy || !selectedKey.writable} onClick={() => void updateModelPolicy(null)}><ShieldCheck size={14}/>全部允许</button>
-              <button className={`btn ${selectedKey.allowed_models?.length === 0 ? 'danger' : ''}`} disabled={policyBusy || !selectedKey.writable} onClick={() => void updateModelPolicy([])}><ShieldOff size={14}/>全部禁止</button>
-            </div>
-          </header>
-          {!selectedKey.writable && <div className="key-model-policy-notice">环境变量密钥为启动配置，不能在网页端热修改。请将密钥迁移到 api/keys.json 后设置白名单。</div>}
-          {policyBusy && <div className="key-model-policy-saving"><LoaderCircle className="spin" size={14}/>正在保存并热加载…</div>}
-          <div className="key-model-list">{models.map(model => {
-            const allowed = selectedKey.allowed_models === null || selectedKey.allowed_models.includes(model.id)
-            return <div className={`key-model-row ${allowed ? 'allowed' : 'denied'}`} key={model.id}>
-              <div className="key-model-copy"><strong>{model.id}</strong><span>{model.provider_id} · 原始模型名 {model.provider_model}</span></div>
-              <div className="key-model-state"><Badge tone={model.enabled ? 'success' : 'muted'}>{model.enabled ? '全局可用' : '全局不可用'}</Badge><button className={`toggle ${allowed ? 'on' : ''}`} disabled={policyBusy || !selectedKey.writable} onClick={() => toggleModel(model.id)} aria-label={`${allowed ? '禁止' : '允许'} ${model.id}`}><i/></button><b>{allowed ? '允许' : '禁止'}</b></div>
-            </div>
-          })}</div>
-          {!models.length && <div className="key-model-policy-empty">当前没有已注册模型。</div>}
-        </div>}
-      </Card>
-    </div>}
-  </>
+function ModelScopePicker({ value, onChange }: { value: string[]; onChange: (value: string[]) => void }) {
+  const { data } = useConsole()
+  const [provider, setProvider] = useState('')
+  const [query, setQuery] = useState('')
+  const groups = data!.upstreams.map(upstream => ({
+    id: upstream.id as string, name: upstream.name as string,
+    models: [...new Set(data!.deployments.filter(d => d.upstream_id === upstream.id).map(d => d.public_model as string))],
+  })).filter(group => group.models.length)
+  const unassigned = [...new Set([...data!.models.map(m => m.id as string), ...value])].filter(id =>
+    !data!.deployments.some(d => d.public_model === id))
+  if (unassigned.length) groups.push({ id: '/unassigned', name: t('未关联提供商'), models: unassigned })
+  const active = groups.find(group => group.id === provider) || groups[0]
+  const models = active?.models.filter(id => id.toLowerCase().includes(query.toLowerCase())) || []
+  return <div className="key-model-picker">
+    <div className="key-model-providers" role="tablist" aria-label={t('提供商')}>{groups.map(group =>
+      <button key={group.id} type="button" role="tab" aria-selected={group.id === active?.id}
+        className={`key-model-provider${group.id === active?.id ? ' active' : ''}`} onClick={() => { setProvider(group.id); setQuery('') }}>
+        <span>{group.name}</span><span className="tag">{group.models.filter(id => value.includes(id)).length}/{group.models.length}</span>
+      </button>)}</div>
+    <div className="key-model-options" role="tabpanel">
+      <input className="input" placeholder={t('搜索模型')} aria-label={t('搜索允许模型')} value={query} onChange={event => setQuery(event.target.value)} />
+      {!!models.length && <button type="button" className="btn btn-sm" onClick={() => {
+        const all = models.every(id => value.includes(id))
+        onChange(all ? value.filter(id => !models.includes(id)) : [...new Set([...value, ...models])])
+      }}>{t('选择 / 取消当前列表')}</button>}
+      <div className="key-model-list">{models.map(id => <label className="check-label" key={id}>
+        <input type="checkbox" checked={value.includes(id)} onChange={event => onChange(event.target.checked ? [...value, id] : value.filter(item => item !== id))} />
+        <span className="mono">{id}</span></label>)}
+        {!models.length && <Empty text="没有匹配的模型" />}</div>
+    </div>
+  </div>
 }

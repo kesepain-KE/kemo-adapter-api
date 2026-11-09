@@ -145,11 +145,10 @@ def _status_token(request: Request, authorization: str | None) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="状态接口未启用",
         )
-    snapshot = request.app.state.live_config.current
     if (
         configured == request.app.state.settings.web_token.strip()
         or configured in request.app.state.settings.api_keys
-        or configured in snapshot.api_keys
+        or request.app.state.downstream_keys.authenticate(configured) is not None
     ):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -219,22 +218,26 @@ async def gateway_status(
     snapshot = request.app.state.live_config.current
     provider_items: list[dict[str, Any]] = []
     enabled_models: list[dict[str, str]] = []
-    for provider_id, package in sorted(request.app.state.registry.providers.items()):
-        provider_enabled = provider_id not in snapshot.disabled_providers
-        models = sorted(package.models)
+    groups = {}
+    registry = request.app.state.registry
+    for package in registry.providers.values():
+        groups.setdefault(package.provider_id, set()).update(package.models)
+    for provider_id, registered_models in sorted(groups.items()):
+        models = sorted(registered_models)
         provider_items.append(
             {
                 "provider_id": provider_id,
-                "enabled": provider_enabled,
+                "enabled": snapshot.gateway_api.get("enabled", True),
                 "registered_models": models,
             }
         )
-        if provider_enabled:
-            enabled_models.extend(
-                {"model": model, "provider_id": provider_id}
-                for model in models
-                if model not in snapshot.disabled_models
-            )
+        if snapshot.gateway_api.get("enabled", True):
+            for model in models:
+                try:
+                    registry.resolve(model)
+                except LookupError:
+                    continue
+                enabled_models.append({"model": model, "provider_id": provider_id})
 
     recent_items = [_safe_log_item(item) for item in recent_logs["items"]]
     successful_items = [_safe_log_item(item) for item in success_logs["items"]]
@@ -252,8 +255,8 @@ async def gateway_status(
         },
         "control": {
             "highest_priority_system_prompt": snapshot.gateway_system_prompt,
-            "disabled_providers": sorted(snapshot.disabled_providers),
-            "disabled_models": sorted(snapshot.disabled_models),
+            "enabled": snapshot.gateway_api.get("enabled", True),
+            "revision": snapshot.revision,
         },
         "statistics": {
             "date": target_day,

@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 智谱 GLM
+base_url: https://open.bigmodel.cn/api/paas/v4
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: glm
+catalog: []

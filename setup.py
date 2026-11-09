@@ -3,7 +3,7 @@
 流程：
   1. 环境依赖检查（Python / Git / Node.js），Node.js 缺失时自动安装 LTS
   2. 创建 Python 虚拟环境 .venv
-  3. 初始化 .env（从 .env.example 复制，不覆盖已有）
+  3. 初始化 gateway.yaml（从 gateway.yaml.example 复制，不覆盖已有）
   4. .venv pip install -r requirements.txt
   5. 构建 Web 前端（pnpm install + build）
   6. 输出启动指令
@@ -51,26 +51,26 @@ PNPM_VERSION = "11.9.0"
 
 # ── 源文件路径（不含构建产物）─────────────────────────────────────
 SOURCE_PATHS = (
-    "ADD_DIY",
-    "ADD_DIY/README.md",
-    "ADD_DIY/verification.md",
-    "ADD_DIY/provider-package.md",
-    "ADD_DIY/keys-and-secrets.md",
-    "ADD_DIY/architecture.md",
+    "agent/_doc",
+    "agent/_doc/README.md",
+    "agent/_doc/connection.md",
+    "agent/_doc/providers.md",
+    "agent/_doc/models.md",
+    "agent/_doc/keys.md",
+    "agent/_doc/operations.md",
+    "agent/_doc/management-api.md",
     "api",
     "api.md",
-    "api/runtime.json",
     "core",
-    "core/live_control.json",
-    "providers",
-    "template/provider/probe.py",
-    "template/provider/test_contract.py",
+    "gateway",
+    "templates/protocol_adapter/manifest.yaml",
+    "templates/provider_template/template.yaml",
     "tests",
     "web",
     "web/frontend/package.json",
-    ".env.example",
+    "gateway.yaml.example",
     "version.json",
-    "agent_control.md",
+    "README.md",
     "start_web.py",
     "requirements.txt",
 )
@@ -335,22 +335,22 @@ def setup_venv() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 步骤 3：初始化 .env
+# 步骤 3：初始化 gateway.yaml
 # ═══════════════════════════════════════════════════════════════════
 
 def init_env() -> None:
-    """从 .env.example 复制，永不覆盖已有 .env。"""
+    """从 gateway.yaml.example 复制，永不覆盖已有 gateway.yaml。"""
     print("\n[3/5] 环境变量配置", flush=True)
-    source = PROJECT_ROOT / ".env.example"
-    target = PROJECT_ROOT / ".env"
+    source = PROJECT_ROOT / "gateway.yaml.example"
+    target = PROJECT_ROOT / "gateway.yaml"
     if not source.is_file():
-        print("[SKIP] .env.example 不存在")
+        print("[SKIP] gateway.yaml.example 不存在")
         return
     if target.exists():
-        print("[SKIP] .env 已存在，未覆盖")
+        print("[SKIP] gateway.yaml 已存在，未覆盖")
         return
     shutil.copyfile(source, target)
-    print("[OK] 已从 .env.example 创建 .env；请按需修改后重启网关")
+    print("[OK] 已从 gateway.yaml.example 创建 gateway.yaml；请按需修改后重启网关")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -453,7 +453,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Kemo 网关一站式部署")
     parser.add_argument("--check", action="store_true", help="仅检查环境，不做任何修改")
     parser.add_argument("--build-frontend", action="store_true", help="仅执行环境检查 + 前端构建")
-    parser.add_argument("--init-env", action="store_true", help="仅创建 .env")
+    parser.add_argument("--init-env", action="store_true", help="仅创建 gateway.yaml")
     args = parser.parse_args()
 
     # --check 不能与任何部署操作并存

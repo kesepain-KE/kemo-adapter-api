@@ -11,12 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from tests.support.gateway import install_fixtures
 from core.config import PrincipalConfig, Settings
 from core.models import MediaUsage, ModelCapabilities, ToolCapabilities, Usage
 from core.provider_contract import (
     ProviderEvent,
     ProviderEventKind,
-    ProviderPackage,
     ProviderResult,
     RequestContext,
 )
@@ -30,7 +30,7 @@ PDF = b"%PDF-1.7\n% framework-file\n"
 MODEL = "contract-multimodal"
 
 
-class ContractMultimodalProvider(ProviderPackage):
+class ContractMultimodalProvider:
     provider_id = "contract"
 
     def __init__(self) -> None:
@@ -201,10 +201,9 @@ def _app(tmp_path: Path):
         live_config_root=root,
         statistics_root=root / "storage",
         asset_root=root / "storage" / "assets",
-        discover_providers=False,
-    )
+        )
     provider = ContractMultimodalProvider()
-    app.state.registry.register(provider)
+    install_fixtures(app.state.registry, provider)
     return app, provider
 
 
@@ -716,14 +715,14 @@ def test_stream_rejects_event_data_larger_than_one_mib(tmp_path: Path) -> None:
         assert events == ["response.created", "response.failed"]
 
 
-def test_model_response_json_larger_than_two_mib_is_rejected(tmp_path: Path) -> None:
+def test_model_response_json_larger_than_thirty_two_mib_is_rejected(tmp_path: Path) -> None:
     app, _ = _app(tmp_path)
     with TestClient(app) as client:
         request_id = "req_json-large"
         payload = _request(
             request_id=request_id,
             capability="conversation",
-            input_blocks=[{"type": "text", "text": "x" * (2 * 1024 * 1024)}],
+            input_blocks=[{"type": "text", "text": "x" * (32 * 1024 * 1024)}],
             output_modality="text",
         )
         response = client.post(
@@ -733,3 +732,4 @@ def test_model_response_json_larger_than_two_mib_is_rejected(tmp_path: Path) -> 
         )
         assert response.status_code == 413
         assert response.json()["error"]["code"] == "REQUEST_TOO_LARGE"
+        assert response.json()["error"]["details"]["limit_bytes"] == 32 * 1024 * 1024

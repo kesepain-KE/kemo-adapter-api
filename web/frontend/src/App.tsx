@@ -1,159 +1,83 @@
 import { useEffect, useState } from 'react'
-import { KeyRound, LoaderCircle, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react'
-import { AdminProvider, useAdminSession } from './AdminContext'
-import { adminApi, type WebAuthMethods } from './adminApi'
-import { Sidebar, Topbar } from './components/Layout'
+import { HashRouter, Route, Routes } from 'react-router-dom'
+import { Sidebar } from './components/Sidebar'
+import { TopBar } from './components/TopBar'
+import { ToastProvider } from './components/UI'
 import Dashboard from './pages/Dashboard'
-import Keys from './pages/Keys'
-import CallLogs from './pages/CallLogs'
-import Logs from './pages/Logs'
+import Upstreams from './pages/Upstreams'
 import Models from './pages/Models'
-import Providers from './pages/Providers'
+import Routing from './pages/Routing'
+import Keys from './pages/Keys'
+import Logs from './pages/Logs'
+import Adapters from './pages/Adapters'
+import Templates from './pages/Templates'
+import Diagnostics from './pages/Diagnostics'
 import Settings from './pages/Settings'
-import type { PageId } from './types'
+import Login from './pages/Login'
+import { ApiError, ConsoleProvider, useConsole } from './console'
+import { useLanguage, t } from './i18n'
 
-const PAGE_IDS: readonly PageId[] = ['dashboard', 'providers', 'models', 'keys', 'logs', 'call-logs', 'settings']
-
-function pageFromLocation(): PageId {
-  const segments = window.location.pathname.split('/').filter(Boolean)
-  const adminIndex = segments.lastIndexOf('admin')
-  const candidate = adminIndex >= 0 ? segments[adminIndex + 1] : undefined
-  return candidate && PAGE_IDS.includes(candidate as PageId) ? candidate as PageId : 'dashboard'
-}
-
-function pagePath(page: PageId): string {
-  return page === 'dashboard' ? '/admin' : `/admin/${page}`
-}
-
-function Login() {
-  const { booting, error, connect } = useAdminSession()
-  const [token, setToken] = useState('')
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [methods, setMethods] = useState<WebAuthMethods | null>(null)
-  const [phase, setPhase] = useState<'loading' | 'token' | 'password' | 'error'>('loading')
-  const [authBusy, setAuthBusy] = useState(false)
-  const [authError, setAuthError] = useState('')
-  const [authRetry, setAuthRetry] = useState(0)
-
-  const exchangeToken = async (candidate: string) => {
-    if (!candidate.trim()) {
-      setAuthError('Web Token 不能为空。')
-      setPhase('token')
-      return
-    }
-    setAuthBusy(true)
-    setAuthError('')
-    try {
-      const session = await adminApi.authenticateWebToken(candidate.trim())
-      if (session.next_step === 'password') {
-        setPhase('password')
-      } else {
-        await connect(session.csrf_token ?? '', true)
-      }
-    } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : 'Web Token 鉴权失败')
-      setPhase('token')
-    } finally {
-      setAuthBusy(false)
-    }
-  }
+function Shell() {
+  const { data, error, refresh } = useConsole()
+  useLanguage()
+  const [compact, setCompact] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   useEffect(() => {
-    let active = true
-    const initialize = async () => {
-      try {
-        const value = await adminApi.webAuthMethods()
-        if (!active) return
-        setMethods(value)
-        if (!value.configuration_valid) {
-          setAuthError('WEB_USERNAME 与 WEB_PASSWORD 必须同时配置。')
-          setPhase('error')
-          return
-        }
-        if (value.token_required) {
-          setPhase('token')
-        } else if (value.password_required) {
-          setPhase('password')
-        } else {
-          const connected = await connect('', true)
-          if (active && !connected) setPhase('error')
-        }
-      } catch (reason) {
-        if (!active) return
-        setAuthError(reason instanceof Error ? reason.message : '无法读取网页登录配置')
-        setPhase('error')
-      }
+    const onResize = () => {
+      if (window.innerWidth > 960) setMobileOpen(false)
     }
-    void initialize()
-    return () => { active = false }
-  }, [authRetry, connect])
-
-  const submitToken = (event: React.FormEvent) => {
-    event.preventDefault()
-    void exchangeToken(token)
-  }
-
-  const submitPassword = async (event: React.FormEvent) => {
-    event.preventDefault()
-    setAuthBusy(true)
-    setAuthError('')
-    try {
-      const session = await adminApi.authenticateWebPassword(username, password)
-      await connect(session.csrf_token ?? '', true)
-    } catch (reason) {
-      setAuthError(reason instanceof Error ? reason.message : '用户名或密码鉴权失败')
-    } finally {
-      setAuthBusy(false)
-    }
-  }
-  return <main className="login-screen"><section className="login-card">
-    <img className="brand-logo login-logo" src="/admin/logo.png" alt="Kemo Gateway Logo"/>
-    <h1>Kemo Gateway</h1>
-    <p>{phase === 'password' && methods?.token_required ? 'Token 验证通过，请继续验证用户名和密码。' : '完成管理身份验证后才能进入网关。'}</p>
-    {phase === 'loading' ? <div className="login-auth-loading"><LoaderCircle className="spin" size={20}/>正在读取鉴权方式…</div> : phase === 'error' ? <div className="login-auth-failure">
-      <div className="login-error">{authError || error || '无法连接管理 API。'}</div>
-      <button className="button" type="button" onClick={() => { setAuthError(''); setPhase('loading'); setAuthRetry(value => value + 1) }} disabled={booting || authBusy}><LoaderCircle size={16}/>重新连接</button>
-    </div> : phase === 'token' ? <form onSubmit={submitToken}>
-      <label htmlFor="admin-token">Web Token</label>
-      <div className="login-input"><KeyRound size={18}/><input id="admin-token" type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} placeholder="输入管理令牌" autoFocus/></div>
-      {(authError || error) && <div className="login-error">{authError || error}</div>}
-      <button className="button" disabled={booting || authBusy}>{booting || authBusy ? <><LoaderCircle className="spin" size={16}/>正在验证</> : <><ShieldCheck size={16}/>验证 Token</>}</button>
-    </form> : <form onSubmit={submitPassword}>
-      <label htmlFor="web-username">用户名</label>
-      <div className="login-input"><UserRound size={18}/><input id="web-username" autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} placeholder="输入用户名" autoFocus/></div>
-      <label htmlFor="web-password">密码</label>
-      <div className="login-input"><LockKeyhole size={18}/><input id="web-password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="输入密码"/></div>
-      {(authError || error) && <div className="login-error">{authError || error}</div>}
-      <button className="button" disabled={booting || authBusy}>{booting || authBusy ? <><LoaderCircle className="spin" size={16}/>正在验证</> : <><ShieldCheck size={16}/>登录控制台</>}</button>
-    </form>}
-  </section></main>
-}
-
-function Console() {
-  const { booting, data } = useAdminSession()
-  const [page, setPage] = useState<PageId>(pageFromLocation)
-
-  useEffect(() => {
-    const restorePage = () => setPage(pageFromLocation())
-    window.addEventListener('popstate', restorePage)
-    return () => window.removeEventListener('popstate', restorePage)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  const navigatePage = (nextPage: PageId) => {
-    setPage(nextPage)
-    const target = pagePath(nextPage)
-    if (window.location.pathname !== target) {
-      window.history.pushState({ page: nextPage }, '', target)
+  const toggleSidebar = () => {
+    if (window.innerWidth <= 960) {
+      setMobileOpen((value) => !value)
+      return
     }
+    setCompact((value) => !value)
   }
 
-  if (booting && !data) return <main className="login-screen"><LoaderCircle className="spin" size={28}/><p>正在恢复管理会话…</p></main>
-  if (!data) return <Login/>
-  const pages = { dashboard: <Dashboard/>, providers: <Providers onSettings={() => navigatePage('settings')}/>, models: <Models/>, keys: <Keys/>, logs: <Logs/>, 'call-logs': <CallLogs/>, settings: <Settings/> }
-  return <div className="app"><Sidebar page={page} onPage={navigatePage}/><Topbar page={page}>{pages[page]}</Topbar></div>
+  if (error instanceof ApiError && error.status === 401) return <Login />
+  if (!data) return <div className="empty"><p>{error?.message || t('正在加载')}</p><button className="btn" onClick={() => { void refresh().catch(() => {}) }}>{t('重试')}</button></div>
+  return (
+    <div className={`app${compact ? ' compact' : ''}`}>
+      <Sidebar
+        compact={compact}
+        onToggle={toggleSidebar}
+        mobileOpen={mobileOpen}
+        onNavigate={() => setMobileOpen(false)}
+      />
+      <div className="main">
+        <TopBar onToggleSidebar={toggleSidebar} />
+        <main className="canvas">
+          {error && <div className="hint-bar error-bar" role="alert">{error.message}</div>}
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/upstreams" element={<Upstreams />} />
+            <Route path="/models" element={<Models />} />
+            <Route path="/routing" element={<Routing />} />
+            <Route path="/keys" element={<Keys />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/adapters" element={<Adapters />} />
+            <Route path="/templates" element={<Templates />} />
+            <Route path="/diagnostics" element={<Diagnostics />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Dashboard />} />
+          </Routes>
+        </main>
+      </div>
+    </div>
+  )
 }
 
 export default function App() {
-  return <AdminProvider><Console/></AdminProvider>
+  return (
+    <HashRouter>
+      <ToastProvider>
+        <ConsoleProvider><Shell /></ConsoleProvider>
+      </ToastProvider>
+    </HashRouter>
+  )
 }

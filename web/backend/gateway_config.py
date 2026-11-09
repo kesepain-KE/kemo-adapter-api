@@ -1,13 +1,11 @@
 """Read-only, allow-listed view of the settings loaded by this process.
 
-Never serialize Settings, os.environ, .env, or private Provider dictionaries.
+Never serialize Settings, os.environ, gateway.yaml, or upstream credentials.
 Only explicitly identified credentials receive five/three edge previews.
 Arbitrary private dictionaries, headers and short values remain hidden.
 """
 
 from core.config import Settings
-from core.live_config import LiveConfigSnapshot
-from core.provider_keys import normalize_provider_keys
 from core.secret_preview import mask_secret
 
 
@@ -28,10 +26,13 @@ GROUPS = (
         ("MODEL_EXECUTION_TIMEOUT_SECONDS", "model_execution_timeout_seconds", "执行超时（秒）"),
         ("SSE_HEARTBEAT_SECONDS", "sse_heartbeat_seconds", "SSE 心跳间隔（秒）"),
         ("LOG_RETENTION_DAYS", "log_retention_days", "日志保留（天）"),
+        ("LOG_DETAIL_MAX_BYTES", "log_detail_max_bytes", "单条日志正文上限（字节）"),
+        ("LOG_DETAIL_MODE", "log_detail_mode", "日志详情记录模式"),
         ("MAX_SSE_EVENTS_PER_RESPONSE", "max_sse_events_per_response", "单次响应事件上限"),
     )),
     ("请求与媒体资源", (
         ("REQUEST_JSON_MAX_BYTES", "request_json_max_bytes", "请求 JSON 上限（字节）"),
+        ("UPSTREAM_JSON_MAX_BYTES", "upstream_json_max_bytes", "上游 JSON 上限（字节）"),
         ("DEFAULT_ASSET_TTL_HOURS", "asset_retention_hours", "媒体资源保留（小时）"),
         ("ASSET_IMAGE_MAX_BYTES", "asset_image_max_bytes", "图片上限（字节）"),
         ("ASSET_AUDIO_MAX_BYTES", "asset_audio_max_bytes", "音频上限（字节）"),
@@ -45,14 +46,11 @@ SECRET_FIELDS = (
     ("WEB_PASSWORD", "管理密码"),
     ("WEB_TOKEN", "Web Token"),
     ("STATUS_TOKEN", "状态接口 Token"),
-    ("GATEWAY_API_KEY", "网关调用密钥（含批量与文件配置）"),
-    ("PROVIDER_SETTINGS", "Provider 私有配置与密钥"),
+    ("GATEWAY_API_KEY", "启动引导调用密钥"),
 )
 
 
-def gateway_config_view(
-    settings: Settings, snapshot: LiveConfigSnapshot | None = None,
-) -> dict[str, object]:
+def gateway_config_view(settings: Settings) -> dict[str, object]:
     groups = []
     for title, fields in GROUPS:
         items = []
@@ -73,27 +71,12 @@ def gateway_config_view(
             items.append({"name": name, "label": label, "value": value, "sensitive": False})
         groups.append({"title": title, "items": items})
     keys = dict(settings.api_keys)
-    provider_settings = dict(settings.provider_settings)
-    if snapshot is not None:
-        keys.update(snapshot.api_keys)
-        for provider_id, config in snapshot.provider_settings.items():
-            provider_settings[provider_id] = {**provider_settings.get(provider_id, {}), **config}
-    provider_masks = []
-    for config in provider_settings.values():
-        if not isinstance(config, dict):
-            continue
-        try:
-            provider_masks.extend(mask_secret(secret) for _, secret, _ in normalize_provider_keys(config))
-        except (ValueError, TypeError):
-            # Malformed private configuration is not a previewable string.
-            provider_masks.append("***")
     masks = {
         "WEB_USERNAME": mask_secret(settings.web_username),
         "WEB_PASSWORD": mask_secret(settings.web_password),
         "WEB_TOKEN": mask_secret(settings.web_token),
         "STATUS_TOKEN": mask_secret(settings.status_token),
         "GATEWAY_API_KEY": "\n".join(mask_secret(token) for token in keys) or "***",
-        "PROVIDER_SETTINGS": "\n".join(provider_masks) or "***",
     }
     groups.append({"title": "敏感配置", "items": [
         {"name": name, "label": label, "value": masks[name], "sensitive": True}

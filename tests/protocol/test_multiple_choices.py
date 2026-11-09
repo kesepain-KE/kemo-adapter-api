@@ -5,12 +5,12 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from tests.support.gateway import install_fixtures
 from core.config import PrincipalConfig, Settings
 from core.models import LimitsCapabilities, ModelCapabilities, Usage, UsageMeasurement
 from core.provider_contract import (
     ProviderBatchResult,
     ProviderChoiceResult,
-    ProviderPackage,
     ProviderResult,
     RequestContext,
 )
@@ -20,7 +20,7 @@ from tests.support.project import project
 MODEL = "batch-model"
 
 
-class BatchProvider(ProviderPackage):
+class BatchProvider:
     provider_id = "batch"
 
     def __init__(self, *, missing_choice: bool = False) -> None:
@@ -99,9 +99,8 @@ def _app(tmp_path: Path, provider: BatchProvider):
         ),
         live_config_root=root,
         statistics_root=root / "storage",
-        discover_providers=False,
-    )
-    app.state.registry.register(provider)
+        )
+    install_fixtures(app.state.registry, provider)
     return app
 
 

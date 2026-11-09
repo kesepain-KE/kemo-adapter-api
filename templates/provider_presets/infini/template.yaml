@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 无问芯穹
+base_url: https://cloud.infini-ai.com/maas/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

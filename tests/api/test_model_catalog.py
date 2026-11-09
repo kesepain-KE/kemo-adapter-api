@@ -5,15 +5,15 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from tests.support.gateway import install_fixtures
 from core.config import PrincipalConfig, Settings
 from core.models import ModelCapabilities
-from core.provider_contract import ProviderPackage
-from tests.support.project import project, write_json
+from tests.support.project import project
 from tests.support.llm import FakeProvider, request
 from tests.support.retrieval import FakeRetrievalProvider
 
 
-class BrokenCapabilitiesProvider(ProviderPackage):
+class BrokenCapabilitiesProvider:
     provider_id = "broken"
 
     @property
@@ -26,9 +26,7 @@ class BrokenCapabilitiesProvider(ProviderPackage):
 
 
 def catalog_project(tmp_path: Path) -> Path:
-    root = project(tmp_path)
-    write_json(root / "api" / "keys.json", {"keys": {}})
-    return root
+    return project(tmp_path)
 
 
 def catalog_app(tmp_path: Path):
@@ -60,11 +58,8 @@ def catalog_app(tmp_path: Path):
     app = create_app(
         settings,
         live_config_root=catalog_project(tmp_path),
-        discover_providers=False,
-    )
-    app.state.registry.register(FakeProvider())
-    app.state.registry.register(FakeRetrievalProvider())
-    app.state.registry.register(BrokenCapabilitiesProvider())
+        )
+    install_fixtures(app.state.registry, FakeProvider(), FakeRetrievalProvider())
     return app
 
 
@@ -98,18 +93,16 @@ def test_catalog_requires_auth_and_filters_by_key_scope_and_whitelist(
     assert all_models.status_code == 200
     payload = all_models.json()
     assert payload["object"] == "kemo.model_list"
-    assert payload["count"] == 4
+    assert payload["count"] == 3
     assert [item["id"] for item in payload["data"]] == [
-        "broken-model",
         "fake-model",
         "retrieval-embed-v1",
         "retrieval-rerank-v1",
     ]
-    assert payload["data"][0]["capabilities_available"] is False
-    assert payload["data"][0]["task"] == "unknown"
-    fake = payload["data"][1]
-    assert fake["provider_id"] == "fake"
-    assert fake["provider_model"] == "model"
+    assert all(item["capabilities_available"] for item in payload["data"])
+    fake = payload["data"][0]
+    assert fake["provider_id"] == "gateway"
+    assert fake["provider_model"] == "fake-model"
     assert fake["capabilities_url"] == "/model/models/fake-model/capabilities"
     assert all_models.headers["cache-control"] == "no-store"
     assert all_models.headers["vary"] == "Authorization"
@@ -143,10 +136,6 @@ def test_compatible_list_and_both_capability_routes_share_policy(tmp_path: Path)
             "/model/models/fake-model/capabilities",
             headers=auth("embedding-token"),
         )
-        broken = client.get(
-            "/model/models/broken-model/capabilities",
-            headers=auth("all-token"),
-        )
         unknown = client.get(
             "/model/capabilities",
             headers=auth("all-token"),
@@ -156,7 +145,7 @@ def test_compatible_list_and_both_capability_routes_share_policy(tmp_path: Path)
     assert compatible.json() == {
         "object": "list",
         "data": [
-            {"id": "fake-model", "object": "model", "created": 0, "owned_by": "fake"}
+            {"id": "fake-model", "object": "model", "created": 0, "owned_by": "gateway"}
         ],
     }
     assert compatible.headers["cache-control"] == "no-store"
@@ -168,24 +157,12 @@ def test_compatible_list_and_both_capability_routes_share_policy(tmp_path: Path)
     assert blocked_by_scope.status_code == 403
     assert blocked_by_scope.json()["error"]["code"] == "PERMISSION_DENIED"
     assert blocked_by_scope.json()["error"]["details"]["kind"] == "model_task_not_allowed"
-    assert broken.status_code == 502
-    assert broken.json()["error"]["code"] == "PROVIDER_BAD_RESPONSE"
-    assert broken.json()["error"]["details"]["kind"] == "capabilities_unavailable"
-    assert "secret provider failure" not in broken.text
     assert unknown.status_code == 404
     assert unknown.json()["error"]["code"] == "MODEL_NOT_FOUND"
 
 
 def test_catalog_excludes_globally_disabled_models(tmp_path: Path) -> None:
     root = catalog_project(tmp_path)
-    write_json(
-        root / "core" / "live_control.json",
-        {
-            "highest_priority_system_prompt": "",
-            "disabled_providers": [],
-            "disabled_models": ["retrieval-rerank-v1"],
-        },
-    )
     app = create_app(
         Settings(
             api_keys={
@@ -195,9 +172,8 @@ def test_catalog_excludes_globally_disabled_models(tmp_path: Path) -> None:
             }
         ),
         live_config_root=root,
-        discover_providers=False,
-    )
-    app.state.registry.register(FakeRetrievalProvider())
+        )
+    install_fixtures(app.state.registry, FakeRetrievalProvider(), disabled=("retrieval-rerank-v1",))
 
     with TestClient(app) as client:
         response = client.get("/model/models", headers=auth("all-token"))

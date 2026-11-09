@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: BytePlus ModelArk
+base_url: https://ark.ap-southeast.bytepluses.com/api/v3
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: doubao
+catalog: []

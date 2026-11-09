@@ -1,0 +1,8 @@
+adapter_id: cohere-rerank
+name: Cohere Rerank
+base_url: https://api.cohere.com/v2
+auth_scheme: bearer
+headers: {}
+profile: {}
+tokenizer: auto
+catalog: []

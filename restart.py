@@ -19,7 +19,7 @@ from typing import Iterator
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from dotenv import dotenv_values, load_dotenv
+from core.yaml_config import startup_values, load_startup_environment
 
 from core.restart_control import (
     RestartAlreadyRunning,
@@ -53,17 +53,17 @@ def _timeout(name: str, default: float) -> float:
 
 @contextmanager
 def _prospective_environment(project_root: Path) -> Iterator[None]:
-    """临时模拟新进程环境，用于在停止旧实例前验证更新后的 .env。"""
+    """临时模拟新进程环境，用于在停止旧实例前验证更新后的 gateway.yaml。"""
     paths = RestartPaths(project_root)
     metadata = read_json(paths.pid) or {}
     override_names = set(metadata.get("environment_override_names", []))
     if not metadata:
         # 独立执行 ``restart.py --preflight`` 时没有 PID 元数据，应采用和
-        # start_web.py 相同的“进程环境优先、.env 只补缺失值”语义。
+        # start_web.py 相同的“进程环境优先、gateway.yaml 只补缺失值”语义。
         override_names = set(os.environ)
-    managed_names = set(metadata.get("dotenv_names", []))
-    managed_names.update(dotenv_values(project_root / ".env"))
-    values = dotenv_values(project_root / ".env")
+    managed_names = set(metadata.get("startup_names", []))
+    managed_names.update(startup_values(project_root / "gateway.yaml"))
+    values = startup_values(project_root / "gateway.yaml")
     previous: dict[str, str | None] = {}
     try:
         for name in managed_names:
@@ -211,8 +211,8 @@ def _child_environment(project_root: Path, metadata: dict) -> dict[str, str]:
     if not metadata:
         return environment
     overrides = set(metadata.get("environment_override_names", []))
-    managed_names = set(metadata.get("dotenv_names", []))
-    managed_names.update(dotenv_values(project_root / ".env"))
+    managed_names = set(metadata.get("startup_names", []))
+    managed_names.update(startup_values(project_root / "gateway.yaml"))
     for name in managed_names:
         if name not in overrides:
             environment.pop(name, None)
@@ -322,9 +322,9 @@ def _restore_old_environment(
     timeout: float,
 ) -> str | None:
     rollback_environment = dict(environment)
-    # The replacement inherited the old process environment after its .env
-    # had been loaded. Do not mix newly edited .env-only names into rollback.
-    rollback_environment["_KEMO_RESTART_SKIP_DOTENV"] = "1"
+    # The replacement inherited the old process environment after its gateway.yaml
+    # had been loaded. Do not mix newly edited gateway.yaml-only names into rollback.
+    rollback_environment["_KEMO_RESTART_SKIP_CONFIG"] = "1"
     try:
         child = _spawn_gateway(rollback_environment)
     except (OSError, ValueError):
@@ -558,7 +558,7 @@ def _print_status(paths: RestartPaths) -> int:
 
 
 def _submit_and_wait(args: argparse.Namespace) -> int:
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    load_startup_environment(PROJECT_ROOT / "gateway.yaml", override=False)
     paths = RestartPaths(PROJECT_ROOT)
     if not preflight(PROJECT_ROOT):
         print("[ERROR] 重启前检查失败，旧网关未受影响。", file=sys.stderr)

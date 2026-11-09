@@ -53,11 +53,12 @@ class InvocationHandle:
 
 
 class StatisticsStore:
-    """Serialized async facade over per-day SQLite databases.
+    """Bounded, batched writes and serialized reads over per-day databases.
 
     All write methods are best-effort. A storage outage must never change a
     model response, so failures are reflected by ``health()`` instead of being
-    raised into the execution path.
+    raised into the execution path. Reads and close flush pending updates;
+    an abrupt process exit can lose the last uncommitted statistics batch.
     """
 
     def __init__(
@@ -68,6 +69,8 @@ class StatisticsStore:
         read_cache_ttl_seconds: float = 30.0,
         read_cache_max_entries: int = 128,
         read_cache_max_bytes: int = 8 * 1024 * 1024,
+        write_flush_interval_seconds: float = 0.25,
+        write_batch_size: int = 128,
     ) -> None:
         self.root = root.resolve()
         self.daily_root = self.root / "daily"
@@ -83,6 +86,11 @@ class StatisticsStore:
         self._initialized_paths: set[Path] = set()
         self._cleanup_stop: asyncio.Event | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
+        self.write_flush_interval_seconds = max(0.001, write_flush_interval_seconds)
+        self.write_batch_size = max(1, write_batch_size)
+        self._pending: list[tuple[Path, Any, tuple]] = []
+        self._flush_task: asyncio.Task[None] | None = None
+        self._closed = False
         self._read_cache = ReadCache(
             ttl_seconds=read_cache_ttl_seconds,
             max_entries=read_cache_max_entries,
@@ -122,6 +130,7 @@ class StatisticsStore:
 
     async def _read(self, name: str, function, *args):
         async with self._lock:
+            await self._flush_pending_locked()
             key = (name, *args)
             cached = self._read_cache.get(key)
             if cached is not None:
@@ -129,6 +138,59 @@ class StatisticsStore:
             value = await self._worker(function, *args)
             self._read_cache.put(key, value)
             return value
+
+    async def _enqueue(self, path: Path, function, *args) -> None:
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("Statistics store is closed")
+            self._read_cache.clear()
+            self._pending.append((path, function, args))
+            if len(self._pending) >= self.write_batch_size:
+                await self._flush_pending_locked()
+            elif self._flush_task is None:
+                self._flush_task = asyncio.create_task(
+                    self._flush_after_delay(), name="statistics-write-flush",
+                )
+
+    async def _flush_after_delay(self) -> None:
+        try:
+            await asyncio.sleep(self.write_flush_interval_seconds)
+            async with self._lock:
+                if self._flush_task is asyncio.current_task():
+                    self._flush_task = None
+                    await self._flush_pending_locked()
+        except asyncio.CancelledError:
+            pass
+
+    async def _flush_pending_locked(self) -> None:
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            self._flush_task = None
+        if not self._pending:
+            return
+        pending, self._pending = self._pending, []
+        await self._write(self._flush_sync, pending)
+
+    async def flush(self) -> None:
+        async with self._lock:
+            await self._flush_pending_locked()
+
+    def _flush_sync(self, pending) -> None:
+        by_database: dict[Path, list] = {}
+        for path, function, args in pending:
+            by_database.setdefault(path, []).append((function, args))
+        failed = False
+        for path, operations in by_database.items():
+            try:
+                self._ensure_database(path)
+                with closing(self._connect(path)) as connection, connection:
+                    for function, args in operations:
+                        function(connection, *args)
+            except Exception as exc:
+                self._mark_failure(exc, dropped_events=len(operations))
+                failed = True
+        if not failed:
+            self._mark_success()
 
     async def initialize(self) -> None:
         """Create today's database and validate the configured timezone."""
@@ -155,11 +217,15 @@ class StatisticsStore:
         if task is not None:
             await task
         self._cleanup_stop = None
+        async with self._lock:
+            self._closed = True
+            await self._flush_pending_locked()
 
     async def cleanup_expired(self, *, today: date | None = None) -> int:
         current_day = today or datetime.now(self.timezone).date()
         oldest_kept_day = current_day - timedelta(days=self.retention_days - 1)
         async with self._lock:
+            await self._flush_pending_locked()
             removed_paths = await self._write(
                 self._cleanup_expired_sync,
                 oldest_kept_day.isoformat(),
@@ -200,6 +266,7 @@ class StatisticsStore:
             "dropped_events": self._dropped_events,
             "last_error": self._last_error,
             "timezone": self.timezone_name,
+            "pending_events": len(self._pending),
         }
 
     async def begin_invocation(
@@ -226,16 +293,10 @@ class StatisticsStore:
             gateway_key_id=gateway_key_id,
         )
         try:
-            async with self._lock:
-                await self._write(
-                    self._begin_sync,
-                    handle,
-                    now_utc.isoformat(),
-                    tenant_id,
-                    request_id,
-                    response_id,
-                )
-            self._mark_success()
+            await self._enqueue(
+                handle.database, self._begin_sync, handle, now_utc.isoformat(),
+                tenant_id, request_id, response_id,
+            )
             return handle
         except Exception as exc:  # statistics must remain out of the response path
             self._mark_failure(exc)
@@ -262,21 +323,13 @@ class StatisticsStore:
             else None
         )
         try:
-            async with self._lock:
-                await self._write(
-                    self._finish_sync,
-                    handle,
-                    datetime.now(timezone.utc).isoformat(),
-                    status,
-                    usage,
-                    error_code,
-                    error_type,
-                    error_message,
-                    provider_response_id,
-                    duration_ms,
-                    response_latency_ms,
-                )
-            self._mark_success()
+            await self._enqueue(
+                handle.database, self._finish_sync, handle,
+                datetime.now(timezone.utc).isoformat(), status, self._usage_values(usage),
+                error_code, str(error_type or "")[:160] or None,
+                str(error_message or "")[:2000] or None, provider_response_id,
+                duration_ms, response_latency_ms,
+            )
         except Exception as exc:
             self._mark_failure(exc)
 
@@ -290,17 +343,10 @@ class StatisticsStore:
     ) -> None:
         day = datetime.now(self.timezone).date().isoformat()
         try:
-            async with self._lock:
-                await self._write(
-                    self._record_replay_sync,
-                    self._path_for_day(day),
-                    day,
-                    task,
-                    provider_id,
-                    model,
-                    gateway_key_id,
-                )
-            self._mark_success()
+            await self._enqueue(
+                self._path_for_day(day), self._record_replay_sync,
+                day, task, provider_id, model, gateway_key_id,
+            )
         except Exception as exc:
             self._mark_failure(exc)
 
@@ -536,48 +582,48 @@ class StatisticsStore:
 
     def _begin_sync(
         self,
+        connection: sqlite3.Connection,
         handle: InvocationHandle,
         started_at: str,
         tenant_id: str,
         request_id: str,
         response_id: str | None,
     ) -> None:
-        self._ensure_database(handle.database)
-        with closing(self._connect(handle.database)) as connection, connection:
+        connection.execute(
+            """INSERT INTO invocations(
+                invocation_id, day, task, provider_id, model, tenant_id,
+                gateway_key_id, request_id, response_id, started_at, status
+            ) VALUES(?,?,?,?,?,?,?,?,?,?, 'running')""",
+            (
+                handle.invocation_id,
+                handle.day,
+                handle.task,
+                handle.provider_id,
+                handle.model,
+                tenant_id,
+                handle.gateway_key_id,
+                request_id,
+                response_id,
+                started_at,
+            ),
+        )
+        for dimension, key in self._dimensions(
+            handle.provider_id, handle.model, handle.gateway_key_id
+        ):
+            self._ensure_rollup(connection, handle.day, handle.task, dimension, key)
             connection.execute(
-                """INSERT INTO invocations(
-                    invocation_id, day, task, provider_id, model, tenant_id,
-                    gateway_key_id, request_id, response_id, started_at, status
-                ) VALUES(?,?,?,?,?,?,?,?,?,?, 'running')""",
-                (
-                    handle.invocation_id,
-                    handle.day,
-                    handle.task,
-                    handle.provider_id,
-                    handle.model,
-                    tenant_id,
-                    handle.gateway_key_id,
-                    request_id,
-                    response_id,
-                    started_at,
-                ),
+                """UPDATE daily_rollups SET calls=calls+1, running=running+1
+                   WHERE day=? AND task=? AND dimension=? AND dimension_key=?""",
+                (handle.day, handle.task, dimension, key),
             )
-            for dimension, key in self._dimensions(
-                handle.provider_id, handle.model, handle.gateway_key_id
-            ):
-                self._ensure_rollup(connection, handle.day, handle.task, dimension, key)
-                connection.execute(
-                    """UPDATE daily_rollups SET calls=calls+1, running=running+1
-                       WHERE day=? AND task=? AND dimension=? AND dimension_key=?""",
-                    (handle.day, handle.task, dimension, key),
-                )
 
     def _finish_sync(
         self,
+        connection: sqlite3.Connection,
         handle: InvocationHandle,
         finished_at: str,
         status: str,
-        usage: Usage | None,
+        normalized: dict[str, Any],
         error_code: str | None,
         error_type: str | None,
         error_message: str | None,
@@ -585,83 +631,81 @@ class StatisticsStore:
         duration_ms: float,
         response_latency_ms: float | None,
     ) -> None:
-        normalized = self._usage_values(usage)
-        with closing(self._connect(handle.database)) as connection, connection:
-            row = connection.execute(
-                "SELECT status FROM invocations WHERE invocation_id=?", (handle.invocation_id,)
-            ).fetchone()
-            if row is None or row["status"] != "running":
-                return
-            connection.execute(
-                """UPDATE invocations SET finished_at=?, status=?, error_code=?,
-                    error_type=?, error_message=?,
-                    provider_response_id=?, latency_ms=?, response_latency_ms=?, input_tokens=?,
-                    cached_input_tokens=?, output_tokens=?, reasoning_tokens=?,
-                    visible_output_tokens=?, total_tokens=?, usage_mode=?, usage_exact=?,
-                    usage_exact_fields=?, usage_estimated_fields=?
-                   WHERE invocation_id=?""",
-                (
-                    finished_at,
-                    status,
-                    error_code,
-                    str(error_type or "")[:160] or None,
-                    str(error_message or "")[:2000] or None,
-                    provider_response_id,
-                    duration_ms,
-                    response_latency_ms,
-                    *(normalized[field] for field in TOKEN_FIELDS),
-                    normalized["usage_mode"],
-                    normalized["usage_exact"],
-                    normalized["usage_exact_fields"],
-                    normalized["usage_estimated_fields"],
-                    handle.invocation_id,
-                ),
-            )
-            buckets = {
-                "completed": "successes",
-                "requires_action": "successes",
-                "failed": "failures",
-                "cancelled": "cancellations",
-                "incomplete": "failures",
-            }
-            bucket = buckets.get(status, "failures")
-            for dimension, key in self._dimensions(
-                handle.provider_id, handle.model, handle.gateway_key_id
-            ):
-                assignments = ["running=MAX(0,running-1)", f"{bucket}={bucket}+1"]
-                if status == "incomplete":
-                    assignments.append("incompletes=incompletes+1")
-                params: list[object] = []
-                assignments.extend(["latency_sum_ms=latency_sum_ms+?", "latency_samples=latency_samples+1"])
-                params.append(duration_ms)
-                if response_latency_ms is not None:
-                    assignments.extend([
-                        "response_latency_sum_ms=response_latency_sum_ms+?",
-                        "response_latency_samples=response_latency_samples+1",
-                    ])
-                    params.append(response_latency_ms)
-                for field in TOKEN_FIELDS:
-                    value = normalized[field]
-                    if value is not None:
-                        assignments.extend(
-                            [f"{field}_sum={field}_sum+?", f"{field}_samples={field}_samples+1"]
-                        )
-                        params.append(value)
-                if normalized["cache_eligible"]:
+        row = connection.execute(
+            "SELECT status FROM invocations WHERE invocation_id=?", (handle.invocation_id,)
+        ).fetchone()
+        if row is None or row["status"] != "running":
+            return
+        connection.execute(
+            """UPDATE invocations SET finished_at=?, status=?, error_code=?,
+                error_type=?, error_message=?,
+                provider_response_id=?, latency_ms=?, response_latency_ms=?, input_tokens=?,
+                cached_input_tokens=?, output_tokens=?, reasoning_tokens=?,
+                visible_output_tokens=?, total_tokens=?, usage_mode=?, usage_exact=?,
+                usage_exact_fields=?, usage_estimated_fields=?
+               WHERE invocation_id=?""",
+            (
+                finished_at,
+                status,
+                error_code,
+                error_type,
+                error_message,
+                provider_response_id,
+                duration_ms,
+                response_latency_ms,
+                *(normalized[field] for field in TOKEN_FIELDS),
+                normalized["usage_mode"],
+                normalized["usage_exact"],
+                normalized["usage_exact_fields"],
+                normalized["usage_estimated_fields"],
+                handle.invocation_id,
+            ),
+        )
+        buckets = {
+            "completed": "successes",
+            "requires_action": "successes",
+            "failed": "failures",
+            "cancelled": "cancellations",
+            "incomplete": "failures",
+        }
+        bucket = buckets.get(status, "failures")
+        for dimension, key in self._dimensions(
+            handle.provider_id, handle.model, handle.gateway_key_id
+        ):
+            assignments = ["running=MAX(0,running-1)", f"{bucket}={bucket}+1"]
+            if status == "incomplete":
+                assignments.append("incompletes=incompletes+1")
+            params: list[object] = []
+            assignments.extend(["latency_sum_ms=latency_sum_ms+?", "latency_samples=latency_samples+1"])
+            params.append(duration_ms)
+            if response_latency_ms is not None:
+                assignments.extend([
+                    "response_latency_sum_ms=response_latency_sum_ms+?",
+                    "response_latency_samples=response_latency_samples+1",
+                ])
+                params.append(response_latency_ms)
+            for field in TOKEN_FIELDS:
+                value = normalized[field]
+                if value is not None:
                     assignments.extend(
-                        [
-                            "cache_eligible_input_tokens_sum=cache_eligible_input_tokens_sum+?",
-                            "cache_eligible_cached_tokens_sum=cache_eligible_cached_tokens_sum+?",
-                            "cache_eligible_samples=cache_eligible_samples+1",
-                        ]
+                        [f"{field}_sum={field}_sum+?", f"{field}_samples={field}_samples+1"]
                     )
-                    params.extend([normalized["input_tokens"], normalized["cached_input_tokens"]])
-                params.extend([handle.day, handle.task, dimension, key])
-                connection.execute(
-                    f"UPDATE daily_rollups SET {', '.join(assignments)} "
-                    "WHERE day=? AND task=? AND dimension=? AND dimension_key=?",
-                    params,
+                    params.append(value)
+            if normalized["cache_eligible"]:
+                assignments.extend(
+                    [
+                        "cache_eligible_input_tokens_sum=cache_eligible_input_tokens_sum+?",
+                        "cache_eligible_cached_tokens_sum=cache_eligible_cached_tokens_sum+?",
+                        "cache_eligible_samples=cache_eligible_samples+1",
+                    ]
                 )
+                params.extend([normalized["input_tokens"], normalized["cached_input_tokens"]])
+            params.extend([handle.day, handle.task, dimension, key])
+            connection.execute(
+                f"UPDATE daily_rollups SET {', '.join(assignments)} "
+                "WHERE day=? AND task=? AND dimension=? AND dimension_key=?",
+                params,
+            )
 
     @staticmethod
     def _usage_values(usage: Usage | None) -> dict[str, Any]:
@@ -699,22 +743,20 @@ class StatisticsStore:
 
     def _record_replay_sync(
         self,
-        path: Path,
+        connection: sqlite3.Connection,
         day: str,
         task: str,
         provider_id: str,
         model: str,
         gateway_key_id: str | None,
     ) -> None:
-        self._ensure_database(path)
-        with closing(self._connect(path)) as connection, connection:
-            for dimension, key in self._dimensions(provider_id, model, gateway_key_id):
-                self._ensure_rollup(connection, day, task, dimension, key)
-                connection.execute(
-                    """UPDATE daily_rollups SET replay_count=replay_count+1
-                       WHERE day=? AND task=? AND dimension=? AND dimension_key=?""",
-                    (day, task, dimension, key),
-                )
+        for dimension, key in self._dimensions(provider_id, model, gateway_key_id):
+            self._ensure_rollup(connection, day, task, dimension, key)
+            connection.execute(
+                """UPDATE daily_rollups SET replay_count=replay_count+1
+                   WHERE day=? AND task=? AND dimension=? AND dimension_key=?""",
+                (day, task, dimension, key),
+            )
 
     @staticmethod
     def _empty_metrics() -> dict[str, object]:
@@ -1175,7 +1217,7 @@ class StatisticsStore:
         self._healthy = True
         self._last_error = None
 
-    def _mark_failure(self, exc: Exception) -> None:
+    def _mark_failure(self, exc: Exception, *, dropped_events: int = 1) -> None:
         self._healthy = False
-        self._dropped_events += 1
+        self._dropped_events += dropped_events
         self._last_error = type(exc).__name__

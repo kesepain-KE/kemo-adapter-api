@@ -1,0 +1,5 @@
+id: gemini
+name: Google Gemini (AI Studio)
+version: 1.0.0
+contract_version: '1.0'
+description: Google Gemini (AI Studio) 连接预制，使用 gemini；尚未进行真实厂商调用验证。

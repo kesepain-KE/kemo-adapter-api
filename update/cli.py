@@ -263,7 +263,7 @@ def list_backups(project_root: Path) -> int:
 
 def restore_backup(project_root: Path, backup_id: str, *, yes: bool = False) -> int:
     print(f"[KEMO] 准备从 .backup/{backup_id}/ 恢复源码文件。")
-    print("[警告] .env、Provider 密钥、统计数据库、运行时数据和开发目录不会覆盖。")
+    print("[警告] gateway.yaml、Provider 密钥、统计数据库、运行时数据和开发目录不会覆盖。")
     if not yes and not ui.confirm("确定要恢复吗？", default=False):
         print("[KEMO] 已取消恢复。")
         return 0

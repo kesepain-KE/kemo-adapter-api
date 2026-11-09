@@ -1,0 +1,15 @@
+adapter_id: openai-chat
+name: Command Code Provider
+base_url: https://api.commandcode.ai/provider/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+  reasoning_effort_map:
+    low: low
+    medium: medium
+    high: high
+    xhigh: xhigh
+    max: max
+tokenizer: auto
+catalog: []

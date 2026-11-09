@@ -4,11 +4,11 @@ from fastapi import Request
 
 from core.assets import AssetStore
 from core.executor import GatewayExecutor
-from core.registry import ProviderRegistry
+from gateway.runtime import RuntimeRegistry
 from core.retrieval_executor import RetrievalExecutor
 
 
-def get_registry(request: Request) -> ProviderRegistry:
+def get_registry(request: Request) -> RuntimeRegistry:
     return request.app.state.registry
 
 

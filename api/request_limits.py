@@ -54,18 +54,30 @@ class RequestBodyLimitMiddleware:
 
         consumed = 0
         response_started = False
+        exceeded = False
+        rejected = False
 
         async def limited_receive() -> ASGIMessage:
-            nonlocal consumed
+            nonlocal consumed, exceeded
             message = await receive()
             if message.get("type") == "http.request":
                 consumed += len(message.get("body", b""))
                 if consumed > self.max_bytes:
+                    exceeded = True
                     raise _RequestBodyTooLarge
             return message
 
         async def tracked_send(message: ASGIMessage) -> None:
-            nonlocal response_started
+            nonlocal response_started, rejected
+            if rejected:
+                return
+            # JSON parsers may turn the receive exception into a 400 response.
+            # Keep the actual size violation authoritative at this boundary.
+            if exceeded and not response_started:
+                rejected = True
+                response_started = True
+                await self._send_rejection(send)
+                return
             if message.get("type") == "http.response.start":
                 response_started = True
             await send(message)
@@ -73,14 +85,16 @@ class RequestBodyLimitMiddleware:
         try:
             await self.app(scope, limited_receive, tracked_send)
         except _RequestBodyTooLarge:
-            if response_started:
+            if response_started and not rejected:
                 raise
-            await self._send_rejection(send)
+            if not rejected:
+                await self._send_rejection(send)
 
     async def _send_rejection(self, send: Send) -> None:
         payload = json.dumps(
             {
                 "protocol_version": "2.0",
+                "object": "kemo.error",
                 "error": {
                     "type": "validation",
                     "code": "REQUEST_TOO_LARGE",

@@ -1,4 +1,4 @@
-"""网关级配置；厂商私有配置由对应 Provider 包自行解析。"""
+"""网关启动配置；运行目录与密钥策略由控制台管理。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import os
 import hashlib
 from dataclasses import dataclass, field
 from ipaddress import ip_address
-from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +20,7 @@ class PrincipalConfig:
 
 
 def safe_key_id(token: str, configured: object = None) -> str:
-    """Return an operator-friendly id or an irreversible legacy fingerprint."""
+    """Return an operator-friendly id or an irreversible token fingerprint."""
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
     return f"key_{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"
@@ -51,7 +50,6 @@ class Settings:
     base_url: str = ""
     protocol_version: str = "2.0"
     api_keys: dict[str, PrincipalConfig] = field(default_factory=dict)
-    provider_settings: dict[str, Any] = field(default_factory=dict)
     web_username: str = ""
     web_password: str = ""
     web_token: str = ""
@@ -60,16 +58,19 @@ class Settings:
     api_docs_enabled: bool = False
     status_token: str = ""
     statistics_timezone: str = "Asia/Shanghai"
-    request_json_max_bytes: int = 2 * 1024 * 1024
+    request_json_max_bytes: int = 32 * 1024 * 1024
+    upstream_json_max_bytes: int = 32 * 1024 * 1024
+    log_detail_max_bytes: int = 4 * 1024 * 1024
+    log_detail_mode: str = "full"
     asset_retention_hours: int = 24
     asset_image_max_bytes: int = 20 * 1024 * 1024
     asset_audio_max_bytes: int = 100 * 1024 * 1024
     asset_video_max_bytes: int = 1024 * 1024 * 1024
     asset_file_max_bytes: int = 100 * 1024 * 1024
-    model_execution_timeout_seconds: float = 900.0
+    model_execution_timeout_seconds: float = 1200.0
     max_concurrent_executions: int = 64
     sse_heartbeat_seconds: float = 15.0
-    log_retention_days: int = 7
+    log_retention_days: int = 30
     max_sse_events_per_response: int = 200_000
 
     @property
@@ -97,14 +98,15 @@ class Settings:
                 subject_id=os.getenv("GATEWAY_DEFAULT_SUBJECT", "kemo-agent"),
                 key_id=safe_key_id(legacy_key, os.getenv("GATEWAY_API_KEY_ID")),
             )
-        provider_settings = json.loads(os.getenv("PROVIDER_SETTINGS_JSON", "{}"))
-        log_retention_days = _positive_int_env("LOG_RETENTION_DAYS", 7)
+        log_retention_days = _positive_int_env("LOG_RETENTION_DAYS", 30)
+        log_detail_mode = os.getenv("LOG_DETAIL_MODE", "full").strip().lower()
+        if log_detail_mode not in {"full", "errors", "off"}:
+            raise ValueError("LOG_DETAIL_MODE 必须为 full、errors 或 off")
         return cls(
             host=os.getenv("HOST", "127.0.0.1"),
             port=int(os.getenv("PORT", "7531")),
             base_url=os.getenv("GATEWAY_BASE_URL", "").strip(),
             api_keys=api_keys,
-            provider_settings=provider_settings,
             web_username=os.getenv("WEB_USERNAME", ""),
             web_password=os.getenv("WEB_PASSWORD", ""),
             web_token=os.getenv("WEB_TOKEN", ""),
@@ -114,8 +116,15 @@ class Settings:
             status_token=os.getenv("STATUS_TOKEN", ""),
             statistics_timezone=os.getenv("STATISTICS_TIMEZONE", "Asia/Shanghai"),
             request_json_max_bytes=_positive_int_env(
-                "REQUEST_JSON_MAX_BYTES", 2 * 1024 * 1024
+                "REQUEST_JSON_MAX_BYTES", 32 * 1024 * 1024
             ),
+            upstream_json_max_bytes=_positive_int_env(
+                "UPSTREAM_JSON_MAX_BYTES", 32 * 1024 * 1024
+            ),
+            log_detail_max_bytes=_positive_int_env(
+                "LOG_DETAIL_MAX_BYTES", 4 * 1024 * 1024, minimum=256
+            ),
+            log_detail_mode=log_detail_mode,
             asset_retention_hours=_positive_int_env("DEFAULT_ASSET_TTL_HOURS", 24),
             asset_image_max_bytes=_positive_int_env(
                 "ASSET_IMAGE_MAX_BYTES", 20 * 1024 * 1024
@@ -130,7 +139,7 @@ class Settings:
                 "ASSET_FILE_MAX_BYTES", 100 * 1024 * 1024
             ),
             model_execution_timeout_seconds=_positive_float_env(
-                "MODEL_EXECUTION_TIMEOUT_SECONDS", 900.0
+                "MODEL_EXECUTION_TIMEOUT_SECONDS", 1200.0
             ),
             max_concurrent_executions=_positive_int_env(
                 "MAX_CONCURRENT_EXECUTIONS", 64
@@ -155,13 +164,13 @@ def parse_allowed_models(value: object) -> frozenset[str] | None:
     return frozenset(item.strip() for item in value)
 
 
-def _positive_int_env(name: str, default: int) -> int:
+def _positive_int_env(name: str, default: int, *, minimum: int = 1) -> int:
     raw = os.getenv(name, "").strip()
     if not raw:
         return default
     value = int(raw)
-    if value <= 0:
-        raise ValueError(f"{name} 必须为正整数")
+    if value < minimum:
+        raise ValueError(f"{name} 必须为不小于 {minimum} 的整数")
     return value
 
 

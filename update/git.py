@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from update._utils import redact_text
-from update.constants import PROTECTED_EXCEPTIONS, PROTECTED_PATTERNS
+from update.constants import PROTECTED_PATTERNS
 
 
 class GitDiff(NamedTuple):
@@ -453,14 +453,11 @@ def _is_protected(path: str) -> bool:
     normalized = path.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
-    if normalized in PROTECTED_EXCEPTIONS:
-        return False
     for pattern in PROTECTED_PATTERNS:
         if pattern.endswith("/"):
             if normalized.startswith(pattern):
                 return True
-            # tests/ 属于发布测试源码；嵌套目录匹配只对部署数据目录生效，
-            # 避免 tests/providers/ 被误判为部署者私有的 providers/。
+            # tests/ 属于发布源码；嵌套保护只应用于部署数据目录。
             if not normalized.startswith("tests/") and f"/{pattern}" in normalized:
                 return True
         elif "*" in pattern:

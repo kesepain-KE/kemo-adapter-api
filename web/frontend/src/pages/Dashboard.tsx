@@ -1,245 +1,198 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { Activity, CircleAlert, Clock3, ShieldCheck, TimerReset } from 'lucide-react'
-import { useAdmin } from '../AdminContext'
-import { adminApi, type StatisticsMetrics } from '../adminApi'
-import { Badge, Card, CardHeader } from '../components/UI'
+import { cloneElement, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ActivityCalendar } from 'react-activity-calendar'
+import { api, useAction, useConsole } from '../console'
+import type { Entity } from '../console'
+import { PageHeader } from '../components/UI'
+import { Empty, ErrorBar } from '../components/Form'
+import { getLanguage, t } from '../i18n'
 
-function integer(value: number | null | undefined): string {
-  return value == null ? '—' : new Intl.NumberFormat('zh-CN').format(value)
+interface ActivityBucket {
+  date: string; future: boolean; calls: number; success_rate: number | null
+  cache_hit_rate: number | null; input_tokens: number | null; output_tokens: number | null
+  cached_tokens: number | null; first_token_ms: number | null; hour?: number
+}
+interface Activity {
+  timezone: string; today: string; start: string; end: string
+  days?: ActivityBucket[]; hours?: ActivityBucket[]
 }
 
-function percent(value: number | null | undefined): string {
-  return value == null ? '—' : `${(value * 100).toFixed(1)}%`
+const dateValue = (value: string) => new Date(`${value}T12:00:00Z`)
+const number = (value: number | null) => value == null ? '—' : value.toLocaleString(getLanguage())
+const rate = (value: number | null) => value == null ? '—' : `${(value * 100).toFixed(1)}%`
+
+function bucketTooltip(bucket: ActivityBucket, target: Element) {
+  const rect = target.getBoundingClientRect()
+  const width = Math.min(288, window.innerWidth - 32)
+  const above = rect.bottom + 300 > window.innerHeight
+  return { bucket, target, left: Math.max(16, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 16)),
+    top: above ? rect.top - 10 : rect.bottom + 10, above }
 }
 
-function runtimeDuration(startedAtMs: number, nowMs: number): string {
-  if (!Number.isFinite(startedAtMs)) return '未知'
-  const totalSeconds = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000))
-  const days = Math.floor(totalSeconds / 86_400)
-  const hours = Math.floor((totalSeconds % 86_400) / 3_600)
-  const minutes = Math.floor((totalSeconds % 3_600) / 60)
-  const seconds = totalSeconds % 60
-  const clock = [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':')
-  return days > 0 ? `${days} 天 ${clock}` : clock
-}
-
-function RuntimeDuration({ startedAt }: { startedAt: Date }) {
-  const startedAtMs = startedAt.getTime()
-  const [nowMs, setNowMs] = useState(Date.now())
-
+function RequestActivity() {
+  const { data } = useConsole()
+  const [granularity, setGranularity] = useState<'day' | 'hour'>('day')
+  const [anchor, setAnchor] = useState('')
+  const [activity, setActivity] = useState<Activity | null>(null)
+  const [error, setError] = useState('')
+  const [tooltip, setTooltip] = useState<ReturnType<typeof bucketTooltip> | null>(null)
   useEffect(() => {
-    setNowMs(Date.now())
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [startedAtMs])
+    const controller = new AbortController()
+    setError(''); setActivity(null); setTooltip(null)
+    api<Activity>(`/diagnostics/activity?period=${granularity === 'day' ? '26w' : 'week'}&granularity=${granularity}${anchor ? `&date=${anchor}` : ''}`, { signal: controller.signal })
+      .then(setActivity).catch(cause => { if (!controller.signal.aborted) setError(cause.message) })
+    return () => controller.abort()
+  }, [granularity, anchor, data])
+  useEffect(() => {
+    const close = () => setTooltip(null)
+    const scroll = () => setTooltip(current => current && bucketTooltip(current.bucket, current.target))
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', scroll, true)
+    window.addEventListener('keydown', escape)
+    return () => {
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', scroll, true)
+      window.removeEventListener('keydown', escape)
+    }
+  }, [])
+  const locale = getLanguage()
+  const formatDate = (date: string, options: Intl.DateTimeFormatOptions) =>
+    dateValue(date).toLocaleDateString(locale, { ...options, timeZone: 'UTC' })
+  const weekdays = Array.from({ length: 7 }, (_, index) => new Date(Date.UTC(2026, 10, 1 + index))
+    .toLocaleDateString(locale, { weekday: 'short', timeZone: 'UTC' }))
+  const months = Array.from({ length: 12 }, (_, index) => new Date(Date.UTC(2026, index, 1))
+    .toLocaleDateString(locale, { month: 'short', timeZone: 'UTC' }))
+  const buckets = activity?.[granularity === 'day' ? 'days' : 'hours'] ?? []
+  const byDate = new Map(buckets.map(bucket => [bucket.date, bucket]))
+  const maximum = Math.max(1, ...buckets.map(bucket => bucket.calls))
+  const level = (bucket: ActivityBucket) => bucket.calls ? Math.max(1, Math.ceil(bucket.calls / maximum * 4)) : 0
+  const current = activity && activity.start <= activity.today && activity.end >= activity.today
+  const label = activity ? `${formatDate(activity.start, { year: 'numeric', month: 'short', day: 'numeric' })} – ${formatDate(activity.end, { year: 'numeric', month: 'short', day: 'numeric' })}` : ''
 
-  return <>{runtimeDuration(startedAtMs, nowMs)}</>
-}
-
-type TrendMode = 'day' | 'week' | 'month'
-
-interface TrendPoint {
-  label: string
-  calls: number
-  tokens: number | null
-  inputTokens: number | null
-  outputTokens: number | null
-  cachedTokens: number | null
-  cacheHitRate: number | null
-  successRate: number | null
-}
-
-function localDate(value: Date): string {
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function TrendChart({ points, mode }: { points: TrendPoint[]; mode: TrendMode }) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const [pointerPosition, setPointerPosition] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
-  const [tooltipSize, setTooltipSize] = useState({ width: 270, height: 190 })
-  const tooltipRef = useRef<HTMLDivElement | null>(null)
-  const width = 1000
-  const height = 250
-  const plot = { left: 54, right: 946, top: 24, bottom: 202 }
-  const callMax = Math.max(1, ...points.map(point => point.calls))
-  const tokenValues = points.flatMap(point => point.tokens == null ? [] : [point.tokens])
-  const tokenMax = Math.max(1, ...tokenValues)
-  const x = (index: number) => points.length <= 1 ? plot.left : plot.left + (index / (points.length - 1)) * (plot.right - plot.left)
-  const y = (value: number, maximum: number) => plot.bottom - (value / maximum) * (plot.bottom - plot.top)
-  const callLine = points.map((point, index) => `${x(index)},${y(point.calls, callMax)}`).join(' ')
-  // 未计量仍在气泡中显示为未知；绘图使用零基线连接，避免时间序列断裂。
-  const tokenLine = points.map((point, index) => `${x(index)},${y(point.tokens ?? 0, tokenMax)}`).join(' ')
-  const labelEvery = mode === 'day' ? 4 : mode === 'week' ? 1 : 5
-  const activePoint = hoveredIndex == null ? null : points[hoveredIndex]
-  const activeX = hoveredIndex == null ? null : x(hoveredIndex)
-
-  useLayoutEffect(() => {
-    if (!activePoint || !tooltipRef.current) return
-    const bounds = tooltipRef.current.getBoundingClientRect()
-    setTooltipSize(current => current.width === bounds.width && current.height === bounds.height ? current : { width: bounds.width, height: bounds.height })
-  }, [activePoint])
-
-  const updatePointerPosition = (event: ReactPointerEvent<SVGSVGElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect()
-    setPointerPosition({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, width: bounds.width, height: bounds.height })
+  function move(direction: number) {
+    const date = dateValue(activity!.start)
+    date.setUTCDate(date.getUTCDate() + direction * (granularity === 'day' ? 182 : 7))
+    // The daily range ends in the week containing its anchor.
+    if (granularity === 'day') date.setUTCDate(date.getUTCDate() + 175)
+    setAnchor(date.toISOString().slice(0, 10))
   }
 
-  const tooltipPosition = useMemo(() => {
-    if (!pointerPosition) return null
-    const gap = 18
-    const edge = 8
-    const { x: pointerX, y: pointerY, width: areaWidth, height: areaHeight } = pointerPosition
-    const { width: tooltipWidth, height: tooltipHeight } = tooltipSize
-    const clamp = (value: number, minimum: number, maximum: number) => maximum < minimum ? minimum : Math.min(Math.max(value, minimum), maximum)
-    const verticalCenter = clamp(pointerY - tooltipHeight / 2, edge, areaHeight - tooltipHeight - edge)
-    const horizontalCenter = clamp(pointerX - tooltipWidth / 2, edge, areaWidth - tooltipWidth - edge)
-    const candidates = [
-      { left: pointerX + gap, top: verticalCenter },
-      { left: pointerX - gap - tooltipWidth, top: verticalCenter },
-      { left: horizontalCenter, top: pointerY + gap },
-      { left: horizontalCenter, top: pointerY - gap - tooltipHeight },
-    ]
-    const overflow = ({ left, top }: { left: number; top: number }) =>
-      Math.max(0, edge - left) + Math.max(0, left + tooltipWidth - areaWidth + edge) +
-      Math.max(0, edge - top) + Math.max(0, top + tooltipHeight - areaHeight + edge)
-    return candidates.reduce((best, candidate) => overflow(candidate) < overflow(best) ? candidate : best)
-  }, [pointerPosition, tooltipSize])
+  function showBucket(bucket: ActivityBucket, target: Element) {
+    if (bucket.future) return
+    setTooltip(bucketTooltip(bucket, target))
+  }
 
-  return <div className="trend-chart-wrap">
-    <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="网关真实调用次数与 Token 使用量折线图" onPointerMove={updatePointerPosition} onPointerLeave={() => { setHoveredIndex(null); setPointerPosition(null) }}>
-      <defs><linearGradient id="calls-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4f67f6" stopOpacity=".18"/><stop offset="1" stopColor="#4f67f6" stopOpacity="0"/></linearGradient></defs>
-      {[0, .25, .5, .75, 1].map(value => <line key={value} className="trend-grid-line" x1={plot.left} x2={plot.right} y1={plot.top + value * (plot.bottom - plot.top)} y2={plot.top + value * (plot.bottom - plot.top)}/>)}
-      {points.length > 1 && <polygon
-        className="trend-calls-area"
-        points={`${plot.left},${plot.bottom} ${callLine} ${plot.right},${plot.bottom}`}
-      />}
-      <polyline className="trend-line trend-line-calls" points={callLine}/>
-      <polyline className="trend-line trend-line-tokens" points={tokenLine}/>
-      {activeX != null && <line className="trend-hover-guide" x1={activeX} x2={activeX} y1={plot.top} y2={plot.bottom}/>}
-      {points.map((point, index) => <g key={`${point.label}-${index}`} className="trend-point">
-        <circle className="trend-dot-calls" cx={x(index)} cy={y(point.calls, callMax)} r="3"><title>{point.label} · {point.calls} 次调用</title></circle>
-        {point.tokens != null && <circle className="trend-dot-tokens" cx={x(index)} cy={y(point.tokens, tokenMax)} r="3"><title>{point.label} · {point.tokens} Tokens</title></circle>}
-        {(index % labelEvery === 0 || index === points.length - 1) && <text className="trend-axis-label" x={x(index)} y="226" textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'}>{point.label}</text>}
-      </g>)}
-      <text className="trend-scale-label" x={plot.left} y="14">调用峰值 {integer(callMax)}</text>
-      <text className="trend-scale-label" x={plot.right} y="14" textAnchor="end">Token 峰值 {tokenValues.length ? integer(tokenMax) : '无可靠计量'}</text>
-      {points.map((point, index) => {
-        const from = index === 0 ? plot.left : (x(index - 1) + x(index)) / 2
-        const to = index === points.length - 1 ? plot.right : (x(index) + x(index + 1)) / 2
-        return <rect key={`hit-${point.label}-${index}`} className="trend-hit-zone" x={from} y={plot.top} width={Math.max(1, to - from)} height={plot.bottom - plot.top} onPointerEnter={() => setHoveredIndex(index)}/>
-      })}
-    </svg>
-    {activePoint && activeX != null && tooltipPosition && <div ref={tooltipRef} className="trend-tooltip" style={{ left: tooltipPosition.left, top: tooltipPosition.top }}>
-      <header><strong>{activePoint.label}</strong><span>调用 <b>{integer(activePoint.calls)}</b> 次</span></header>
-      <div>
-        <span><small>Token 使用量</small><b>{integer(activePoint.tokens)}</b></span>
-        <span><small>输入 Token</small><b>{integer(activePoint.inputTokens)}</b></span>
-        <span><small>输出 Token</small><b>{integer(activePoint.outputTokens)}</b></span>
-        <span><small>缓存 Token</small><b>{integer(activePoint.cachedTokens)}</b></span>
-        <span><small>Token 缓存率</small><b>{percent(activePoint.cacheHitRate)}</b></span>
-        <span><small>调用成功率</small><b>{percent(activePoint.successRate)}</b></span>
+  const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`
+  const bucketLabel = (bucket: ActivityBucket) =>
+    `${formatDate(bucket.date, { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })}${bucket.hour == null ? '' : ` · ${hourLabel(bucket.hour)} – ${hourLabel(bucket.hour + 1)}`}`
+  const cellProps = (bucket: ActivityBucket) => ({
+    className: `activity-cell heat-${level(bucket)}${bucket.future ? ' future' : ''}`,
+    role: 'button', tabIndex: bucket.future ? -1 : 0,
+    'data-date': bucket.date, 'data-hour': bucket.hour, 'data-calls': bucket.calls,
+    'aria-label': `${bucketLabel(bucket)} · ${t('调用次数')} ${number(bucket.calls)}`,
+    'aria-disabled': bucket.future,
+    'aria-describedby': tooltip?.bucket === bucket ? 'activity-tooltip' : undefined,
+    onMouseEnter: (event: { currentTarget: Element }) => showBucket(bucket, event.currentTarget),
+    onFocus: (event: { currentTarget: Element }) => showBucket(bucket, event.currentTarget),
+    onBlur: () => setTooltip(null),
+    onClick: (event: { currentTarget: Element }) => showBucket(bucket, event.currentTarget),
+    onKeyDown: (event: { key: string; preventDefault: () => void; currentTarget: Element }) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showBucket(bucket, event.currentTarget) }
+    },
+  })
+
+  return <section className="card activity-card" aria-labelledby="activity-title">
+    <div className="panel-head activity-heading"><h2 className="panel-title" id="activity-title">{t('请求趋势')}</h2>
+      <div className="segmented" role="tablist" aria-label={t('趋势粒度')}>
+        {([['day', '按天'], ['hour', '按小时']] as const).map(([value, label]) =>
+          <button key={value} role="tab" aria-selected={granularity === value} onClick={() => {
+            if (granularity === value) return
+            setActivity(null); setTooltip(null); setGranularity(value); setAnchor('')
+          }}>{t(label)}</button>)}
       </div>
-      {activePoint.tokens == null && <p>该时段存在调用，但没有可靠 Token 计量样本。</p>}
-    </div>}
-  </div>
+    </div>
+    <div className="activity-body" aria-busy={!activity && !error}>
+      <ErrorBar error={error} />
+      {activity ? <>
+        <div className="activity-toolbar"><div className="activity-range"><strong>{label}</strong>
+          <span>{t(granularity === 'day' ? '26 周 · 每格一天' : '一周 · 每格一小时')} · {t('调用次数')} {number(buckets.reduce((sum, bucket) => sum + bucket.calls, 0))}</span>
+        </div><div className="activity-navigation">
+          <button className="icon-btn" aria-label={t('上一时段')} onClick={() => move(-1)}><ChevronLeft size={15} /></button>
+          <button className="btn btn-sm" disabled={!!current} onClick={() => setAnchor('')}>{t('当前时段')}</button>
+          <button className="icon-btn" disabled={activity.end >= activity.today}
+            aria-label={t('下一时段')} onClick={() => move(1)}><ChevronRight size={15} /></button>
+        </div></div>
+        <div className={`activity-plot ${granularity}`} onMouseLeave={() => setTooltip(null)}>
+          {granularity === 'day' ? <ActivityCalendar data={buckets.map(bucket => ({
+            date: bucket.date, count: bucket.calls, level: level(bucket),
+          }))} weekStart={1} blockSize={22} blockMargin={5} blockRadius={4} fontSize={11}
+            colorScheme="light" theme={{ light: ['#edf0f1', '#c6edf5', '#87d9ed', '#42c2e1', '#08a7d3'] }}
+            showWeekdayLabels showColorLegend={false} showTotalCount={false} labels={{ months, weekdays }}
+            renderBlock={(block, day) => cloneElement(block, cellProps(byDate.get(day.date)!))} />
+            : <svg className="activity-hour-chart" width="742" height="217" viewBox="0 0 742 217"
+              aria-label={t('每周小时调用热力图')}>
+              {Array.from({ length: 24 }, (_, hour) => <text key={hour} x={94 + hour * 27} y={12}
+                textAnchor="middle" className="activity-axis">{String(hour).padStart(2, '0')}</text>)}
+              {buckets.filter(bucket => bucket.hour === 0).map((bucket, index) =>
+                <text key={bucket.date} x={68} y={41 + index * 27} textAnchor="end" className="activity-axis">
+                  {formatDate(bucket.date, { month: 'numeric', day: 'numeric' })} {formatDate(bucket.date, { weekday: 'short' })}
+                </text>)}
+              {buckets.map((bucket, index) => <rect key={`${bucket.date}-${bucket.hour}`} x={83 + bucket.hour! * 27}
+                y={26 + Math.floor(index / 24) * 27} width={22} height={22} rx={4} {...cellProps(bucket)} />)}
+            </svg>}
+        </div>
+        <div className="activity-footer"><span>{t(granularity === 'day' ? '每格一天 · 颜色越深，调用越多' : '每格一小时 · 颜色越深，调用越多')}</span>
+          <span className="activity-legend" aria-label={t('调用密度')}>{t('少')}{[0, 1, 2, 3, 4].map(level =>
+            <i className={`heat-${level}`} key={level} />)}{t('多')}</span></div>
+        <div className="activity-timezone">{t('统计时区')} · {activity.timezone}
+          {granularity === 'hour' && <> · {t('按本地小时汇总，夏令时重复小时合并。')}</>}</div>
+      </> : !error && <Empty text="正在加载" />}
+    </div>
+    {tooltip && activity && createPortal(<div role="tooltip" id="activity-tooltip"
+      className={`activity-tooltip heat-${level(tooltip.bucket)}${tooltip.above ? ' above' : ''}`} style={{ left: tooltip.left, top: tooltip.top }}>
+      <strong>{bucketLabel(tooltip.bucket)}</strong>
+      <dl>{[
+        ['调用次数', number(tooltip.bucket.calls)], ['成功率', rate(tooltip.bucket.success_rate)],
+        ['缓存命中率', rate(tooltip.bucket.cache_hit_rate)], ['输入 Token', number(tooltip.bucket.input_tokens)],
+        ['输出 Token', number(tooltip.bucket.output_tokens)], ['缓存命中 Token', number(tooltip.bucket.cached_tokens)],
+        ['平均首字延迟', tooltip.bucket.first_token_ms == null ? '—' : `${Math.round(tooltip.bucket.first_token_ms)} ms`],
+      ].map(([label, value]) => <div key={label}><dt>{t(label)}</dt><dd>{value}</dd></div>)}</dl>
+      <span>{t('仅汇总已知用量')} · {activity.timezone}</span>
+    </div>, document.body)}
+  </section>
 }
 
 export default function Dashboard() {
-  const { csrfToken: token, data, restart, isOwner } = useAdmin()
-  const [statistics, setStatistics] = useState<StatisticsMetrics | null>(null)
-  const [statisticsMode, setStatisticsMode] = useState<TrendMode | null>(null)
-  const [statisticsError, setStatisticsError] = useState('')
-  const [trendMode, setTrendMode] = useState<TrendMode>('day')
-  const [trend, setTrend] = useState<TrendPoint[]>([])
-  const [trendLoading, setTrendLoading] = useState(true)
-  const [trendError, setTrendError] = useState('')
-  const loadSequence = useRef(0)
-  const runtime = restart?.gateway ?? data.runtime
-  const startedAt = new Date(runtime.started_at)
-
-  const loadDashboardStatistics = useCallback(async () => {
-    const sequence = ++loadSequence.current
-    setTrendLoading(true)
-    try {
-      if (trendMode === 'day') {
-        const [daily, hourly] = await Promise.all([
-          adminApi.dailyStatistics(token),
-          adminApi.hourlyStatistics(token),
-        ])
-        if (sequence !== loadSequence.current) return
-        setStatistics(daily)
-        setStatisticsMode('day')
-        setTrend(hourly.items.map(item => ({
-          label: item.label,
-          calls: item.calls,
-          tokens: item.total_tokens,
-          inputTokens: item.input_tokens,
-          outputTokens: item.output_tokens,
-          cachedTokens: item.cached_input_tokens,
-          cacheHitRate: item.cache_hit_rate,
-          successRate: item.success_rate,
-        })))
-      } else {
-        const days = trendMode === 'week' ? 7 : 30
-        const end = new Date()
-        const start = new Date(end)
-        start.setDate(end.getDate() - days + 1)
-        const series = await adminApi.statisticsSeries(token, localDate(start), localDate(end))
-        if (sequence !== loadSequence.current) return
-        setStatistics(series.summary)
-        setStatisticsMode(trendMode)
-        setTrend(series.items.map(item => ({
-          label: item.date.slice(5),
-          calls: item.calls,
-          tokens: item.calls === 0 ? 0 : item.tokens.total_tokens,
-          inputTokens: item.calls === 0 ? 0 : item.tokens.input_tokens,
-          outputTokens: item.calls === 0 ? 0 : item.tokens.output_tokens,
-          cachedTokens: item.calls === 0 ? 0 : item.tokens.cached_input_tokens,
-          cacheHitRate: item.cache_hit_rate,
-          successRate: item.success_rate,
-        })))
-      }
-      setStatisticsError('')
-      setTrendError('')
-    } catch (reason) {
-      if (sequence !== loadSequence.current) return
-      const message = reason instanceof Error ? reason.message : '统计数据读取失败'
-      setStatistics(null)
-      setStatisticsMode(null)
-      setTrend([])
-      setStatisticsError(message)
-      setTrendError(message)
-    } finally {
-      if (sequence === loadSequence.current) setTrendLoading(false)
-    }
-  }, [token, trendMode])
-
+  const { data, refresh } = useConsole()
+  const navigate = useNavigate()
+  const action = useAction()
+  const [period, setPeriod] = useState('today')
+  const [overview, setOverview] = useState<Entity | null>(null)
+  const [error, setError] = useState('')
   useEffect(() => {
-    void loadDashboardStatistics()
-    const timer = window.setInterval(() => { void loadDashboardStatistics() }, 15_000)
-    return () => window.clearInterval(timer)
-  }, [loadDashboardStatistics])
-
-  const visibleStatistics = statisticsMode === trendMode ? statistics : null
-
-  const trendTotals = useMemo(() => ({
-    calls: trend.reduce((sum, point) => sum + point.calls, 0),
-    tokens: trend.reduce<number | null>((sum, point) => point.tokens == null ? sum : (sum ?? 0) + point.tokens, null),
-  }), [trend])
-
-  return <>
-    <div className="metrics-grid">
-      <Card className="metric"><span>调用次数</span><strong>{integer(visibleStatistics?.calls)}</strong><em>{visibleStatistics ? `${visibleStatistics.running} 个执行中 · ${visibleStatistics.replay_count} 次幂等重放` : '等待真实统计数据'}</em></Card>
-      <Card className="metric"><span>Token 使用量</span><strong>{integer(visibleStatistics?.tokens.total_tokens)}</strong><em>{visibleStatistics ? `${integer(visibleStatistics.tokens.input_tokens)} 输入 · ${integer(visibleStatistics.tokens.output_tokens)} 输出` : '未知计量不会按 0 处理'}</em></Card>
-      <Card className="metric"><span>Token 缓存率</span><strong>{percent(visibleStatistics?.cache_hit_rate)}</strong><em>{visibleStatistics ? `${visibleStatistics.cache_eligible_samples} 个精确计量样本` : '仅计算精确 Token 样本'}</em></Card>
-      <Card className="metric"><span>调用成功率</span><strong>{percent(visibleStatistics?.success_rate)}</strong><em>{visibleStatistics ? `${visibleStatistics.successes} 成功 · ${visibleStatistics.failures} 失败` : '等待真实统计数据'}</em></Card>
-    </div>
-    {statisticsError && <div className="alert"><CircleAlert size={18}/><span>{statisticsError}；仪表盘未显示推测值。</span></div>}
-    {data.live_config_error && <div className="alert"><CircleAlert size={18}/><span>运行时配置加载失败，网关正在使用最后一个有效版本：{data.live_config_error}</span></div>}
-    <Card className="dashboard-trend-card"><CardHeader title="调用趋势" description="调用次数与 Provider 归一化 Token 的真实统计" action={<div className="trend-modes"><button className={trendMode === 'day' ? 'active' : ''} onClick={() => setTrendMode('day')}>24 小时</button><button className={trendMode === 'week' ? 'active' : ''} onClick={() => setTrendMode('week')}>7 天</button><button className={trendMode === 'month' ? 'active' : ''} onClick={() => setTrendMode('month')}>30 天</button></div>}/><div className="trend-legend"><span><i className="calls"/>调用次数 <b>{integer(trendTotals.calls)}</b></span><span><i className="tokens"/>Token <b>{integer(trendTotals.tokens)}</b></span></div>{trendLoading ? <div className="trend-state">正在读取真实趋势…</div> : trendError ? <div className="trend-state trend-state-error">{trendError}；未生成推测曲线。</div> : <TrendChart points={trend} mode={trendMode}/>}</Card>
-    <Card><CardHeader title="进程状态" action={<Badge tone={runtime.phase === 'running' ? 'success' : 'warning'}>{runtime.phase}</Badge>}/><div className="info-list"><div><span><Activity size={15}/> 活动执行</span><strong>{runtime.active_executions}</strong></div><div><span><Clock3 size={15}/> 启动时间</span><strong>{Number.isNaN(startedAt.getTime()) ? '未知' : startedAt.toLocaleString()}</strong></div><div><span><TimerReset size={15}/> 运行时长</span><strong><RuntimeDuration startedAt={startedAt}/></strong></div><div><span><ShieldCheck size={15}/> 管理权限</span><strong>{isOwner ? 'owner' : 'admin:web'}</strong></div></div></Card>
-  </>
+    const controller = new AbortController()
+    setOverview(null); setError('')
+    api(`/diagnostics/usage?period=${period}`, { signal: controller.signal })
+      .then(setOverview).catch(cause => { if (!controller.signal.aborted) setError(cause.message) })
+    return () => controller.abort()
+  }, [period, data])
+  const metrics = overview?.summary
+  return <div className="page"><PageHeader title="总览"
+    actions={<><button className="btn" onClick={() => { void action.run(refresh) }}>{t('刷新')}</button><button className="btn btn-primary" onClick={() => navigate('/upstreams')}>{t('管理上游')}</button></>} />
+    <ErrorBar error={action.error || error} />
+    <div className="toolbar dashboard-range"><div className="segmented" role="tablist" aria-label={t('数据范围')}>
+      {[['today', '当天'], ['24h', '24 小时'], ['7d', '7 天'], ['30d', '30 天'], ['all', '总数据']].map(([value, label]) =>
+        <button key={value} role="tab" aria-selected={period === value} onClick={() => setPeriod(value)}>{t(label)}</button>)}
+    </div>{overview && <span className="hint">{t('统计时区')} · {overview.timezone}</span>}</div>
+    <div className="stat-grid" aria-busy={!overview && !error}>{[
+      [t('请求次数'), number(metrics?.calls ?? null), metrics ? `${t('已完成')} ${number(metrics.finished)}` : '—'],
+      [t('Token 总量'), number(metrics?.total_tokens ?? null), t('仅汇总已知用量')],
+      [t('缓存命中率'), rate(metrics?.cache_hit_rate ?? null), t('按已知输入 Token 加权')],
+      [t('成功率'), rate(metrics?.success_rate ?? null), metrics ? `${t('成功')} ${number(metrics.successful)} / ${number(metrics.finished)}` : '—'],
+    ].map(([label, value, foot]) => <div className="stat-card" key={label}><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-foot">{foot}</div></div>)}</div>
+    <RequestActivity />
+  </div>
 }

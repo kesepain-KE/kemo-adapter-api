@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: OpenCode Console
+base_url: https://opencode.ai/inference/openai/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

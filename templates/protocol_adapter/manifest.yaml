@@ -1,0 +1,27 @@
+id: custom-protocol
+name: Custom protocol
+version: 1.0.0
+contract_version: '1.0'
+operations:
+  - llm
+auth_schemes:
+  - id: bearer
+    location: header
+    name: Authorization
+    prefix: 'Bearer '
+  - id: none
+    location: none
+media:
+  input: [text]
+  output: [text]
+tools: false
+body_fields: [engine, prompt, stream]
+endpoints:
+  llm: /native/generate
+  discovery: /native/models
+streaming: true
+discovery: true
+config_schema:
+  type: object
+  additionalProperties: false
+usage_semantics: Missing usage stays unknown; implement the upstream's inclusive token semantics.

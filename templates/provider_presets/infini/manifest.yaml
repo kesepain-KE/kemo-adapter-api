@@ -1,0 +1,5 @@
+id: infini
+name: 无问芯穹
+version: 1.0.0
+contract_version: '1.0'
+description: 无问芯穹 连接预制，使用 openai-chat；尚未进行真实厂商调用验证。

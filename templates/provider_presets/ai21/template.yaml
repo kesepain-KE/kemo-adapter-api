@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: AI21
+base_url: https://api.ai21.com/studio/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

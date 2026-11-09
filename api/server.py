@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from functools import partial
 import hashlib
 import json
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from core.yaml_config import read_yaml, load_startup_environment
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -27,16 +28,19 @@ from api.routes import (
 from core.assets import AssetLimits, AssetStore
 from core.config import Settings, is_loopback_host
 from core.executor import GatewayExecutor
-from core.live_config import LiveConfigManager
-from core.registry import ProviderRegistry
+from gateway.runtime import RuntimeRegistry, ControlView
+from gateway.store import Store
+from gateway.security import SecretVault
+from gateway.transport import Transport
 from core.retrieval_executor import RetrievalExecutor
 from core.runtime_state import GatewayRuntimeState
 from core.stores import SQLiteExecutionStore
 from storage.statistics import StatisticsStore
-from web.backend.router import router as admin_router
+from gateway.admin import router as admin_router
+from web.backend.auth_routes import router as auth_router
+from web.backend.router import router as operations_router
 from web.backend.auth_service import WebAuthService
 from web.backend.restart_service import RestartService
-from web.backend.service import RuntimeConfigWriter
 from web.backend.system_inspector import SystemInspector
 
 
@@ -50,7 +54,7 @@ def _project_version() -> str:
         value = json.loads((PROJECT_ROOT / "version.json").read_text(encoding="utf-8"))
         version = value.get("version") if isinstance(value, dict) else None
         return version.strip() if isinstance(version, str) and version.strip() else "0.0.0"
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, ValueError):
         return "0.0.0"
 
 
@@ -104,24 +108,33 @@ def create_app(
     live_config_root: Path | None = None,
     statistics_root: Path | None = None,
     asset_root: Path | None = None,
-    discover_providers: bool = True,
 ) -> FastAPI:
-    load_dotenv()
+    if settings is None:
+        load_startup_environment((live_config_root or PROJECT_ROOT) / "gateway.yaml")
     resolved_settings = settings or Settings.from_env()
     _validate_web_exposure(resolved_settings)
-    registry = ProviderRegistry()
-    live_config = LiveConfigManager(live_config_root or PROJECT_ROOT)
+    project_root = live_config_root or PROJECT_ROOT
+    data_root = project_root / "data"
+    catalog_store = Store(data_root, retention_days=resolved_settings.log_retention_days)
+    vault = SecretVault(data_root)
+    registry = RuntimeRegistry(
+        project_root, catalog_store, vault,
+        transport_factory=partial(Transport, json_max_bytes=resolved_settings.upstream_json_max_bytes),
+        log_detail_max_bytes=resolved_settings.log_detail_max_bytes,
+        log_detail_mode=resolved_settings.log_detail_mode,
+    )
+    live_config = ControlView(registry)
     runtime_state = GatewayRuntimeState(
         max_concurrent_executions=resolved_settings.max_concurrent_executions
     )
     restart_service = RestartService(live_config.project_root, runtime_state)
     statistics = StatisticsStore(
-        statistics_root or live_config.project_root / "storage",
+        statistics_root or data_root / "statistics",
         timezone_name=resolved_settings.statistics_timezone,
         retention_days=resolved_settings.log_retention_days,
     )
     assets = AssetStore(
-        asset_root or live_config.project_root / "storage" / "assets",
+        asset_root or data_root / "assets",
         limits=AssetLimits(
             image_bytes=resolved_settings.asset_image_max_bytes,
             audio_bytes=resolved_settings.asset_audio_max_bytes,
@@ -131,22 +144,17 @@ def create_app(
         ),
     )
     executions = SQLiteExecutionStore(
-        live_config.project_root / "storage" / "executions",
+        data_root / "executions",
         retention_hours=resolved_settings.execution_retention_hours,
         max_events_per_response=resolved_settings.max_sse_events_per_response,
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        snapshot = await live_config.refresh()
         await statistics.initialize()
         await assets.initialize()
         await executions.initialize()
-        if discover_providers:
-            registry.discover(
-                resolved_settings.provider_settings, snapshot.provider_settings
-            )
-        await registry.apply_live_config(snapshot)
+        await registry.initialize()
         await runtime_state.mark_running()
         await restart_service.start_watcher()
         yield
@@ -156,6 +164,7 @@ def create_app(
         await executions.close()
         await statistics.close()
         await registry.close()
+        catalog_store.close()
 
     app = FastAPI(
         title="Kemo Provider Gateway",
@@ -206,12 +215,12 @@ def create_app(
     )
     app.state.settings = resolved_settings
     app.state.registry = registry
+    app.state.downstream_keys = registry.keys
     app.state.live_config = live_config
     app.state.runtime_state = runtime_state
     app.state.restart_service = restart_service
     app.state.system_inspector = SystemInspector(live_config.project_root)
     app.state.uvicorn_server = None
-    app.state.runtime_config_writer = RuntimeConfigWriter(live_config.project_root)
     app.state.statistics = statistics
     app.state.assets = assets
     app.state.executions = executions
@@ -244,6 +253,8 @@ def create_app(
     app.include_router(capabilities_router)
     app.include_router(status_router)
     app.include_router(admin_router)
+    app.include_router(auth_router)
+    app.include_router(operations_router)
 
     frontend_dist = PROJECT_ROOT / "web" / "frontend" / "dist"
     if frontend_dist.exists():
@@ -260,7 +271,8 @@ def create_app(
         @app.get("/admin", include_in_schema=False)
         @app.get("/admin/{path:path}", include_in_schema=False)
         async def admin_spa(path: str = "") -> FileResponse:
-            del path
+            if path == "api" or path.startswith("api/"):
+                raise HTTPException(404, "管理接口不存在")
             return FileResponse(frontend_dist / "index.html")
 
         @app.get("/", include_in_schema=False)

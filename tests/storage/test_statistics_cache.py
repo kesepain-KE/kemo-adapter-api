@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from storage import read_cache
 from storage.read_cache import ReadCache
 from storage.statistics import StatisticsStore
+from core.models import Usage
 
 
 def test_cache_ttl_is_fixed_and_values_are_isolated(monkeypatch) -> None:
@@ -145,7 +147,7 @@ def test_query_parameters_and_store_roots_do_not_share_cache(tmp_path: Path, mon
 
 def test_read_errors_are_not_cached_and_failed_writes_clear_cache(tmp_path: Path, monkeypatch) -> None:
     async def scenario():
-        store = StatisticsStore(tmp_path)
+        store = StatisticsStore(tmp_path, write_batch_size=1)
         calls = []
 
         def fail(*args):
@@ -171,7 +173,7 @@ def test_read_errors_are_not_cached_and_failed_writes_clear_cache(tmp_path: Path
 
 def test_cancelled_write_keeps_lock_until_thread_finishes(tmp_path: Path, monkeypatch) -> None:
     async def scenario():
-        store = StatisticsStore(tmp_path)
+        store = StatisticsStore(tmp_path, write_batch_size=1)
         entered = threading.Event()
         release = threading.Event()
         original = store._record_replay_sync
@@ -202,5 +204,103 @@ def test_cancelled_write_keeps_lock_until_thread_finishes(tmp_path: Path, monkey
             await writer
         assert (await reader)["replay_count"] == 1
         assert not store._lock.locked()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("batch_size,expected_commits", [(128, 1), (8, 5)])
+def test_statistics_batch_commits_and_queue_bound(
+    tmp_path: Path, monkeypatch, batch_size: int, expected_commits: int,
+) -> None:
+    async def scenario():
+        store = StatisticsStore(tmp_path, write_batch_size=batch_size, write_flush_interval_seconds=60)
+        await store.initialize()
+        commits = []
+        connect = store._connect
+
+        def counted(path):
+            connection = connect(path)
+            connection.set_trace_callback(lambda sql: commits.append(sql) if sql == "COMMIT" else None)
+            return connection
+
+        monkeypatch.setattr(store, "_connect", counted)
+        usage = Usage(input_tokens=10, output_tokens=2, total_tokens=12)
+        for index in range(20):
+            handle = await store.begin_invocation(
+                task="llm", provider_id="test", model="model", tenant_id="tenant",
+                gateway_key_id=None, request_id=f"request-{index}",
+            )
+            assert handle is not None
+            await store.finish_invocation(handle, status="completed", usage=usage)
+            assert store.health()["pending_events"] < batch_size
+        # Queued writes own their usage snapshot.
+        usage.total_tokens = 999
+        await store.flush()
+        assert len(commits) == expected_commits
+        with sqlite3.connect(handle.database) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*), SUM(total_tokens) FROM invocations WHERE status='completed'",
+            ).fetchone() == (20, 240)
+        fresh = StatisticsStore(tmp_path)
+        daily = await fresh.daily(handle.day)
+        assert daily["calls"] == daily["successes"] == 20
+        assert daily["running"] == 0 and daily["tokens"]["total_tokens"] == 240
+        await fresh.close()
+        await store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("trigger", ["timer", "close"])
+def test_statistics_flushes_on_timer_and_close(tmp_path: Path, monkeypatch, trigger: str) -> None:
+    async def scenario():
+        store = StatisticsStore(
+            tmp_path, write_flush_interval_seconds=.01 if trigger == "timer" else 60,
+        )
+        await store.initialize()
+        flushed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        flush = store._flush_sync
+
+        def observed(pending):
+            flush(pending)
+            loop.call_soon_threadsafe(flushed.set)
+
+        monkeypatch.setattr(store, "_flush_sync", observed)
+        await store.record_replay(task="llm", provider_id="test", model="model", gateway_key_id=None)
+        assert store.health()["pending_events"] == 1
+        if trigger == "close":
+            await store.close()
+        else:
+            await asyncio.wait_for(flushed.wait(), timeout=3)
+        fresh = StatisticsStore(tmp_path)
+        assert (await fresh.daily(datetime.now(store.timezone).date()))["replay_count"] == 1
+        assert store.health()["pending_events"] == 0
+        await fresh.close()
+        await store.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_batch_rolls_back_and_reports_dropped_events(tmp_path: Path, monkeypatch) -> None:
+    async def scenario():
+        store = StatisticsStore(tmp_path, write_flush_interval_seconds=60)
+        await store.initialize()
+        handle = await store.begin_invocation(
+            task="llm", provider_id="test", model="model", tenant_id="tenant",
+            gateway_key_id=None, request_id="failed-batch",
+        )
+
+        def fail(*args):
+            raise sqlite3.OperationalError("simulated write failure")
+
+        monkeypatch.setattr(store, "_finish_sync", fail)
+        await store.finish_invocation(handle, status="completed")
+        await store.flush()
+        assert store.health()["healthy"] is False
+        assert store.health()["dropped_events"] == 2
+        with sqlite3.connect(handle.database) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM invocations").fetchone()[0] == 0
+        await store.close()
 
     asyncio.run(scenario())

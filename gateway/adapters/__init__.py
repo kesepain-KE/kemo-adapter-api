@@ -1,0 +1,1 @@
+"""Operation-specific protocol adapters."""

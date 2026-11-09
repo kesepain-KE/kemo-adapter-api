@@ -1,0 +1,8 @@
+adapter_id: openai-embedding
+name: 硅基流动 Embeddings
+base_url: https://api.siliconflow.cn/v1
+auth_scheme: bearer
+headers: {}
+profile: {}
+tokenizer: auto
+catalog: []

@@ -70,7 +70,11 @@ class EventAssembler:
             name=provider_event.name,
             delta=provider_event.delta,
             text=provider_event.text,
-            item=provider_event.item,
+            # Text/refusal deltas may carry an internal phase hint for the
+            # executor's ItemStart. The public delta payload has no item field.
+            item=(None if provider_event.kind in {
+                ProviderEventKind.TEXT_DELTA, ProviderEventKind.REFUSAL_DELTA,
+            } else provider_event.item),
             usage=provider_event.usage,
             response=terminal_response,
             # response.failed carries its error only inside the normalized

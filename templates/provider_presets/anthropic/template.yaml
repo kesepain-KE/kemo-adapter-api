@@ -1,0 +1,8 @@
+adapter_id: anthropic-messages
+name: Anthropic
+base_url: https://api.anthropic.com
+auth_scheme: anthropic-key
+headers: {}
+profile: {}
+tokenizer: claude-legacy
+catalog: []

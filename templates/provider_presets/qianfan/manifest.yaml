@@ -1,0 +1,5 @@
+id: qianfan
+name: 百度千帆
+version: 1.0.0
+contract_version: '1.0'
+description: 百度千帆 连接预制，使用 openai-chat；尚未进行真实厂商调用验证。

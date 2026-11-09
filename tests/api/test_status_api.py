@@ -7,8 +7,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from tests.support.gateway import install_fixtures
 from api.routes.status import _safe_log_item, _safe_log_message
-from core.config import Settings
+from core.config import PrincipalConfig, Settings
 from core.models import Usage, UsageMeasurement
 from tests.support.project import project
 from tests.support.llm import FakeProvider
@@ -78,9 +79,8 @@ def test_status_api_is_read_only_dedicated_and_secret_free(
         Settings(status_token="status-only-token"),
         live_config_root=root,
         statistics_root=root / "storage",
-        discover_providers=False,
-    )
-    app.state.registry.register(FakeProvider())
+        )
+    install_fixtures(app.state.registry, FakeProvider(), system_prompt="policy-v1")
     day = seed_statistics(app)
     monkeypatch.setattr(
         app.state.system_inspector,
@@ -115,9 +115,9 @@ def test_status_api_is_read_only_dedicated_and_secret_free(
     assert response.headers["cache-control"] == "no-store, max-age=0"
     payload = response.json()
     assert payload["object"] == "kemo.gateway_status"
-    assert payload["registry"]["registered_provider_ids"] == ["fake"]
+    assert payload["registry"]["registered_provider_ids"] == ["gateway"]
     assert payload["registry"]["enabled_models"] == [
-        {"model": "fake-model", "provider_id": "fake"}
+        {"model": "fake-model", "provider_id": "gateway"}
     ]
     assert payload["control"]["highest_priority_system_prompt"] == "policy-v1"
     assert payload["statistics"]["summary"]["calls"] == 2
@@ -143,13 +143,11 @@ def test_status_api_is_read_only_dedicated_and_secret_free(
 def test_status_api_is_disabled_when_token_is_empty_or_reused(tmp_path: Path) -> None:
     root = project(tmp_path)
     disabled = create_app(
-        Settings(status_token=""), live_config_root=root, discover_providers=False
-    )
+        Settings(status_token=""), live_config_root=root, )
     reused = create_app(
-        Settings(status_token="live-token"),
+        Settings(status_token="live-token", api_keys={"live-token": PrincipalConfig("tenant", "agent")}),
         live_config_root=root,
-        discover_providers=False,
-    )
+        )
 
     with TestClient(disabled) as client:
         assert client.get("/status", headers=STATUS_HEADERS).status_code == 503

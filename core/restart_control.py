@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -110,7 +111,15 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             json.dumps(value, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        os.replace(temporary, path)
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                # Windows readers briefly prevent replacement of the status file.
+                if os.name != "nt" or exc.winerror not in {5, 32, 33} or attempt == 4:
+                    raise
+                time.sleep(.01 * 2 ** attempt)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -273,7 +282,7 @@ def write_pid_metadata(
     host: str,
     port: int,
     environment_override_names: list[str],
-    dotenv_names: list[str] | None = None,
+    startup_names: list[str] | None = None,
     health_host_header: str | None = None,
 ) -> None:
     atomic_json(
@@ -286,7 +295,7 @@ def write_pid_metadata(
             "port": port,
             "started_at": utc_now(),
             "environment_override_names": sorted(set(environment_override_names)),
-            "dotenv_names": sorted(set(dotenv_names or [])),
+            "startup_names": sorted(set(startup_names or [])),
             "health_host_header": health_host_header,
         },
     )

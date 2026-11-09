@@ -1,0 +1,5 @@
+id: perplexity
+name: Perplexity
+version: 1.0.0
+contract_version: '1.0'
+description: Perplexity 连接预制，使用 perplexity-agent；尚未进行真实厂商调用验证。

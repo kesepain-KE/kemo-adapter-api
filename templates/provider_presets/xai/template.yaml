@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: xAI Grok
+base_url: https://api.x.ai/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: grok
+catalog: []

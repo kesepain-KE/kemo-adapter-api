@@ -2,12 +2,13 @@
 
 网关目前使用扁平的 ``version.json``（版本号、协议版本、构建号和说明），
 与 kemo-agent 的板块清单不同，因此这里不虚构组件版本；模块化只体现在
-职责拆分上，版本文件仍保持向后兼容。
+职责拆分上，版本元数据使用 JSON。
 """
 
 from __future__ import annotations
 
 import json
+
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -17,7 +18,7 @@ from .version import VersionInfo
 
 def _version_from_document(document: object, *, label: str) -> VersionInfo:
     if not isinstance(document, dict):
-        raise UpdateError(f"{label} version.json 不是 JSON 对象")
+        raise UpdateError(f"{label} version.json 不是 JSON object")
     version = str(document.get("version", "")).strip()
     protocol = str(document.get("protocol_version", "")).strip()
     if not version:

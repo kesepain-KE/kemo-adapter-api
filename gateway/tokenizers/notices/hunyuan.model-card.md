@@ -1,0 +1,403 @@
+---
+license: other
+license_name: tencent-hunyuan-a13b
+license_link: https://github.com/Tencent-Hunyuan/Hunyuan-A13B/blob/main/LICENSE
+library_name: transformers
+---
+
+<p align="center">
+ <img src="https://dscache.tencent-cloud.cn/upload/uploader/hunyuan-64b418fd052c033b228e04bc77bbc4b54fd7f5bc.png" width="400"/> <br>
+</p><p></p>
+
+
+<p align="center">
+    🤗&nbsp;<a href="https://huggingface.co/tencent/Hunyuan-A13B-Instruct"><b>Hugging Face</b></a>&nbsp;&nbsp;|&nbsp;&nbsp;
+    🖥️&nbsp;<a href="https://hunyuan.tencent.com" style="color: red;"><b>Official Website</b></a>&nbsp;&nbsp;|&nbsp;&nbsp;
+    🕖&nbsp;<a href="https://cloud.tencent.com/product/hunyuan"><b>HunyuanAPI</b></a>&nbsp;&nbsp;|&nbsp;&nbsp;
+    🕹️&nbsp;<a href="https://hunyuan.tencent.com/?model=hunyuan-a13b"><b>Demo</b></a>&nbsp;&nbsp;|&nbsp;&nbsp;
+    🤖&nbsp;<a href="https://modelscope.cn/models/Tencent-Hunyuan/Hunyuan-A13B-Instruct"><b>ModelScope</b></a>
+</p>
+
+
+<p align="center">
+    <a href="https://github.com/Tencent-Hunyuan/Hunyuan-A13B/blob/main/report/Hunyuan_A13B_Technical_Report.pdf"><b>Technical Report</b> </a> |
+    <a href="https://github.com/Tencent-Hunyuan/Hunyuan-A13B"><b>GITHUB</b></a> | 
+    <a href="https://cnb.cool/tencent/hunyuan/Hunyuan-A13B"><b>cnb.cool</b></a> | 
+    <a href="https://github.com/Tencent-Hunyuan/Hunyuan-A13B/blob/main/LICENSE"><b>LICENSE</b></a> | 
+    <a href="https://raw.githubusercontent.com/Tencent-Hunyuan/Hunyuan-A13B/main/assets/1751881231452.jpg"><b>WeChat</b></a> | 
+    <a href="https://discord.gg/bsPcMEtV7v"><b>Discord</b></a>
+</p>
+
+
+  
+Welcome to the official repository of **Hunyuan-A13B**, an innovative and open-source large language model (LLM) built on a fine-grained Mixture-of-Experts (MoE) architecture. Designed for efficiency and scalability, Hunyuan-A13B delivers cutting-edge performance with minimal computational overhead, making it an ideal choice for advanced reasoning and general-purpose applications, especially in resource-constrained environments.
+
+## Model Introduction
+
+With the rapid advancement of artificial intelligence technology, large language models (LLMs) have achieved remarkable progress in natural language processing, computer vision, and scientific tasks. However, as model scales continue to expand, optimizing resource consumption while maintaining high performance has become a critical challenge. To address this, we have explored Mixture of Experts (MoE) architectures. The newly introduced Hunyuan-A13B model features a total of 80 billion parameters with 13 billion active parameters. It not only delivers high-performance results but also achieves optimal resource efficiency, successfully balancing computational power and resource utilization.
+
+### Key Features and Advantages
+
+- **Compact yet Powerful**: With only 13 billion active parameters (out of a total of 80 billion), the model delivers competitive performance on a wide range of benchmark tasks, rivaling much larger models.
+- **Hybrid Reasoning Support**: Supports both fast and slow thinking modes, allowing users to flexibly choose according to their needs.
+- **Ultra-Long Context Understanding**: Natively supports a 256K context window, maintaining stable performance on long-text tasks.
+- **Enhanced Agent Capabilities**: Optimized for agent tasks, achieving leading results on benchmarks such as BFCL-v3, τ-Bench and C3-Bench.
+- **Efficient Inference**: Utilizes Grouped Query Attention (GQA) and supports multiple quantization formats, enabling highly efficient inference.
+
+### Why Choose Hunyuan-A13B?
+
+As a powerful yet computationally efficient large model, Hunyuan-A13B is an ideal choice for researchers and developers seeking high performance under resource constraints. Whether for academic research, cost-effective AI solution development, or innovative application exploration, this model provides a robust foundation for advancement.
+
+&nbsp;
+
+## Related News
+* 2025.6.27 We have open-sourced  **Hunyuan-A13B-Pretrain** , **Hunyuan-A13B-Instruct** , **Hunyuan-A13B-Instruct-FP8** , **Hunyuan-A13B-Instruct-GPTQ-Int4** on Hugging Face. In addition, we have released a <a href="report/Hunyuan_A13B_Technical_Report.pdf">technical report </a> and a training and inference operation manual, which provide detailed information about the model’s capabilities as well as the operations for training and inference.
+
+<br>
+
+
+## Benchmark
+
+Note: The following benchmarks are evaluated by TRT-LLM-backend on several **base models**. 
+
+| Model            | Hunyuan-Large | Qwen2.5-72B  | Qwen3-A22B | Hunyuan-A13B |
+|------------------|---------------|--------------|-------------|---------------|
+| MMLU             | 88.40          | 86.10         | 87.81        | 88.17          |
+| MMLU-Pro         | 60.20          | 58.10        | 68.18           | 67.23          |
+| MMLU-Redux              |  87.47         | 83.90         | 87.40        | 87.67          |
+| BBH        | 86.30             | 85.80            | 88.87        | 87.56          |
+| SuperGPQA    |  38.90         | 36.20          | 44.06           | 41.32          |
+| EvalPlus       | 75.69          | 65.93         | 77.60        | 78.64          |
+| MultiPL-E             | 59.13             | 60.50            | 65.94        | 69.33          |
+| MBPP | 72.60             | 76.00            | 81.40        | 83.86          |
+| CRUX-I             | 57.00          | 57.63          | -        | 70.13          |
+| CRUX-O             | 60.63          | 66.20          | 79.00        | 77.00          |
+| MATH            | 69.80          | 62.12         | 71.84        | 72.35          |
+| CMATH            | 91.30          | 84.80         | -        | 91.17          |
+| GSM8k         | 92.80             | 91.50           | 94.39        | 91.83          |
+| GPQA            | 25.18             | 45.90            | 47.47        | 49.12          |
+
+
+Hunyuan-A13B-Instruct has achieved highly competitive performance across multiple benchmarks, particularly in mathematics, science, agent domains, and more. We compared it with several powerful models, and the results are shown below.
+
+| Topic               |                        Bench                         | OpenAI-o1-1217 | DeepSeek R1 | Qwen3-A22B | Hunyuan-A13B-Instruct |
+|:-------------------:|:----------------------------------------------------:|:-------------:|:------------:|:-----------:|:---------------------:|
+| **Mathematics**     |            AIME 2024<br>AIME 2025<br>MATH            | 74.3<br>79.2<br>96.4 | 79.8<br>70<br>94.9 | 85.7<br>81.5<br>94.0 | 87.3<br>76.8<br>94.3 |
+| **Science**         |            GPQA-Diamond<br>OlympiadBench             | 78<br>83.1 | 71.5<br>82.4 | 71.1<br>85.7 | 71.2<br>82.7 |
+| **Coding**          |  Livecodebench<br>Fullstackbench<br>ArtifactsBench   | 63.9<br>64.6<br>38.6 | 65.9<br>71.6<br>44.6 | 70.7<br>65.6<br>44.6 | 63.9<br>67.8<br>43 |
+| **Reasoning**       |              BBH<br>DROP<br>ZebraLogic               | 80.4<br>90.2<br>81 | 83.7<br>92.2<br>78.7 | 88.9<br>90.3<br>80.3 | 89.1<br>91.1<br>84.7 |
+| **Instruction<br>Following** |                 IF-Eval<br>SysBench                  | 91.8<br>82.5 | 88.3<br>77.7 | 83.4<br>74.2 | 84.7<br>76.1 |
+| **Text<br>Creation**|                LengthCtrl<br>InsCtrl                 | 60.1<br>74.8 | 55.9<br>69 | 53.3<br>73.7 | 55.4<br>71.9 |
+| **NLU**             |               ComplexNLU<br>Word-Task                | 64.7<br>67.1 | 64.5<br>76.3 | 59.8<br>56.4 | 61.2<br>62.9 |
+| **Agent**           | BFCL v3<br> τ-Bench<br>ComplexFuncBench<br> C3-Bench | 67.8<br>60.4<br>47.6<br>58.8 | 56.9<br>43.8<br>41.1<br>55.3 | 70.8<br>44.6<br>40.6<br>51.7 | 78.3<br>54.7<br>61.2<br>63.5 |
+
+
+&nbsp;
+
+## Use with transformers
+
+Our model defaults to using slow-thinking reasoning, and there are two ways to disable CoT reasoning. 
+1. Pass "enable_thinking=False" when calling apply_chat_template.
+2. Adding "/no_think" before the prompt will force the model not to use perform CoT reasoning. Similarly, adding "/think" before the prompt will force the model to perform CoT reasoning.
+
+The following code snippet shows how to use the transformers library to load and apply the model. 
+It also demonstrates how to enable and disable the reasoning mode , 
+and how to parse the reasoning process along with the final output.
+
+
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import os
+import re
+
+model_name_or_path = os.environ['MODEL_PATH']
+# model_name_or_path = "tencent/Hunyuan-A13B-Instruct"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name_or_path, device_map="auto",trust_remote_code=True)  # You may want to use bfloat16 and/or move to GPU here
+messages = [
+    {"role": "user", "content": "Write a short summary of the benefits of regular exercise"},
+]
+
+text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            enable_thinking=True
+            )
+
+model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+model_inputs.pop("token_type_ids", None)
+outputs = model.generate(**model_inputs, max_new_tokens=4096)
+
+
+output_text = tokenizer.decode(outputs[0])
+
+think_pattern = r'<think>(.*?)</think>'
+think_matches = re.findall(think_pattern, output_text, re.DOTALL)
+
+answer_pattern = r'<answer>(.*?)</answer>'
+answer_matches = re.findall(answer_pattern, output_text, re.DOTALL)
+
+think_content = [match.strip() for match in think_matches][0]
+answer_content = [match.strip() for match in answer_matches][0]
+print(f"thinking_content:{think_content}\n\n")
+print(f"answer_content:{answer_content}\n\n")
+```
+
+### Fast and slow thinking switch
+
+This model supports two modes of operation:
+
+- Slow Thinking Mode (Default): Enables detailed internal reasoning steps before producing the final answer.
+- Fast Thinking Mode: Skips the internal reasoning process for faster inference, going straight to the final answer.
+
+**Switching to Fast Thinking Mode:**
+
+To disable the reasoning process, set `enable_thinking=False` in the apply_chat_template call:
+```
+
+text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            enable_thinking=False
+            )
+```                                           
+
+
+
+## Deployment   
+
+For deployment, you can use frameworks such as **TensorRT-LLM**, **vLLM**, or **SGLang** to serve the model and create an OpenAI-compatible API endpoint.
+
+image: https://hub.docker.com/r/hunyuaninfer/hunyuan-a13b/tags 
+
+
+### TensorRT-LLM
+
+#### Docker Image 
+
+We provide a pre-built Docker image based on the latest version of TensorRT-LLM.
+
+- To Get Started, Download the Docker Image:
+
+**From Docker Hub:**
+```
+docker pull hunyuaninfer/hunyuan-a13b:hunyuan-moe-A13B-trtllm
+```
+
+**From China Mirror(Thanks to [CNB](https://cnb.cool/ "CNB.cool")):**
+
+
+First, pull the image from CNB:
+``` 
+docker pull docker.cnb.cool/tencent/hunyuan/hunyuan-a13b:hunyuan-moe-A13B-trtllm
+```
+
+Then, rename the image to better align with the following scripts:
+```
+
+docker tag docker.cnb.cool/tencent/hunyuan/hunyuan-a13b:hunyuan-moe-A13B-trtllm hunyuaninfer/hunyuan-a13b:hunyuan-moe-A13B-trtllm
+```
+
+
+- start docker 
+
+```
+docker run --name hunyuanLLM_infer --rm -it --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --gpus=all hunyuaninfer/hunyuan-a13b:hunyuan-moe-A13B-trtllm
+```
+
+- Prepare Configuration file:
+
+```
+cat >/path/to/extra-llm-api-config.yml <<EOF
+use_cuda_graph: true
+cuda_graph_padding_enabled: true
+cuda_graph_batch_sizes:
+- 1
+- 2
+- 4
+- 8
+- 16
+- 32
+print_iter_log: true
+EOF
+```
+
+
+- Start the API server:
+
+
+```
+trtllm-serve \
+  /path/to/HunYuan-moe-A13B \
+  --host localhost \
+  --port 8000 \
+  --backend pytorch \
+  --max_batch_size 32 \
+  --max_num_tokens 16384 \
+  --tp_size 2 \
+  --kv_cache_free_gpu_memory_fraction 0.6 \
+  --trust_remote_code \
+  --extra_llm_api_options /path/to/extra-llm-api-config.yml
+```
+
+
+### vLLM
+
+#### Inference from Docker Image
+We provide a pre-built Docker image containing vLLM 0.8.5 with full support for this model. The official vllm release is currently under development， **note: cuda 12.4 is require for this docker**.
+
+
+- To Get Started, Download the Docker Image:
+
+**From Docker Hub:**
+```
+docker pull hunyuaninfer/hunyuan-infer-vllm-cuda12.4:v1
+```
+
+**From China Mirror(Thanks to [CNB](https://cnb.cool/ "CNB.cool")):**
+
+
+First, pull the image from CNB:
+``` 
+docker pull docker.cnb.cool/tencent/hunyuan/hunyuan-a13b/hunyuan-infer-vllm-cuda12.4:v1
+```
+
+Then, rename the image to better align with the following scripts:
+```
+docker tag docker.cnb.cool/tencent/hunyuan/hunyuan-a13b/hunyuan-infer-vllm-cuda12.4:v1 hunyuaninfer/hunyuan-infer-vllm-cuda12.4:v1 
+```
+
+- Download Model file: 
+  - Huggingface:  will download automicly by vllm.
+  - ModelScope: `modelscope download --model Tencent-Hunyuan/Hunyuan-A13B-Instruct`
+ 
+
+- Start the API server:
+
+model download by huggingface:
+```
+docker run --rm  --ipc=host \
+        -v ~/.cache:/root/.cache/ \
+        --security-opt seccomp=unconfined \
+        --net=host \
+        --gpus=all \
+        -it \
+        --entrypoint python3 hunyuaninfer/hunyuan-infer-vllm-cuda12.4:v1 \
+        -m vllm.entrypoints.openai.api_server \
+        --host 0.0.0.0 \
+        --tensor-parallel-size 4 \
+        --port 8000 \
+        --model tencent/Hunyuan-A13B-Instruct  \
+        --trust_remote_code
+``` 
+
+model downloaded by modelscope:
+```
+docker run --rm  --ipc=host \
+        -v ~/.cache/modelscope:/root/.cache/modelscope \
+        --security-opt seccomp=unconfined \
+        --net=host \
+        --gpus=all \
+        -it \
+        --entrypoint python3 hunyuaninfer/hunyuan-infer-vllm-cuda12.4:v1 \
+        -m vllm.entrypoints.openai.api_server \
+        --host 0.0.0.0 \
+        --tensor-parallel-size 4 \
+        --port 8000 \
+        --model /root/.cache/modelscope/hub/models/Tencent-Hunyuan/Hunyuan-A13B-Instruct/  \
+        --trust_remote_code
+```
+
+### Source Code
+Support for this model has been added via  this [PR 20114](https://github.com/vllm-project/vllm/pull/20114 ) in the vLLM project, 
+This patch already been merged by community at Jul-1-2025.
+
+You can build and run vLLM from source using code after `ecad85`.
+
+### Model Context Length Support
+
+The Hunyuan A13B model supports a maximum context length of **256K tokens (262,144 tokens)**. However, due to GPU memory constraints on most hardware setups, the default configuration in `config.json` limits the context length to **32K tokens** to prevent out-of-memory (OOM) errors.
+
+#### Extending Context Length to 256K
+
+To enable full 256K context support, you can manually modify the `max_position_embeddings` field in the model's `config.json` file as follows:
+
+```json
+{
+  ...
+  "max_position_embeddings": 262144,
+  ...
+}
+```
+
+When serving the model using **vLLM**, you can also explicitly set the maximum model length by adding the following flag to your server launch command:
+
+```bash
+--max-model-len 262144
+```
+
+#### Recommended Configuration for 256K Context Length
+
+The following configuration is recommended for deploying the model with 256K context length support on systems equipped with **NVIDIA H20 GPUs (96GB VRAM)**:
+
+| Model DType    | KV-Cache Dtype | Number of Devices | Model Length |
+|----------------|----------------|--------------------|--------------|
+| `bfloat16`     | `bfloat16`     | 4                  | 262,144      |
+
+> ⚠️ **Note:** Using FP8 quantization for KV-cache may impact generation quality. The above settings are suggested configurations for stable 256K-length service deployment.
+
+
+#### Tool Calling with vLLM
+
+To support agent-based workflows and function calling capabilities, this model includes specialized parsing mechanisms for handling tool calls and internal reasoning steps.
+
+For a complete working example of how to implement and use these features in an agent setting, please refer to our full agent implementation on GitHub:  
+🔗 [Hunyuan A13B Agent Example](https://github.com/Tencent-Hunyuan/Hunyuan-A13B/blob/main/agent/)
+
+When deploying the model using **vLLM**, the following parameters can be used to configure the tool parsing behavior:
+
+| Parameter                | Value                                                                 |
+|--------------------------|-----------------------------------------------------------------------|
+| `--tool-parser-plugin`   | [Local Hunyuan A13B Tool Parser File](https://github.com/Tencent-Hunyuan/Hunyuan-A13B/blob/main/agent/hunyuan_tool_parser.py) |
+| `--tool-call-parser`     | `hunyuan`                                                            |
+
+These settings enable vLLM to correctly interpret and route tool calls generated by the model according to the expected format.
+
+### Reasoning parser
+
+vLLM reasoning parser support on Hunyuan A13B model is under development.
+
+
+
+### SGLang
+
+#### Docker Image 
+
+We also provide a pre-built Docker image based on the latest version of SGLang.
+
+To get started:
+
+- Pull the Docker image
+
+```
+docker pull docker.cnb.cool/tencent/hunyuan/hunyuan-a13b:hunyuan-moe-A13B-sglang
+or
+docker pull hunyuaninfer/hunyuan-a13b:hunyuan-moe-A13B-sglang
+```
+
+- Start the API server:
+
+```
+docker run --gpus all \
+    --shm-size 32g \
+    -p 30000:30000 \
+    --ipc=host \
+    docker.cnb.cool/tencent/hunyuan/hunyuan-a13b:hunyuan-moe-A13B-sglang \
+    -m sglang.launch_server --model-path hunyuan/huanyuan_A13B --tp 4 --trust-remote-code --host 0.0.0.0 --port 30000
+```
+
+## Contact Us
+
+If you would like to leave a message for our R&D and product teams, Welcome to contact our open-source team . You can also contact us via email (hunyuan_opensource@tencent.com).

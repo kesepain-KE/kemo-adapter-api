@@ -1,0 +1,6 @@
+id: deepseek
+name: 深度求索
+version: 1.0.0
+contract_version: '1.0'
+verification: verified
+description: 2026-11-09 在官方入口以 deepseek-flash 完成短文本非流式与流式调用；此验证不覆盖全部模型及能力。

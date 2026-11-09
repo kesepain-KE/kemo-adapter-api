@@ -23,7 +23,8 @@ _EXCLUDE_DIRS = frozenset({
     ".pytest_cache",
     "htmlcov",
     ".coverage",
-    "storage",
+    "data",
+    "extensions",
     "开发目录",
 })
 
@@ -38,7 +39,7 @@ _EXCLUDE_SUFFIXES = frozenset({
     ".log",
     ".pid",
 })
-_EXCLUDE_FILES = frozenset({".env", ".update.lock", ".update.maintenance"})
+_EXCLUDE_FILES = frozenset({"gateway.yaml", ".update.lock", ".update.maintenance"})
 
 
 def _should_exclude(path: Path, project_root: Path) -> bool:
@@ -50,10 +51,7 @@ def _should_exclude(path: Path, project_root: Path) -> bool:
 
     # 检查每层父目录
     parts = rel.split("/")
-    # Provider 包与凭据属于部署端私有生态；仓库只管理命名空间文件。
-    if parts[0] == "providers" and rel != "providers/__init__.py":
-        return True
-    if rel in _EXCLUDE_FILES or rel == "api/keys.json":
+    if rel in _EXCLUDE_FILES:
         return True
     if rel.startswith("core/runtime/"):
         return True

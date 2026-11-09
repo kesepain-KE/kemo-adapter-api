@@ -207,7 +207,7 @@ class RestartService:
         await self.runtime_state.mark_stopping()
         # Tell uvicorn to leave its serve loop immediately.  The detached
         # replacement process independently waits for this PID and its port
-        # to disappear before loading the new .env and starting.
+        # to disappear before loading the new gateway.yaml and starting.
         self.server.should_exit = True
 
 

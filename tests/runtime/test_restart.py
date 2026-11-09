@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from core.restart_control import (
     RestartAlreadyRunning,
     RestartPaths,
     RestartRequest,
+    atomic_json,
     clear_pid_metadata,
     read_json,
     release_restart,
@@ -22,11 +24,34 @@ from core.restart_control import (
 )
 from restart import _child_environment, _prospective_environment
 from core.runtime_state import GatewayDrainingError, GatewayPhase, GatewayRuntimeState
-from tests.support.admin import ADMIN_HEADERS, admin_project
+from tests.support.admin import ADMIN_HEADERS, admin_project, admin_settings
 from web.backend.auth_service import WebAuthService
 
 
 OWNER_HEADERS = {"Authorization": "Bearer owner-token"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows denies replacement while a regular file reader is open")
+@pytest.mark.parametrize("release_reader", [True, False])
+def test_atomic_status_write_handles_windows_file_reader(tmp_path, release_reader):
+    path = tmp_path / "restart-status.json"
+    atomic_json(path, {"phase": "starting"})
+    reader = path.open("rb")
+    timer = threading.Timer(.04, reader.close) if release_reader else None
+    try:
+        if timer:
+            timer.start()
+            atomic_json(path, {"phase": "succeeded"})
+            assert read_json(path) == {"phase": "succeeded"}
+        else:
+            with pytest.raises(PermissionError):
+                atomic_json(path, {"phase": "succeeded"})
+            assert read_json(path) == {"phase": "starting"}
+        assert not list(tmp_path.glob("*.tmp"))
+    finally:
+        reader.close()
+        if timer:
+            timer.join()
 
 
 def test_runtime_state_drains_existing_execution_and_rejects_new_work() -> None:
@@ -82,7 +107,7 @@ def test_restart_submission_uses_exclusive_lock_and_atomic_status(tmp_path: Path
 
 def test_restart_admin_api_requires_owner_and_returns_queue_id(tmp_path: Path) -> None:
     root = admin_project(tmp_path)
-    app = create_app(Settings(), live_config_root=root, discover_providers=False)
+    app = create_app(admin_settings(), live_config_root=root, )
 
     class FakeRestartService:
         def status(self):
@@ -114,48 +139,48 @@ def test_restart_admin_api_requires_owner_and_returns_queue_id(tmp_path: Path) -
         }
 
 
-def test_replacement_environment_reloads_changed_dotenv_and_drops_removed_values(
+def test_replacement_environment_reloads_changed_startup_config_and_drops_removed_values(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A replacement must not inherit values loaded by the old process."""
-    env_file = tmp_path / ".env"
-    env_file.write_text("PORT=8754\nNEW_SETTING=updated\n", encoding="utf-8")
+    env_file = tmp_path / "gateway.yaml"
+    env_file.write_text("PORT: 8754\nNEW_SETTING: updated\n", encoding="utf-8")
     monkeypatch.setenv("PORT", "old-loaded-value")
     monkeypatch.setenv("REMOVED_SETTING", "stale-value")
     metadata = {
-        # PORT and REMOVED_SETTING were loaded from the previous .env, not
+        # PORT and REMOVED_SETTING were loaded from the previous gateway.yaml, not
         # supplied by the shell, so both must be removed before start_web.py
-        # calls load_dotenv(override=False).
+        # calls load_startup_environment(override=False).
         "environment_override_names": [],
-        "dotenv_names": ["PORT", "REMOVED_SETTING"],
+        "startup_names": ["PORT", "REMOVED_SETTING"],
     }
 
     child = _child_environment(tmp_path, metadata)
 
     assert "PORT" not in child
     assert "REMOVED_SETTING" not in child
-    # start_web.py will load the new value from the current .env.
-    assert env_file.read_text(encoding="utf-8") == "PORT=8754\nNEW_SETTING=updated\n"
+    # start_web.py will load the new value from the current gateway.yaml.
+    assert env_file.read_text(encoding="utf-8") == "PORT: 8754\nNEW_SETTING: updated\n"
 
 
 def test_replacement_environment_preserves_explicit_process_overrides(
     tmp_path: Path, monkeypatch
 ) -> None:
-    (tmp_path / ".env").write_text("PORT=8754\n", encoding="utf-8")
+    (tmp_path / "gateway.yaml").write_text("PORT: 8754\n", encoding="utf-8")
     monkeypatch.setenv("PORT", "9999")
     child = _child_environment(
         tmp_path,
-        {"environment_override_names": ["PORT"], "dotenv_names": ["PORT"]},
+        {"environment_override_names": ["PORT"], "startup_names": ["PORT"]},
     )
     assert child["PORT"] == "9999"
 
 
-def test_prospective_environment_restores_running_dotenv_values(
+def test_prospective_environment_restores_running_startup_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = RestartPaths(tmp_path)
     monkeypatch.setenv("WEB_TOKEN", "old-running-token")
-    (tmp_path / ".env").write_text("WEB_TOKEN=new-token\n", encoding="utf-8")
+    (tmp_path / "gateway.yaml").write_text("WEB_TOKEN: new-token\n", encoding="utf-8")
     write_pid_metadata(
         paths,
         pid=43210,
@@ -163,7 +188,7 @@ def test_prospective_environment_restores_running_dotenv_values(
         host="127.0.0.1",
         port=7531,
         environment_override_names=[],
-        dotenv_names=["WEB_TOKEN"],
+        startup_names=["WEB_TOKEN"],
     )
 
     with _prospective_environment(tmp_path):

@@ -93,8 +93,7 @@ def test_asset_upload_query_range_idempotency_and_delete(tmp_path: Path) -> None
         live_config_root=root,
         statistics_root=root / "storage",
         asset_root=root / "storage" / "assets",
-        discover_providers=False,
-    )
+        )
 
     with TestClient(app) as client:
         created = _upload(client)
@@ -159,8 +158,7 @@ def test_asset_rejects_scope_and_media_signature_mismatch(tmp_path: Path) -> Non
         live_config_root=root,
         statistics_root=root / "storage",
         asset_root=root / "storage" / "assets",
-        discover_providers=False,
-    )
+        )
 
     with TestClient(app) as client:
         denied = client.post(
@@ -191,8 +189,7 @@ def test_asset_infers_detected_mime_from_generic_upload_and_encodes_filename(
         live_config_root=root,
         statistics_root=root / "storage",
         asset_root=root / "storage" / "assets",
-        discover_providers=False,
-    )
+        )
     body = b"%PDF-1.7\n% test\n"
     headers = _headers(key="generic-pdf")
     headers["X-Content-SHA256"] = hashlib.sha256(body).hexdigest()

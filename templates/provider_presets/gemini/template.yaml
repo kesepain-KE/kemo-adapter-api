@@ -1,0 +1,8 @@
+adapter_id: gemini
+name: Google Gemini (AI Studio)
+base_url: https://generativelanguage.googleapis.com/v1beta
+auth_scheme: gemini-query
+headers: {}
+profile: {}
+tokenizer: gemini
+catalog: []

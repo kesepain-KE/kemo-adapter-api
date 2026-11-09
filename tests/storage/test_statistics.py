@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -11,7 +12,7 @@ from api.server import create_app
 from core.config import Settings
 from core.executor import GatewayExecutor
 from core.models import EmbeddingRequest, RerankRequest, Usage, UsageMeasurement
-from core.registry import ProviderRegistry
+from tests.support.gateway import fixture_registry
 from core.retrieval_executor import RetrievalExecutor
 from core.stores import InMemoryExecutionStore
 from storage.statistics import StatisticsStore
@@ -325,59 +326,58 @@ def test_gateway_key_usage_counts_tool_action_as_success(tmp_path: Path) -> None
 
 def test_llm_and_retrieval_executors_count_actual_calls_once(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = StatisticsStore(tmp_path / "storage")
-        await store.initialize()
+        async with AsyncExitStack() as resources:
+            store = StatisticsStore(tmp_path / "storage")
+            await store.initialize()
 
-        llm_registry = ProviderRegistry()
-        llm_registry.register(FakeProvider())
-        llm = GatewayExecutor(
-            llm_registry, InMemoryExecutionStore(), statistics=store
-        )
-        context = llm.make_context(
-            tenant_id="tenant",
-            subject_id="agent",
-            request_id="req_1",
-            gateway_key_id="llm-key",
-        )
-        await llm.execute(request(stream=False), context)
-        replay_context = llm.make_context(
-            tenant_id="tenant",
-            subject_id="agent",
-            request_id="req_1",
-            gateway_key_id="llm-key",
-        )
-        await llm.execute(request(stream=False), replay_context)
+            llm_registry = await resources.enter_async_context(fixture_registry(tmp_path / "llm", FakeProvider()))
+            llm = GatewayExecutor(
+                llm_registry, InMemoryExecutionStore(), statistics=store
+            )
+            context = llm.make_context(
+                tenant_id="tenant",
+                subject_id="agent",
+                request_id="req_1",
+                gateway_key_id="llm-key",
+            )
+            await llm.execute(request(stream=False), context)
+            replay_context = llm.make_context(
+                tenant_id="tenant",
+                subject_id="agent",
+                request_id="req_1",
+                gateway_key_id="llm-key",
+            )
+            await llm.execute(request(stream=False), replay_context)
 
-        retrieval_registry = ProviderRegistry()
-        provider = FakeRetrievalProvider()
-        retrieval_registry.register(provider)
-        retrieval = RetrievalExecutor(retrieval_registry, statistics=store)
-        embed_request = EmbeddingRequest.model_validate(embedding_body())
-        embed_context = retrieval.make_context(
-            tenant_id="tenant",
-            subject_id="graph",
-            request_id=embed_request.request_id,
-            gateway_key_id="graph-key",
-        )
-        await retrieval.embeddings(embed_request, embed_context)
-        await retrieval.embeddings(embed_request, embed_context)
+            provider = FakeRetrievalProvider()
+            retrieval_registry = await resources.enter_async_context(fixture_registry(tmp_path / "retrieval", provider))
+            retrieval = RetrievalExecutor(retrieval_registry, statistics=store)
+            embed_request = EmbeddingRequest.model_validate(embedding_body())
+            embed_context = retrieval.make_context(
+                tenant_id="tenant",
+                subject_id="graph",
+                request_id=embed_request.request_id,
+                gateway_key_id="graph-key",
+            )
+            await retrieval.embeddings(embed_request, embed_context)
+            await retrieval.embeddings(embed_request, embed_context)
 
-        rerank_request = RerankRequest.model_validate(rerank_body())
-        rerank_context = retrieval.make_context(
-            tenant_id="tenant",
-            subject_id="graph",
-            request_id=rerank_request.request_id,
-            gateway_key_id="graph-key",
-        )
-        await retrieval.rerank(rerank_request, rerank_context)
+            rerank_request = RerankRequest.model_validate(rerank_body())
+            rerank_context = retrieval.make_context(
+                tenant_id="tenant",
+                subject_id="graph",
+                request_id=rerank_request.request_id,
+                gateway_key_id="graph-key",
+            )
+            await retrieval.rerank(rerank_request, rerank_context)
 
-        day = next((tmp_path / "storage" / "daily").rglob("*.sqlite3")).stem
-        daily = await store.daily(day)
-        assert daily["calls"] == 3
-        assert daily["successes"] == 3
-        assert daily["replay_count"] == 2
-        assert provider.embedding_calls == 1
-        assert provider.rerank_calls == 1
+            day = next((tmp_path / "storage" / "daily").rglob("*.sqlite3")).stem
+            daily = await store.daily(day)
+            assert daily["calls"] == 3
+            assert daily["successes"] == 3
+            assert daily["replay_count"] == 2
+            assert provider.embedding_calls == 1
+            assert provider.rerank_calls == 1
 
     asyncio.run(scenario())
 
@@ -388,8 +388,7 @@ def test_admin_statistics_api_is_protected_and_validates_queries(tmp_path: Path)
         Settings(),
         live_config_root=root,
         statistics_root=tmp_path / "statistics",
-        discover_providers=False,
-    )
+        )
     with TestClient(app) as client:
         response = client.get("/admin/api/statistics/daily", params={"date": "2000-01-01"})
         assert response.status_code == 200

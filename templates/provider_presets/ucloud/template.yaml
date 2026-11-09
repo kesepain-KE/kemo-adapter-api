@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: UCloud Modelverse
+base_url: https://api.modelverse.cn/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

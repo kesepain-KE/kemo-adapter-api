@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 火山方舟 豆包
+base_url: https://ark.cn-beijing.volces.com/api/v3
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: doubao
+catalog: []

@@ -20,7 +20,6 @@ STARTUP_ENV_NAMES = (
     "GATEWAY_BASE_URL",
     "GATEWAY_API_KEYS_JSON",
     "GATEWAY_API_KEY",
-    "PROVIDER_SETTINGS_JSON",
     "MODEL_EXECUTION_TIMEOUT_SECONDS",
     "MAX_CONCURRENT_EXECUTIONS",
     "SSE_HEARTBEAT_SECONDS",
@@ -39,10 +38,10 @@ def test_start_web_loads_project_env_and_process_values_take_priority(
     tmp_path: Path, monkeypatch
 ) -> None:
     clear_startup_env(monkeypatch)
-    env_file = tmp_path / ".env"
+    env_file = tmp_path / "gateway.yaml"
     env_file.write_text(
-        "HOST=127.0.0.9\nPORT=9876\nLOG_LEVEL=debug\n"
-        "WEB_ACCESS_LOG=false\nWEB_OPEN_BROWSER=false\n",
+        "HOST: 127.0.0.9\nPORT: 9876\nLOG_LEVEL: debug\n"
+        "WEB_ACCESS_LOG: false\nWEB_OPEN_BROWSER: false\n",
         encoding="utf-8",
     )
     dist = tmp_path / "dist"
@@ -67,7 +66,7 @@ def test_start_web_loads_project_env_and_process_values_take_priority(
                 monkeypatch.setenv(name, value)
         return True
 
-    monkeypatch.setattr(start_web, "load_dotenv", load_test_env)
+    monkeypatch.setattr(start_web, "load_startup_environment", load_test_env)
 
     captured: dict = {}
 
@@ -106,9 +105,9 @@ def test_start_web_rejects_invalid_environment_without_echoing_value(
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("ok", encoding="utf-8")
-    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.yaml")
     monkeypatch.setattr(start_web, "FRONTEND_DIST", dist)
-    monkeypatch.setattr(start_web, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr(start_web, "load_startup_environment", lambda *args, **kwargs: False)
     monkeypatch.setenv("PORT", "not-a-port-secret")
     called = False
 
@@ -185,9 +184,9 @@ def test_startup_options_rejects_empty_web_credentials_for_public_base_url(
 
 def test_start_web_requires_built_frontend(tmp_path: Path, monkeypatch, capsys) -> None:
     clear_startup_env(monkeypatch)
-    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.yaml")
     monkeypatch.setattr(start_web, "FRONTEND_DIST", tmp_path / "missing-dist")
-    monkeypatch.setattr(start_web, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr(start_web, "load_startup_environment", lambda *args, **kwargs: False)
 
     assert start_web.main() == 2
     assert "pnpm run build" in capsys.readouterr().err
@@ -200,9 +199,9 @@ def test_start_web_refuses_a_second_active_instance(
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("ok", encoding="utf-8")
-    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setattr(start_web, "ENV_FILE", tmp_path / "missing.yaml")
     monkeypatch.setattr(start_web, "FRONTEND_DIST", dist)
-    monkeypatch.setattr(start_web, "load_dotenv", lambda *args, **kwargs: False)
+    monkeypatch.setattr(start_web, "load_startup_environment", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         start_web,
         "_startup_conflict",

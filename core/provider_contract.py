@@ -1,12 +1,11 @@
-"""所有厂商包统一暴露给网关的唯一契约。
+"""协议适配器与 Kemo 执行器共享的规范化结果、事件和请求上下文。
 
-关键边界：Provider 包输出标准化事件，而不是 SSE 字节或带 sequence 的 Kemo 事件。
+关键边界：Adapter 输出标准化事件；SSE 字节与 Kemo 事件信封由执行器组装。
 sequence、event_id、重放和唯一终态由网关核心统一负责。
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -15,11 +14,7 @@ from typing import Any, Protocol
 
 from core.models import (
     AssetDescriptor,
-    EmbeddingRequest,
     ErrorObject,
-    KemoRequest,
-    ModelCapabilities,
-    RerankRequest,
     Usage,
 )
 
@@ -68,6 +63,8 @@ class ProviderEventKind(StrEnum):
     # deltas.  The public Kemo 2.0 stream requires output_text.done before
     # usage/terminal frames, so the executor may emit this normalized event.
     TEXT_DONE = "output_text.done"
+    REFUSAL_DELTA = "output_refusal.delta"
+    REFUSAL_DONE = "output_refusal.done"
     AUDIO_DELTA = "output_audio.delta"
     REASONING_SUMMARY_DELTA = "reasoning.summary.delta"
     REASONING_CONTENT_DELTA = "reasoning.content.delta"
@@ -87,7 +84,7 @@ class ProviderEventKind(StrEnum):
 
 @dataclass(slots=True)
 class ProviderResult:
-    """厂商包完成协议转换后的统一结果。"""
+    """协议适配器转换后的统一结果。"""
 
     status: str
     output: list[dict[str, Any]] = field(default_factory=list)
@@ -113,19 +110,6 @@ class ProviderBatchResult:
 
     responses: list[ProviderChoiceResult]
     usage: Usage = field(default_factory=Usage)
-
-
-@dataclass(slots=True)
-class ProviderProbeResult:
-    """厂商包完成真实最小调用后返回的统一可达性结果。"""
-
-    reachable: bool
-    status: str
-    usage: Usage = field(default_factory=Usage)
-    provider_response_id: str | None = None
-    error: ErrorObject | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    extensions: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,102 +174,8 @@ class ProviderEvent:
 
 
 class ProviderException(Exception):
-    """厂商包完成脱敏和错误映射后抛出的异常。"""
+    """协议适配器完成脱敏和错误映射后抛出的异常。"""
 
     def __init__(self, error: ErrorObject) -> None:
         super().__init__(error.message)
         self.error = error
-
-
-class ProviderPackage(ABC):
-    """一个厂商目录对网关暴露的 Facade。"""
-
-    provider_id: str
-
-    @property
-    @abstractmethod
-    def models(self) -> frozenset[str]:
-        """该包接受的完整网关模型名，例如 ``openai-gpt-5``。"""
-
-    @abstractmethod
-    async def capabilities(self, model: str) -> ModelCapabilities:
-        """返回该厂商包确认过的真实能力。"""
-
-    async def probe(self, model: str, context: RequestContext) -> ProviderProbeResult:
-        """执行厂商自定义的最小真实调用；未实现时必须明确返回不支持。"""
-        del model, context
-        return ProviderProbeResult(
-            reachable=False,
-            status="unsupported",
-            error=ErrorObject(
-                type="unsupported_operation",
-                code="CAPABILITY_ERROR",
-                message=f"Provider {self.provider_id} 尚未实现模型可达性探测器。",
-            ),
-        )
-
-    async def execute(
-        self, request: KemoRequest, context: RequestContext
-    ) -> ProviderResult | ProviderBatchResult:
-        """完成一次 LLM 非流式执行；非 LLM 包保持默认实现。"""
-        del request, context
-        raise LookupError(f"Provider {self.provider_id} 不支持 LLM response")
-
-    def stream(
-        self, request: KemoRequest, context: RequestContext
-    ) -> AsyncIterator[ProviderEvent]:
-        """执行 LLM 流；非 LLM 包保持默认实现。"""
-        del request, context
-        raise LookupError(f"Provider {self.provider_id} 不支持 LLM stream")
-
-    async def embed(
-        self, request: EmbeddingRequest, context: RequestContext
-    ) -> ProviderEmbeddingResult:
-        """执行向量化；不支持该任务的包保持默认实现。"""
-        del request, context
-        raise LookupError(f"Provider {self.provider_id} 不支持 embedding")
-
-    async def rerank(
-        self, request: RerankRequest, context: RequestContext
-    ) -> ProviderRerankResult:
-        """执行重排序；不支持该任务的包保持默认实现。"""
-        del request, context
-        raise LookupError(f"Provider {self.provider_id} 不支持 rerank")
-
-    async def cancel(self, provider_response_id: str | None, context: RequestContext) -> None:
-        """取消厂商任务。同步完成型厂商可以保持默认实现。"""
-        return None
-
-    async def reload_config(self, settings: Mapping[str, Any]) -> None:
-        """热更新厂商 API 配置；实现必须原子切换且不得中断已有请求。"""
-        return None
-
-    def requires_catalog_rebuild(
-        self,
-        previous_settings: Mapping[str, Any],
-        new_settings: Mapping[str, Any],
-    ) -> bool:
-        """Return whether a live setting change requires a new package.
-
-        The default is deliberately conservative: ordinary API keys, URLs,
-        headers and timeouts continue through ``reload_config``.  A Provider
-        may opt in only when a declarative setting changes its model set or
-        capability declarations.  The registry then builds and validates a
-        complete replacement package before atomically publishing it, so
-        in-flight requests keep using the previous package.
-
-        This hook must be pure, fast and must never log or return secret
-        values.  Python source, dependencies and newly created Provider
-        directories remain restart-only changes.
-        """
-
-        del previous_settings, new_settings
-        return False
-
-    async def close(self) -> None:
-        """释放连接池等厂商私有资源。"""
-        return None
-
-    def diagnostics(self) -> Mapping[str, Any]:
-        """只允许返回脱敏且低基数的诊断信息。"""
-        return {"provider_id": self.provider_id, "models": sorted(self.models)}

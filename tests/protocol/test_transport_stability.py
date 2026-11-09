@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from tests.support.gateway import install_fixtures
 from api.routes.responses import _heartbeat_stream
 from core.config import PrincipalConfig, Settings
 from core.event_assembler import EventAssembler, EventTooLargeError
@@ -92,9 +93,8 @@ def test_invalid_last_event_id_is_rejected_before_sse_headers(tmp_path: Path) ->
         live_config_root=tmp_path,
         statistics_root=tmp_path / "statistics",
         asset_root=tmp_path / "assets",
-        discover_providers=False,
-    )
-    app.state.registry.register(FakeProvider())
+        )
+    install_fixtures(app.state.registry, FakeProvider())
     body = provider_request(stream=True).model_dump(mode="json")
     with TestClient(app) as client:
         response = client.post(

@@ -1,0 +1,5 @@
+id: siliconflow-embedding
+name: 硅基流动 Embeddings
+version: 1.0.0
+contract_version: '1.0'
+description: 硅基流动 Embeddings 连接预制，使用 openai-embedding；尚未进行真实厂商调用验证。

@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 百川智能
+base_url: https://api.baichuan-ai.com/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: baichuan
+catalog: []

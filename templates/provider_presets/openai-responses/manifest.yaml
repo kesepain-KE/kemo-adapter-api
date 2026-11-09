@@ -1,0 +1,5 @@
+id: openai-responses
+name: OpenAI Responses
+version: 1.0.0
+contract_version: '1.0'
+description: OpenAI Responses 连接预制，使用 openai-responses；尚未进行真实厂商调用验证。

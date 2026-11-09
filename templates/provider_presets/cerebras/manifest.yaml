@@ -1,0 +1,5 @@
+id: cerebras
+name: Cerebras
+version: 1.0.0
+contract_version: '1.0'
+description: Cerebras 连接预制，使用 openai-chat；尚未进行真实厂商调用验证。

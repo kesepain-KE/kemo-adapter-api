@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: DeepInfra
+base_url: https://api.deepinfra.com/v1/openai
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

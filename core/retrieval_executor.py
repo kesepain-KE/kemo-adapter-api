@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from core.live_config import LiveConfigManager
+from gateway.runtime import ControlView, RuntimeRegistry
 from core.models import (
     EmbeddingData,
     EmbeddingRequest,
@@ -27,7 +27,6 @@ from core.provider_contract import (
     ProviderRerankResult,
     RequestContext,
 )
-from core.registry import ProviderRegistry
 from core.runtime_state import (
     GatewayDrainingError,
     GatewayOverloadedError,
@@ -68,8 +67,8 @@ class RetrievalExecutor:
 
     def __init__(
         self,
-        registry: ProviderRegistry,
-        live_config: LiveConfigManager | None = None,
+        registry: RuntimeRegistry,
+        live_config: ControlView | None = None,
         runtime_state: GatewayRuntimeState | None = None,
         statistics: StatisticsStore | None = None,
         execution_timeout_seconds: float = 900.0,

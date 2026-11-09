@@ -1,0 +1,5 @@
+id: stepfun
+name: 阶跃星辰
+version: 1.0.0
+contract_version: '1.0'
+description: 阶跃星辰 连接预制，使用 openai-chat；尚未进行真实厂商调用验证。

@@ -1,0 +1,5 @@
+id: spark
+name: 讯飞星火
+version: 1.0.0
+contract_version: '1.0'
+description: 讯飞星火 连接预制，使用 openai-chat；尚未进行真实厂商调用验证。

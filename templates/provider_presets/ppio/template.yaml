@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: PPIO 派欧云
+base_url: https://api.ppio.com/openai/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

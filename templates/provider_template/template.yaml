@@ -1,0 +1,7 @@
+adapter_id: openai-chat
+name: Custom service
+base_url: ''
+auth_scheme: bearer
+headers: {}
+profile: {}
+catalog: []

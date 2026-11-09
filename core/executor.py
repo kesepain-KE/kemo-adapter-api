@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
@@ -16,7 +17,7 @@ from core.capability_validation import (
     validate_media_url_networks,
 )
 from core.event_assembler import EventAssembler, EventTooLargeError
-from core.live_config import LiveConfigManager
+from gateway.runtime import ControlView, ModelRoute, RuntimeRegistry
 from core.models import (
     AudioContent,
     ErrorObject,
@@ -40,7 +41,6 @@ from core.provider_contract import (
     ProviderChoiceResult,
     ProviderEventKind,
     ProviderException,
-    ProviderPackage,
     ProviderResult,
     RequestContext,
 )
@@ -51,7 +51,6 @@ from provider.protocol.streaming import (
     ToolCallItemStart,
 )
 from provider.protocol.serialization import request_fingerprint
-from core.registry import ProviderRegistry
 from core.runtime_state import ExecutionLease, GatewayRuntimeState
 from core.stores import ExecutionRecord, ExecutionStore, InternalStatus
 from core.tool_arguments import validate_tool_call_output
@@ -82,9 +81,9 @@ class StreamResumeError(LookupError):
 class GatewayExecutor:
     def __init__(
         self,
-        registry: ProviderRegistry,
+        registry: RuntimeRegistry,
         store: ExecutionStore,
-        live_config: LiveConfigManager | None = None,
+        live_config: ControlView | None = None,
         runtime_state: GatewayRuntimeState | None = None,
         statistics: StatisticsStore | None = None,
         assets: AssetStore | None = None,
@@ -123,14 +122,21 @@ class GatewayExecutor:
         if not isinstance(item_id, str):
             return None
         item_type = raw_item.get("type") if isinstance(raw_item, dict) else None
-        if item_type == "message" or item_id.startswith("msg_"):
+        if provider_event.kind in {ProviderEventKind.TEXT_DELTA, ProviderEventKind.TEXT_DONE, ProviderEventKind.AUDIO_DELTA,
+                                   ProviderEventKind.REFUSAL_DELTA, ProviderEventKind.REFUSAL_DONE}:
+            item_type = "message"
+        elif provider_event.kind in {ProviderEventKind.REASONING_CONTENT_DELTA, ProviderEventKind.REASONING_SUMMARY_DELTA}:
+            item_type = "reasoning"
+        elif provider_event.kind in {ProviderEventKind.TOOL_ARGUMENTS_DELTA, ProviderEventKind.TOOL_COMPLETED}:
+            item_type = "tool_call"
+        if item_type == "message":
             return MessageItemStart(
                 id=item_id,
                 phase=(raw_item.get("phase") if isinstance(raw_item, dict) else None),
             )
-        if item_type == "reasoning" or item_id.startswith("rs_"):
+        if item_type == "reasoning":
             return ReasoningItemStart(id=item_id)
-        if item_type == "tool_call" or item_id.startswith("call_"):
+        if item_type == "tool_call":
             call_id = provider_event.call_id or (
                 raw_item.get("call_id") if isinstance(raw_item, dict) else None
             )
@@ -143,7 +149,7 @@ class GatewayExecutor:
 
     async def prepare(
         self, request: KemoRequest, context: RequestContext
-    ) -> tuple[ExecutionRecord, bool, ProviderPackage | None]:
+    ) -> tuple[ExecutionRecord, bool, ModelRoute | None]:
         package = self.registry.acquire_active(request.model)
         try:
             await self._validate_package_request(request, context, package)
@@ -183,7 +189,7 @@ class GatewayExecutor:
 
     async def validate_request(
         self, request: KemoRequest, context: RequestContext
-    ) -> ProviderPackage:
+    ) -> ModelRoute:
         """在创建响应或发送 SSE Header 前完成无副作用的协议预检。"""
         package = self.registry.resolve(request.model)
         await self._validate_package_request(request, context, package)
@@ -193,7 +199,7 @@ class GatewayExecutor:
         self,
         request: KemoRequest,
         context: RequestContext,
-        package: ProviderPackage,
+        package: ModelRoute,
     ) -> None:
         capabilities = await package.capabilities(request.model)
         validate_llm_request_capabilities(
@@ -585,7 +591,7 @@ class GatewayExecutor:
             lease = await self.runtime_state.admit_execution()
         lease_owned_by_producer = False
         package_owned_by_producer = False
-        package: ProviderPackage | None = None
+        package: ModelRoute | None = None
         try:
             record, created, package = await self.prepare(request, context)
             if not created:
@@ -630,7 +636,7 @@ class GatewayExecutor:
         request: KemoRequest,
         context: RequestContext,
         record: ExecutionRecord,
-        package: ProviderPackage,
+        package: ModelRoute,
         statistics_handle: InvocationHandle | None,
         execution_lease: ExecutionLease | None,
     ) -> KemoResponse | KemoResponseBatch:
@@ -828,7 +834,7 @@ class GatewayExecutor:
         request: KemoRequest,
         context: RequestContext,
         record: ExecutionRecord,
-        package: ProviderPackage,
+        package: ModelRoute,
         execution_lease: ExecutionLease | None = None,
         statistics_handle: InvocationHandle | None = None,
     ) -> None:
@@ -900,7 +906,7 @@ class GatewayExecutor:
         request: KemoRequest,
         context: RequestContext,
         record: ExecutionRecord,
-        package: ProviderPackage | None = None,
+        package: ModelRoute | None = None,
         statistics_handle: InvocationHandle | None = None,
     ) -> None:
         if package is None:
@@ -914,238 +920,241 @@ class GatewayExecutor:
         text_buffers: dict[tuple[str, int], str] = {}
         closed_text_blocks: set[tuple[str, int]] = set()
         try:
-            async for provider_event in package.stream(request, context):
-                if record.status in {
-                    InternalStatus.CANCELLED,
-                    InternalStatus.COMPLETED,
-                    InternalStatus.REQUIRES_ACTION,
-                    InternalStatus.INCOMPLETE,
-                    InternalStatus.FAILED,
-                }:
-                    return
-                if provider_event.provider_response_id:
-                    record.provider_response_id = provider_event.provider_response_id
-                if statistics_handle is not None and provider_event.kind in {
-                    ProviderEventKind.ITEM_ADDED,
-                    ProviderEventKind.TEXT_DELTA,
-                    ProviderEventKind.TEXT_DONE,
-                    ProviderEventKind.AUDIO_DELTA,
-                    ProviderEventKind.REASONING_SUMMARY_DELTA,
-                    ProviderEventKind.REASONING_CONTENT_DELTA,
-                    ProviderEventKind.TOOL_ARGUMENTS_DELTA,
-                    ProviderEventKind.TOOL_COMPLETED,
-                    ProviderEventKind.MEDIA_COMPLETED,
-                    ProviderEventKind.COMPLETED,
-                    ProviderEventKind.INCOMPLETE,
-                    ProviderEventKind.FAILED,
-                    ProviderEventKind.CANCELLED,
-                    ProviderEventKind.ERROR,
-                }:
-                    statistics_handle.mark_response()
+            async with aclosing(package.stream(request, context)) as provider_events:
+                async for provider_event in provider_events:
+                    if record.status in {
+                        InternalStatus.CANCELLED,
+                        InternalStatus.COMPLETED,
+                        InternalStatus.REQUIRES_ACTION,
+                        InternalStatus.INCOMPLETE,
+                        InternalStatus.FAILED,
+                    }:
+                        return
+                    if provider_event.provider_response_id:
+                        record.provider_response_id = provider_event.provider_response_id
+                    if statistics_handle is not None and provider_event.kind in {
+                        ProviderEventKind.ITEM_ADDED,
+                        ProviderEventKind.TEXT_DELTA,
+                        ProviderEventKind.TEXT_DONE,
+                        ProviderEventKind.REFUSAL_DELTA,
+                        ProviderEventKind.REFUSAL_DONE,
+                        ProviderEventKind.AUDIO_DELTA,
+                        ProviderEventKind.REASONING_SUMMARY_DELTA,
+                        ProviderEventKind.REASONING_CONTENT_DELTA,
+                        ProviderEventKind.TOOL_ARGUMENTS_DELTA,
+                        ProviderEventKind.TOOL_COMPLETED,
+                        ProviderEventKind.MEDIA_COMPLETED,
+                        ProviderEventKind.COMPLETED,
+                        ProviderEventKind.INCOMPLETE,
+                        ProviderEventKind.FAILED,
+                        ProviderEventKind.CANCELLED,
+                        ProviderEventKind.ERROR,
+                    }:
+                        statistics_handle.mark_response()
 
-                # Provider packages commonly expose only text deltas.  Kemo
-                # 2.0 nevertheless requires an explicit output_text.done
-                # before usage and terminal frames.  Materialize that closure
-                # in the gateway using the exact aggregate seen on the wire.
-                if provider_event.kind == ProviderEventKind.TEXT_DELTA:
-                    if provider_event.item_id is not None and provider_event.content_index is not None:
-                        key = (provider_event.item_id, provider_event.content_index)
-                        text_buffers[key] = text_buffers.get(key, "") + (provider_event.delta or "")
-                if provider_event.kind == ProviderEventKind.TEXT_DONE:
-                    if provider_event.item_id is not None and provider_event.content_index is not None:
-                        closed_text_blocks.add(
-                            (provider_event.item_id, provider_event.content_index)
-                        )
-
-                if provider_event.kind in {
-                    ProviderEventKind.USAGE,
-                    ProviderEventKind.COMPLETED,
-                    ProviderEventKind.INCOMPLETE,
-                    ProviderEventKind.FAILED,
-                    ProviderEventKind.CANCELLED,
-                    ProviderEventKind.ERROR,
-                }:
-                    for (item_id, content_index), text in list(text_buffers.items()):
-                        key = (item_id, content_index)
-                        if key in closed_text_blocks:
-                            continue
-                        done_event = EventAssembler.assemble(
-                            ProviderEvent(
-                                kind=ProviderEventKind.TEXT_DONE,
-                                item_id=item_id,
-                                content_index=content_index,
-                                text=text,
-                                provider_response_id=provider_event.provider_response_id,
-                            ),
-                            request_id=request.request_id,
-                            response_id=record.response_id,
-                            sequence=record.next_sequence,
-                        )
-                        await self._append_stream_event(record, done_event)
-                        closed_text_blocks.add(key)
-
-                # Provider packages deliberately emit an unwrapped event stream.
-                # Materialize the protocol 2.0 identity snapshot before any
-                # delta/done/completed payload, including providers that do not
-                # have a native "item added" event.
-                if provider_event.kind != ProviderEventKind.USAGE:
-                    item_start = self._item_start_for(provider_event)
-                    # Do not publish an identity frame for a delta that is
-                    # already over the complete-event budget: protocol 2.0
-                    # requires a compact failure rather than a half-response.
-                    if provider_event.delta is not None and len(
-                        provider_event.delta.encode("utf-8")
-                    ) > 1024 * 1024 - 4096:
-                        item_start = None
-                    if item_start is not None and item_start.id not in started_item_ids:
-                        start_event = EventAssembler.assemble(
-                            ProviderEvent(
-                                kind=ProviderEventKind.ITEM_ADDED,
-                                item_id=item_start.id,
-                                item=item_start.model_dump(mode="python"),
-                                provider_response_id=provider_event.provider_response_id,
-                            ),
-                            request_id=request.request_id,
-                            response_id=record.response_id,
-                            sequence=record.next_sequence,
-                        )
-                        await self._append_stream_event(record, start_event)
-                        started_item_ids.add(item_start.id)
-                if provider_event.kind == ProviderEventKind.ITEM_ADDED:
-                    # The gateway has emitted the normalized identity-only
-                    # snapshot above; never forward a provider's full item as
-                    # an ``output_item.added`` payload.
-                    continue
-                if provider_event.kind == ProviderEventKind.TOOL_COMPLETED:
-                    # A tool_call.completed event is an execution boundary.  Hold
-                    # the whole batch until the provider terminal response has
-                    # been validated so one malformed parallel call cannot leak
-                    # earlier valid calls to the client.
-                    pending_tool_events.append(provider_event)
-                    continue
-                terminal_response = None
-                terminal_provider_event = provider_event
-                if provider_event.kind == ProviderEventKind.ERROR:
-                    if provider_event.error is None:
-                        raise RuntimeError("standalone error 事件缺少 error")
-                    standalone = EventAssembler.assemble(
-                        provider_event,
-                        request_id=request.request_id,
-                        response_id=record.response_id,
-                        sequence=record.next_sequence,
-                    )
-                    await self._append_stream_event(record, standalone)
-                    # Keep a durable failed snapshot for GET/idempotency while
-                    # preserving the wire rule that this stream terminates on
-                    # the standalone error event (without response payload).
-                    result = ProviderResult(status="failed", error=provider_event.error)
-                    record.response = self._response_from_result(
-                        request, record, result, context
-                    )
-                    record.status = InternalStatus.FAILED
-                    await self.store.save(record)
-                    return
-                if provider_event.kind in {
-                    ProviderEventKind.COMPLETED,
-                    ProviderEventKind.INCOMPLETE,
-                    ProviderEventKind.FAILED,
-                    ProviderEventKind.CANCELLED,
-                }:
-                    if provider_event.result is None:
-                        raise RuntimeError("Provider 终态缺少完整 result")
-                    terminal_response = self._response_from_result(
-                        request, record, provider_event.result, context
-                    )
-                    terminal_media = self._media_item_fingerprints(terminal_response)
-                    if terminal_media != completed_media_fingerprints:
-                        raise RuntimeError(
-                            "流式媒体完成事件与统一终态中的媒体 Item 不一致"
-                        )
-                    expected_kind = {
-                        "completed": ProviderEventKind.COMPLETED,
-                        "requires_action": ProviderEventKind.COMPLETED,
-                        "incomplete": ProviderEventKind.INCOMPLETE,
-                        "failed": ProviderEventKind.FAILED,
-                        "cancelled": ProviderEventKind.CANCELLED,
-                    }[terminal_response.status]
-                    if expected_kind != provider_event.kind:
-                        terminal_provider_event = replace(
-                            provider_event,
-                            kind=expected_kind,
-                        )
-
-                    if terminal_response.status == "requires_action":
-                        terminal_calls = [
-                            item
-                            for item in terminal_response.output
-                            if isinstance(item, ToolCallItem)
-                        ]
-                        pending_by_call_id: dict[str, ProviderEvent] = {}
-                        for pending in pending_tool_events:
-                            if not self._valid_stream_tool_call(request, pending):
-                                continue
-                            try:
-                                pending_item = ToolCallItem.model_validate(pending.item)
-                            except Exception:
-                                continue
-                            pending_by_call_id.setdefault(
-                                pending_item.call_id,
-                                pending,
+                    # Provider packages commonly expose only text deltas.  Kemo
+                    # 2.0 nevertheless requires an explicit output_text.done
+                    # before usage and terminal frames.  Materialize that closure
+                    # in the gateway using the exact aggregate seen on the wire.
+                    if provider_event.kind == ProviderEventKind.TEXT_DELTA:
+                        if provider_event.item_id is not None and provider_event.content_index is not None:
+                            key = (provider_event.item_id, provider_event.content_index)
+                            text_buffers[key] = text_buffers.get(key, "") + (provider_event.delta or "")
+                    if provider_event.kind == ProviderEventKind.TEXT_DONE:
+                        if provider_event.item_id is not None and provider_event.content_index is not None:
+                            closed_text_blocks.add(
+                                (provider_event.item_id, provider_event.content_index)
                             )
-                        for item in terminal_calls:
-                            source = pending_by_call_id.get(item.call_id)
-                            source = source or ProviderEvent(
-                                kind=ProviderEventKind.TOOL_COMPLETED,
-                                item_id=item.id,
-                                call_id=item.call_id,
-                                name=item.name,
-                                item=item.model_dump(mode="python"),
-                                provider_response_id=provider_event.provider_response_id,
-                            )
-                            call_event = EventAssembler.assemble(
-                                replace(
-                                    source,
-                                    kind=ProviderEventKind.TOOL_COMPLETED,
-                                    item_id=item.id,
-                                    call_id=item.call_id,
-                                    name=item.name,
-                                    item=item.model_dump(mode="python"),
+
+                    if provider_event.kind in {
+                        ProviderEventKind.USAGE,
+                        ProviderEventKind.COMPLETED,
+                        ProviderEventKind.INCOMPLETE,
+                        ProviderEventKind.FAILED,
+                        ProviderEventKind.CANCELLED,
+                        ProviderEventKind.ERROR,
+                    }:
+                        for (item_id, content_index), text in list(text_buffers.items()):
+                            key = (item_id, content_index)
+                            if key in closed_text_blocks:
+                                continue
+                            done_event = EventAssembler.assemble(
+                                ProviderEvent(
+                                    kind=ProviderEventKind.TEXT_DONE,
+                                    item_id=item_id,
+                                    content_index=content_index,
+                                    text=text,
+                                    provider_response_id=provider_event.provider_response_id,
                                 ),
                                 request_id=request.request_id,
                                 response_id=record.response_id,
                                 sequence=record.next_sequence,
                             )
-                            await self._append_stream_event(record, call_event)
-                    pending_tool_events.clear()
+                            await self._append_stream_event(record, done_event)
+                            closed_text_blocks.add(key)
 
-                event = EventAssembler.assemble(
-                    terminal_provider_event,
-                    request_id=request.request_id,
-                    response_id=record.response_id,
-                    sequence=record.next_sequence,
-                    terminal_response=terminal_response,
-                )
-                if provider_event.kind == ProviderEventKind.MEDIA_COMPLETED:
-                    if not isinstance(event.item, MessageItem):
-                        raise RuntimeError("媒体完成事件缺少 MessageItem")
-                    if event.item.id in completed_media:
-                        raise RuntimeError("同一个媒体 Item 重复完成")
-                    for block in event.item.content:
-                        if isinstance(
-                            block,
-                            (ImageContent, AudioContent, VideoContent, FileContent),
-                        ):
-                            self._validate_output_asset(block, context)
-                    completed_media[event.item.id] = event.item
-                    completed_media_fingerprints[event.item.id] = json.dumps(
-                        event.item.model_dump(mode="json", exclude_none=True),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
+                    # Provider packages deliberately emit an unwrapped event stream.
+                    # Materialize the protocol 2.0 identity snapshot before any
+                    # delta/done/completed payload, including providers that do not
+                    # have a native "item added" event.
+                    if provider_event.kind != ProviderEventKind.USAGE:
+                        item_start = self._item_start_for(provider_event)
+                        # Do not publish an identity frame for a delta that is
+                        # already over the complete-event budget: protocol 2.0
+                        # requires a compact failure rather than a half-response.
+                        if provider_event.delta is not None and len(
+                            provider_event.delta.encode("utf-8")
+                        ) > 1024 * 1024 - 4096:
+                            item_start = None
+                        if item_start is not None and item_start.id not in started_item_ids:
+                            start_event = EventAssembler.assemble(
+                                ProviderEvent(
+                                    kind=ProviderEventKind.ITEM_ADDED,
+                                    item_id=item_start.id,
+                                    item=item_start.model_dump(mode="python"),
+                                    provider_response_id=provider_event.provider_response_id,
+                                ),
+                                request_id=request.request_id,
+                                response_id=record.response_id,
+                                sequence=record.next_sequence,
+                            )
+                            await self._append_stream_event(record, start_event)
+                            started_item_ids.add(item_start.id)
+                    if provider_event.kind == ProviderEventKind.ITEM_ADDED:
+                        # The gateway has emitted the normalized identity-only
+                        # snapshot above; never forward a provider's full item as
+                        # an ``output_item.added`` payload.
+                        continue
+                    if provider_event.kind == ProviderEventKind.TOOL_COMPLETED:
+                        # A tool_call.completed event is an execution boundary.  Hold
+                        # the whole batch until the provider terminal response has
+                        # been validated so one malformed parallel call cannot leak
+                        # earlier valid calls to the client.
+                        pending_tool_events.append(provider_event)
+                        continue
+                    terminal_response = None
+                    terminal_provider_event = provider_event
+                    if provider_event.kind == ProviderEventKind.ERROR:
+                        if provider_event.error is None:
+                            raise RuntimeError("standalone error 事件缺少 error")
+                        standalone = EventAssembler.assemble(
+                            provider_event,
+                            request_id=request.request_id,
+                            response_id=record.response_id,
+                            sequence=record.next_sequence,
+                        )
+                        await self._append_stream_event(record, standalone)
+                        # Keep a durable failed snapshot for GET/idempotency while
+                        # preserving the wire rule that this stream terminates on
+                        # the standalone error event (without response payload).
+                        result = ProviderResult(status="failed", error=provider_event.error)
+                        record.response = self._response_from_result(
+                            request, record, result, context
+                        )
+                        record.status = InternalStatus.FAILED
+                        await self.store.save(record)
+                        return
+                    if provider_event.kind in {
+                        ProviderEventKind.COMPLETED,
+                        ProviderEventKind.INCOMPLETE,
+                        ProviderEventKind.FAILED,
+                        ProviderEventKind.CANCELLED,
+                    }:
+                        if provider_event.result is None:
+                            raise RuntimeError("Provider 终态缺少完整 result")
+                        terminal_response = self._response_from_result(
+                            request, record, provider_event.result, context
+                        )
+                        terminal_media = self._media_item_fingerprints(terminal_response)
+                        if terminal_media != completed_media_fingerprints:
+                            raise RuntimeError(
+                                "流式媒体完成事件与统一终态中的媒体 Item 不一致"
+                            )
+                        expected_kind = {
+                            "completed": ProviderEventKind.COMPLETED,
+                            "requires_action": ProviderEventKind.COMPLETED,
+                            "incomplete": ProviderEventKind.INCOMPLETE,
+                            "failed": ProviderEventKind.FAILED,
+                            "cancelled": ProviderEventKind.CANCELLED,
+                        }[terminal_response.status]
+                        if expected_kind != provider_event.kind:
+                            terminal_provider_event = replace(
+                                provider_event,
+                                kind=expected_kind,
+                            )
+
+                        if terminal_response.status == "requires_action":
+                            terminal_calls = [
+                                item
+                                for item in terminal_response.output
+                                if isinstance(item, ToolCallItem)
+                            ]
+                            pending_by_call_id: dict[str, ProviderEvent] = {}
+                            for pending in pending_tool_events:
+                                if not self._valid_stream_tool_call(request, pending):
+                                    continue
+                                try:
+                                    pending_item = ToolCallItem.model_validate(pending.item)
+                                except Exception:
+                                    continue
+                                pending_by_call_id.setdefault(
+                                    pending_item.call_id,
+                                    pending,
+                                )
+                            for item in terminal_calls:
+                                source = pending_by_call_id.get(item.call_id)
+                                source = source or ProviderEvent(
+                                    kind=ProviderEventKind.TOOL_COMPLETED,
+                                    item_id=item.id,
+                                    call_id=item.call_id,
+                                    name=item.name,
+                                    item=item.model_dump(mode="python"),
+                                    provider_response_id=provider_event.provider_response_id,
+                                )
+                                call_event = EventAssembler.assemble(
+                                    replace(
+                                        source,
+                                        kind=ProviderEventKind.TOOL_COMPLETED,
+                                        item_id=item.id,
+                                        call_id=item.call_id,
+                                        name=item.name,
+                                        item=item.model_dump(mode="python"),
+                                    ),
+                                    request_id=request.request_id,
+                                    response_id=record.response_id,
+                                    sequence=record.next_sequence,
+                                )
+                                await self._append_stream_event(record, call_event)
+                        pending_tool_events.clear()
+
+                    event = EventAssembler.assemble(
+                        terminal_provider_event,
+                        request_id=request.request_id,
+                        response_id=record.response_id,
+                        sequence=record.next_sequence,
+                        terminal_response=terminal_response,
                     )
-                await self._append_stream_event(record, event)
-                if terminal_response is not None:
-                    return
+                    if provider_event.kind == ProviderEventKind.MEDIA_COMPLETED:
+                        if not isinstance(event.item, MessageItem):
+                            raise RuntimeError("媒体完成事件缺少 MessageItem")
+                        if event.item.id in completed_media:
+                            raise RuntimeError("同一个媒体 Item 重复完成")
+                        for block in event.item.content:
+                            if isinstance(
+                                block,
+                                (ImageContent, AudioContent, VideoContent, FileContent),
+                            ):
+                                self._validate_output_asset(block, context)
+                        completed_media[event.item.id] = event.item
+                        completed_media_fingerprints[event.item.id] = json.dumps(
+                            event.item.model_dump(mode="json", exclude_none=True),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                    await self._append_stream_event(record, event)
+                    if terminal_response is not None:
+                        return
         except asyncio.CancelledError:
             raise
         except ProviderException as exc:

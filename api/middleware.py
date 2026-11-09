@@ -41,6 +41,8 @@ def can_access_model_task(principal: Principal, task: str) -> bool:
         return "embedding:invoke" in principal.scopes
     if task == "rerank":
         return "rerank:invoke" in principal.scopes
+    if task == "llm":
+        return "llm:invoke" in principal.scopes
     return False
 
 
@@ -84,18 +86,16 @@ def control_plane_auth_required(request: Request) -> bool:
 
     A process bound to a loopback address is the supported single-user local
     mode.  It stays directly accessible from the local browser even if an old
-    ``WEB_TOKEN``/password remains in ``.env``.  A configured public
+    ``WEB_TOKEN``/password remains in ``gateway.yaml``.  A configured public
     ``GATEWAY_BASE_URL`` or forwarded public host disables that bypass, which
     prevents a reverse proxy from accidentally inheriting local mode.
     """
     settings = request.app.state.settings
     if control_plane_local_bypass(request):
         return False
-    snapshot = request.app.state.live_config.current
-    principals = (*settings.api_keys.values(), *snapshot.api_keys.values())
     has_management_token = any(
         "admin:web" in principal.scopes or "owner" in principal.scopes
-        for principal in principals
+        for principal in settings.api_keys.values()
     )
     return bool(
         has_management_token
@@ -153,8 +153,7 @@ async def _resolve_principal(
     allow_unconfigured_control_plane: bool = False,
 ) -> Principal:
     settings = request.app.state.settings
-    snapshot = await request.app.state.live_config.refresh()
-    await request.app.state.registry.apply_live_config(snapshot)
+    snapshot = request.app.state.live_config.current
     if enforce_gateway_enabled and snapshot.gateway_api.get("enabled", True) is not True:
         raise HTTPException(status_code=503, detail="Gateway API 已停用")
 
@@ -183,11 +182,13 @@ async def _resolve_principal(
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="需要 Bearer Token")
     candidate = authorization[7:]
+    key_service = getattr(request.app.state, "downstream_keys", None)
+    config = key_service.authenticate(candidate) if key_service is not None else None
+    if config is not None:
+        return Principal(config.tenant_id, config.subject_id, config.scopes, config.key_id, config.allowed_models)
 
-    # .env 是重启生效的启动配置；api/keys.json 是无需重启的运行时密钥配置。
-    available_keys = dict(settings.api_keys)
-    available_keys.update(snapshot.api_keys)
-    for token, config in available_keys.items():
+    # 显式的启动引导密钥；控制台创建的密钥由 KeyService 验证。
+    for token, config in settings.api_keys.items():
         if hmac.compare_digest(candidate, token):
             return Principal(
                 config.tenant_id,

@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 商汤日日新
+base_url: https://token.sensenova.cn/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: sensenova
+catalog: []

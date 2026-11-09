@@ -28,7 +28,7 @@ Token 解析得到可信的 tenant、subject 和 scopes；正文中的 `metadata
 
 网页或 `restart.py` 发起的重启会先在独立 Python 进程中执行 `start_web.py --preflight`，验证新环境、
 前端构建产物、依赖和后端应用装配；预检失败时旧实例继续运行。预检通过后才进入 Drain，旧 PID 和
-旧监听端口完全释放后，替换进程按新 `.env` 的 HOST/PORT 启动，并以新的 `instance_id` 通过
+旧监听端口完全释放后，替换进程按新 `gateway.yaml` 的 HOST/PORT 启动，并以新的 `instance_id` 通过
 `/healthz` 后报告成功。新实例启动失败时会尽力使用旧进程环境恢复服务，状态会明确标记为失败及恢复的
 实例 ID。认证配置未改变时，Web 会话只持久化 Cookie Token 的哈希、CSRF Token 和到期时间，平滑重启
 不会让两小时内的浏览器会话立即失效；修改 Web Token 或用户名/密码会使旧会话命名空间失效。
@@ -81,10 +81,10 @@ kemo-agent `v0.6.0` 起可通过内置全局拓展 `kemo_gateway_status` 消费�
 
 ## 公开模型命名
 
-所有 LLM、Embedding 和 Rerank 模型统一使用 `<provider_id>-<provider内部模型名>`：例如
-`deepseek-deepseek-v4-flash`。`provider_id` 通常与 `providers/<provider_id>/` 目录名一致。
-Provider 内部模型名可以继续包含连字符；网关通过注册表保存模型与 Provider 的精确归属，禁止按
-任意连字符拆分模型名。旧式 `provider_id/model` 名称不再接受。
+所有 LLM、Embedding 和 Rerank 模型使用用户登记的稳定 Public Model 名，例如 `assistant`。
+公开名与上游模型名独立，通过 Deployment 显式映射；同一公开名可绑定多个上游。
+网关不按厂商前缀、连字符或斜线拆分模型名。能力中的 `provider_id` 为 `gateway`，
+`provider_model` 为公开模型名，具体上游归属保留在管理面的 Attempt 与 Deployment 中。
 
 ## 模型接口
 
@@ -229,10 +229,23 @@ Provider 生成图片、音频、视频或文件后，必须通过 `RequestConte
 然后在 assistant MessageItem 中返回 `asset_id`、真实 `mime_type` 和 `checksum_sha256`。流式生成
 先发送一次 `output_media.completed`，其中的完整 Item 必须与随后统一终态中的 Item 完全一致。
 单个 SSE `data` 上限为 1 MiB；媒体正文不得通过自定义大分片绕过 Asset。请求 JSON 本身默认
-上限为 2 MiB，不包含独立上传的 Asset 字节。
+上限为 32 MiB，不包含独立上传的 Asset 字节。
 
 幂等范围是 `(tenant_id, request_id)`。相同 ID 和相同正文必须复用逻辑响应；相同 ID 和不同
 正文返回 `409 IDEMPOTENCY_CONFLICT`。
+
+### 流式工具参数、阶段与拒绝信息
+
+Chat、Responses、Anthropic Messages 和 Cohere Chat 流中的工具参数分片会映射为
+`tool_call.arguments.delta`。同一调用的增量、`tool_call.completed` 与终态工具 Item
+共享 `item_id/call_id/name`。增量只是未验证的生成过程；参数完整解析并通过请求工具
+Schema 校验后，核心才发布完成事件。并行调用中任一参数无效时，不发布该批完成事件，
+终态为 `incomplete`，原因为 `invalid_tool_arguments`。
+
+文本身份帧的 `phase` 在上游能确定时尽早提供，无法确定时为 None，最终以完整响应为准。
+拒绝信息映射为现有的 `output_refusal.delta/done` 与终态 MessageItem.refusal；
+Anthropic 仅在其原生拒绝停止信息给出明确 explanation 时产生拒绝正文，不推断普通文本。
+上述映射使用锁定的 Kemo 2.0 事件，不增加协议方言。
 
 ### SSE 心跳、断线续传与持久化边界
 
@@ -256,7 +269,7 @@ Provider 生成图片、音频、视频或文件后，必须通过 `RequestConte
 `X-Kemo-Heartbeat-Seconds`；反向代理仍应关闭流式响应缓冲，并把空闲超时设置为大于心跳间隔。
 
 幂等记录、统一终态和已发出的 SSE 事件持久化在网关本地 SQLite WAL 数据库
-`storage/executions/executions.sqlite3`，默认保留 7 天。客户端断开不会取消同一网关进程中的
+`data/executions/executions.sqlite3`，默认保留 30 天。客户端断开不会取消同一网关进程中的
 Provider 执行，相同请求可以在保留期内重连或查询终态。网关进程重启时，上次尚未结束的执行会被
 确定性终结为 `status=incomplete`、`incomplete_details.reason=gateway_restarted`，并追加
 `response.incomplete` 终态事件。
@@ -280,7 +293,7 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
 
 ### 超时、容量与安全重试
 
-- LLM、Embedding 和 Rerank 都受核心执行时限保护，默认 900 秒；超时错误码为
+- LLM、Embedding 和 Rerank 都受核心执行时限保护，默认 1200 秒；超时错误码为
   `GATEWAY_TIMEOUT` 且 `retryable=true`。LLM 在统一响应或 SSE 终态中返回失败，Embedding/Rerank
   使用 HTTP 504。这里的 `retryable` 是错误分类提示，不代表已形成的 LLM 失败终态会在同一 ID 下重新执行。
 - 单进程默认最多同时执行 64 个模型请求。容量已满或网关处于 Drain 时返回 HTTP 503、
@@ -306,9 +319,25 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
 `MAX_SSE_EVENTS_PER_RESPONSE` 配置；它们属于启动环境变量，修改后必须重启网关。
 
 `LOG_RETENTION_DAYS` 同时控制调用日志、每日统计数据库、Execution 与 SSE 重放记录，默认值为
-`7`。过期清理不会阻塞应用启动：启动后延迟执行，Execution 按小批次删除并在批次之间释放写锁，
+`30`。过期清理不会阻塞应用启动：启动后延迟执行，Execution 按小批次删除并在批次之间释放写锁，
 每日统计按日期文件删除。旧的 `EXECUTION_RETENTION_HOURS` 不再决定日志周期；未设置新变量时仍按
-7 天执行。Asset 内容不是调用日志，继续由 `DEFAULT_ASSET_TTL_HOURS` 单独控制。
+30 天执行。Asset 内容不是调用日志，继续由 `DEFAULT_ASSET_TTL_HOURS` 单独控制。
+
+模型接口与管理 API 的 JSON 请求正文默认最多 32 MiB，由 `REQUEST_JSON_MAX_BYTES` 配置。
+超限返回 HTTP 413、`REQUEST_TOO_LARGE` 和 `details.limit_bytes`；流式传输的正文也累计计数。
+上游非流式 JSON 响应默认最多 32 MiB，由 `UPSTREAM_JSON_MAX_BYTES` 配置；
+超限归一为 `PROVIDER_BAD_RESPONSE`，`details.reason=UPSTREAM_RESPONSE_TOO_LARGE`。
+上游和下游 SSE 单事件仍最多 1 MiB，大型媒体继续使用 Asset。
+
+上游 `timeout` 可设置为大于 0、最多 7200 秒，控制整次上游调用的墙钟时长。
+当前部署将指定上游设为 1100 秒，先于网关 1200 秒兜底超时；HTTP 建连超时单独为 15 秒，
+读取、写入和连接池等待跟随上游 timeout。DNS/建连失败归一为 `PROVIDER_UNAVAILABLE`，
+上游超时为 `PROVIDER_TIMEOUT`。网关不新增输入 Token 数与模型 `context_window` 的拒绝校验。
+`RESTART_DRAIN_TIMEOUT` 示例值为 1300 秒，应高于执行时限，非强制排空超时会取消重启并恢复服务。
+
+`LOG_DETAIL_MAX_BYTES` 默认 4 MiB，最小 256 字节，限制单条管理端调用正文的实际存储字节，
+包括截断元数据。超限正文保留脱敏前缀，并带 `truncated=true`、`original_bytes` 和 `body`；
+不改变转发、模型返回、计量与幂等重放内容。配置项均在启动时加载，修改后必须重启。
 
 ## kemo-graph 检索模型接口
 

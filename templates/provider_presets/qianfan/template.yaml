@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: 百度千帆
+base_url: https://qianfan.baidubce.com/v2
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: ernie
+catalog: []

@@ -1,0 +1,21 @@
+samples:
+  audio:
+    id: audio-code-v1
+    filename: audio.wav
+    mime_type: audio/wav
+    operation: audio_transcription
+    prompt: Listen to the attached recording. What is the two-word access code? Reply with only the code.
+    answer_pattern: '\bcopper\W+meadow\b'
+  video:
+    id: video-colors-v1
+    filename: video.mp4
+    mime_type: video/mp4
+    operation: video_understanding
+    prompt: Watch the attached video. Name the three solid colors in the order they appear. Reply with only the three English color names.
+    answer_pattern: '\bred\b.*\bgreen\b.*\bblue\b'
+  file:
+    id: document-code-v1
+    filename: document.pdf
+    mime_type: application/pdf
+    prompt: Read the attached document. What is its verification code? Reply with only the code.
+    answer_pattern: '\blarch\W+5821\b'

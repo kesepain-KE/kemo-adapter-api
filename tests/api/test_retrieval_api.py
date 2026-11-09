@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from tests.support.gateway import install_fixtures
 from core.config import PrincipalConfig, Settings
 from core.models import (
     EmbeddingCapabilities,
@@ -20,12 +21,11 @@ from core.models import (
 from core.provider_contract import (
     ProviderEmbedding,
     ProviderEmbeddingResult,
-    ProviderPackage,
     ProviderRerankItem,
     ProviderRerankResult,
     RequestContext,
 )
-from tests.support.project import project, write_json
+from tests.support.project import project, write_yaml
 
 
 EMBED_HEADERS = {
@@ -77,7 +77,7 @@ class BrokenEmbeddingProvider(FakeRetrievalProvider):
 
 def retrieval_project(tmp_path: Path) -> Path:
     root = project(tmp_path)
-    write_json(root / "api" / "keys.json", {"keys": {}})
+    write_yaml(root / "api" / "keys.yaml", {"keys": {}})
     return root
 
 
@@ -98,10 +98,9 @@ def retrieval_app(tmp_path: Path):
     app = create_app(
         settings,
         live_config_root=retrieval_project(tmp_path),
-        discover_providers=False,
-    )
+        )
     provider = FakeRetrievalProvider()
-    app.state.registry.register(provider)
+    install_fixtures(app.state.registry, provider)
     return app, provider
 
 
@@ -173,9 +172,8 @@ def test_model_whitelist_applies_to_embeddings_and_rerank(tmp_path: Path) -> Non
     app = create_app(
         settings,
         live_config_root=retrieval_project(tmp_path),
-        discover_providers=False,
-    )
-    app.state.registry.register(FakeRetrievalProvider())
+        )
+    install_fixtures(app.state.registry, FakeRetrievalProvider())
     embedding_headers = {
         "Authorization": "Bearer limited-token",
         "X-Kemo-Protocol-Version": "2.0",
@@ -228,7 +226,7 @@ def test_capabilities_expose_retrieval_task_contracts(tmp_path: Path) -> None:
 def test_task_mismatch_and_bad_provider_result_are_sanitized(tmp_path: Path) -> None:
     app, _ = retrieval_app(tmp_path)
     broken = BrokenEmbeddingProvider()
-    app.state.registry.register(broken)
+    install_fixtures(app.state.registry, broken)
     mismatch = embedding_body()
     mismatch["model"] = "retrieval-rerank-v1"
     broken_body = embedding_body()

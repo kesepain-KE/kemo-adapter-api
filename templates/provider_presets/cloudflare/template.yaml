@@ -1,0 +1,8 @@
+adapter_id: cloudflare-workers-ai
+name: Cloudflare Workers AI
+base_url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai
+auth_scheme: bearer
+headers: {}
+profile: {}
+tokenizer: auto
+catalog: []

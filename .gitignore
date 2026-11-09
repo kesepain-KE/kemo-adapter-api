@@ -1,11 +1,8 @@
 # 本地密钥与运行配置
+gateway.yaml
+/data/
+/extensions/
 .env
-api/keys.json
-providers/*/secrets.json
-
-# 厂商包由部署端热加载；仓库仅保留 Python 命名空间。
-providers/*
-!providers/__init__.py
 
 # 开发者私有资料，不上传 GitHub
 开发目录/
@@ -40,6 +37,3 @@ htmlcov/
 *.log
 *.pid
 core/runtime/
-storage/daily/
-storage/assets/
-storage/executions/

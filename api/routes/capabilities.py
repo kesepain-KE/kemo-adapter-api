@@ -27,7 +27,7 @@ from core.models import (
     ModelCatalogItem,
     ModelCatalogResponse,
 )
-from core.registry import ProviderRegistry
+from gateway.runtime import RuntimeRegistry
 
 
 router = APIRouter(tags=["models"])
@@ -46,8 +46,7 @@ def _catalog_item(
     task: ModelTask | Literal["unknown"],
     capabilities_available: bool,
 ) -> ModelCatalogItem:
-    prefix = f"{provider_id}-"
-    provider_model = model[len(prefix) :] if model.startswith(prefix) else model
+    provider_model = model
     return ModelCatalogItem(
         id=model,
         provider_id=provider_id,
@@ -61,7 +60,7 @@ def _catalog_item(
 async def _load_capabilities(
     model: str,
     principal: Principal,
-    registry: ProviderRegistry,
+    registry: RuntimeRegistry,
 ) -> ModelCapabilities:
     ensure_model_allowed(principal, model)
     package = None
@@ -99,7 +98,7 @@ async def _load_capabilities(
 
 async def _visible_models(
     principal: Principal,
-    registry: ProviderRegistry,
+    registry: RuntimeRegistry,
     task_filter: ModelTask | None = None,
 ) -> list[ModelCatalogItem]:
     items: list[ModelCatalogItem] = []
@@ -123,7 +122,7 @@ async def _visible_models(
                     items.append(
                         _catalog_item(
                             model=model,
-                            provider_id=provider_id,
+                            provider_id=registered_package.provider_id,
                             task="unknown",
                             capabilities_available=False,
                         )
@@ -138,7 +137,7 @@ async def _visible_models(
             items.append(
                 _catalog_item(
                     model=model,
-                    provider_id=provider_id,
+                    provider_id=registered_package.provider_id,
                     task=declared.task,
                     capabilities_available=True,
                 )
@@ -151,7 +150,7 @@ async def list_models(
     response: Response,
     task: ModelTask | None = Query(default=None),
     principal: Principal = Depends(authenticated_principal),
-    registry: ProviderRegistry = Depends(get_registry),
+    registry: RuntimeRegistry = Depends(get_registry),
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> ModelCatalogResponse:
     """Return only models the authenticated gateway key may actually invoke."""
@@ -170,7 +169,7 @@ async def list_models(
 async def list_models_compatible(
     response: Response,
     principal: Principal = Depends(authenticated_principal),
-    registry: ProviderRegistry = Depends(get_registry),
+    registry: RuntimeRegistry = Depends(get_registry),
 ) -> CompatibleModelList:
     """Common model-list shape for clients that probe ``GET /v1/models``."""
     _private_response(response)
@@ -191,7 +190,7 @@ async def model_capabilities(
     response: Response,
     model: str = Path(min_length=1),
     principal: Principal = Depends(authenticated_principal),
-    registry: ProviderRegistry = Depends(get_registry),
+    registry: RuntimeRegistry = Depends(get_registry),
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> ModelCapabilities:
     _private_response(response)
@@ -204,7 +203,7 @@ async def capabilities(
     response: Response,
     model: str = Query(min_length=1),
     principal: Principal = Depends(authenticated_principal),
-    registry: ProviderRegistry = Depends(get_registry),
+    registry: RuntimeRegistry = Depends(get_registry),
     protocol_version: str | None = Header(default=None, alias="X-Kemo-Protocol-Version"),
 ) -> ModelCapabilities:
     """Backward-compatible query-style capability endpoint."""

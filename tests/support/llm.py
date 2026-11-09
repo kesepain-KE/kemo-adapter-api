@@ -2,9 +2,9 @@
 from __future__ import annotations
 from collections.abc import AsyncIterator
 from core.models import KemoRequest, ModelCapabilities, Usage, UsageMeasurement
-from core.provider_contract import ProviderEvent, ProviderEventKind, ProviderPackage, ProviderResult, RequestContext
+from core.provider_contract import ProviderEvent, ProviderEventKind, ProviderResult, RequestContext
 
-class FakeProvider(ProviderPackage):
+class FakeProvider:
     provider_id = "fake"
 
     @property

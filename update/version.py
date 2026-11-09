@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+
 from pathlib import Path
 from typing import NamedTuple
 from urllib.request import Request, urlopen
@@ -23,9 +24,9 @@ def read_local(project_root: Path) -> VersionInfo:
     if not path.is_file():
         return VersionInfo("0.0.0", "0.0", "")
     try:
-        data = json.loads(path.read_text("utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return _from_mapping(data)
-    except (UpdateError, json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
+    except (UpdateError, KeyError, TypeError, ValueError, OSError):
         return VersionInfo("0.0.0", "0.0", "")
 
 
@@ -41,7 +42,7 @@ def read_remote(project_root: Path) -> VersionInfo | None:
             return None
         data = json.loads(result.stdout)
         return _from_mapping(data)
-    except (UpdateError, TypeError, ValueError, KeyError, OSError, json.JSONDecodeError):
+    except (UpdateError, TypeError, ValueError, KeyError, OSError):
         return None
 
 
@@ -66,7 +67,7 @@ def read_remote_url(url: str, *, timeout: float = 30.0) -> VersionInfo | None:
 
 def _from_mapping(data: object) -> VersionInfo:
     if not isinstance(data, dict):
-        raise ValueError("version.json 必须是 JSON 对象")
+        raise ValueError("version.json 必须是 JSON object")
     version = str(data.get("version", "0.0.0")).strip()
     protocol = str(data.get("protocol_version", "0.0")).strip()
     parse_version(version)

@@ -15,32 +15,28 @@ def write(path: Path, value: str) -> None:
 def test_restart_detection_ignores_hot_config_and_tracks_startup_files(
     tmp_path: Path,
 ) -> None:
-    write(tmp_path / ".env", "PORT=7531\n")
+    write(tmp_path / "gateway.yaml", "PORT: 7531\n")
     write(tmp_path / "api" / "server.py", "APP_VERSION = 1\n")
-    write(tmp_path / "api" / "runtime.json", "{}\n")
-    write(tmp_path / "core" / "live_control.json", "{}\n")
-    write(tmp_path / "providers" / "fake" / "config.json", "{}\n")
-    write(tmp_path / "providers" / "fake" / "secrets.json", "{}\n")
-    write(tmp_path / "providers" / "fake" / "manifest.json", "{}\n")
+    write(tmp_path / "gateway" / "runtime.py", "RUNTIME_VERSION = 1\n")
+    write(tmp_path / "data" / "catalog.yaml", "{}\n")
+    write(tmp_path / "extensions" / "protocol_adapters" / "fake" / "adapter.py", "VERSION = 1\n")
     inspector = SystemInspector(tmp_path)
 
-    write(tmp_path / "api" / "runtime.json", '{"gateway_api": {"enabled": false}}\n')
-    write(tmp_path / "core" / "live_control.json", '{"disabled_providers": ["fake"]}\n')
-    write(tmp_path / "providers" / "fake" / "config.json", '{"base_url": "https://new"}\n')
-    write(tmp_path / "providers" / "fake" / "secrets.json", '{"api_key": "secret"}\n')
+    write(tmp_path / "data" / "catalog.yaml", "enabled: false\n")
+    write(tmp_path / "extensions" / "protocol_adapters" / "fake" / "adapter.py", "VERSION = 2\n")
     assert inspector.restart_required()["required"] is False
 
-    write(tmp_path / ".env", "PORT=8000\n")
+    write(tmp_path / "gateway.yaml", "PORT: 8000\n")
     write(tmp_path / "api" / "server.py", "APP_VERSION = 2\n")
-    write(tmp_path / "providers" / "fake" / "manifest.json", '{"models": {}}\n')
+    write(tmp_path / "gateway" / "runtime.py", "RUNTIME_VERSION = 2\n")
     status = inspector.restart_required()
     assert status["required"] is True
     assert status["message"] == "检测到需要重启的变量，请重启"
-    assert status["changed_groups"] == ["environment", "backend", "providers"]
+    assert status["changed_groups"] == ["environment", "backend"]
     assert status["changed_files"] == [
-        ".env",
         "api/server.py",
-        "providers/fake/manifest.json",
+        "gateway.yaml",
+        "gateway/runtime.py",
     ]
 
 

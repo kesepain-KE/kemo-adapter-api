@@ -1,0 +1,9 @@
+adapter_id: openai-chat
+name: Gitee AI / 模力方舟
+base_url: https://ai.gitee.com/v1
+auth_scheme: bearer
+headers: {}
+profile:
+  max_tokens_field: max_tokens
+tokenizer: auto
+catalog: []

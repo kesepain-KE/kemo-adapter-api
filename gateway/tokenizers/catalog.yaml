@@ -1,0 +1,145 @@
+deepseek:
+  label: DeepSeek V4
+  kind: huggingface
+  file: deepseek.json.gz
+  patterns:
+  - deepseek
+openai:
+  label: OpenAI · tiktoken
+  kind: openai
+  patterns: []
+qwen:
+  label: Qwen3
+  kind: huggingface
+  file: qwen.json.gz
+  patterns:
+  - qwen
+  - qwq
+glm:
+  label: GLM 4.5
+  kind: huggingface
+  file: glm.json.gz
+  patterns:
+  - glm
+  - chatglm
+minimax:
+  label: MiniMax M2
+  kind: huggingface
+  file: minimax.json.gz
+  patterns:
+  - minimax
+  - abab
+mistral:
+  label: Mistral Small 3.1 · Tekken
+  kind: huggingface
+  file: mistral.json.gz
+  patterns:
+  - mistral
+  - ministral
+  - codestral
+  - pixtral
+  - magistral
+hunyuan:
+  label: Tencent Hunyuan A13B
+  kind: huggingface
+  file: hunyuan.json.gz
+  patterns:
+  - hunyuan
+ernie:
+  label: Baidu ERNIE 4.5
+  kind: huggingface
+  file: ernie.json.gz
+  patterns:
+  - ernie
+doubao:
+  label: ByteDance Seed OSS
+  kind: huggingface
+  file: doubao.json.gz
+  patterns:
+  - seed-oss
+stepfun:
+  label: StepFun Step3
+  kind: huggingface
+  file: stepfun.json.gz
+  patterns:
+  - step
+yi:
+  label: 01.AI Yi 1.5
+  kind: huggingface
+  file: yi.json.gz
+  patterns:
+  - yi-
+mimo:
+  label: Xiaomi MiMo V2
+  kind: huggingface
+  file: mimo.json.gz
+  patterns:
+  - mimo
+sensenova:
+  label: SenseNova SI
+  kind: huggingface
+  file: sensenova.json.gz
+  patterns:
+  - sensenova-si
+baichuan:
+  label: Baichuan2
+  kind: sentencepiece
+  file: baichuan.model
+  patterns:
+  - baichuan
+internlm:
+  label: InternLM3
+  kind: sentencepiece
+  file: internlm.model
+  patterns:
+  - internlm
+cohere:
+  label: Cohere Command R+
+  kind: huggingface
+  file: cohere.json.gz
+  patterns:
+  - command-r
+gemini:
+  label: Google Gemini · Gemma3
+  kind: sentencepiece
+  file: gemini.model
+  patterns:
+  - gemini
+  - gemma-3
+  - gemma3
+grok:
+  label: xAI Grok-1
+  kind: sentencepiece
+  file: grok.model
+  patterns:
+  - grok-1
+ai21-j2:
+  label: AI21 Jurassic-2 · legacy
+  kind: sentencepiece
+  file: ai21-j2.model
+  patterns:
+  - j2-
+llama:
+  label: Meta Llama3.2 · Unsloth
+  kind: huggingface
+  file: llama.json.gz
+  patterns:
+  - llama-3
+  - llama3
+claude-legacy:
+  label: Anthropic Claude · legacy
+  kind: anthropic
+  file: claude-legacy.json.gz
+  patterns:
+  - claude-instant
+  - claude-2
+kimi:
+  label: Moonshot Kimi K2
+  kind: tiktoken
+  file: kimi.model
+  patterns:
+  - kimi
+  - moonshot
+  pat_str: '[\p{Han}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:''s|''t|''re|''ve|''m|''ll|''d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:''s|''t|''re|''ve|''m|''ll|''d)?|\p{N}{1,3}|
+    ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+'
+  special_tokens: {}

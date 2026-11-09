@@ -1,0 +1,5 @@
+id: cohere
+name: Cohere
+version: 1.0.0
+contract_version: '1.0'
+description: Cohere 连接预制，使用 cohere-chat；尚未进行真实厂商调用验证。
