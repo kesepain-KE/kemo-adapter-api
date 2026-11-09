@@ -3,6 +3,7 @@ import { api, useAction, useConsole } from '../console'
 import type { Entity } from '../console'
 import { Modal, PageHeader, Toggle, VerifyBadge } from '../components/UI'
 import { Empty, ErrorBar } from '../components/Form'
+import { Select } from '../components/Select'
 import { t } from '../i18n'
 
 export default function Extensions({ kind }: { kind: 'protocol_adapters' | 'provider_templates' }) {
@@ -19,9 +20,9 @@ export default function Extensions({ kind }: { kind: 'protocol_adapters' | 'prov
   const items = (adapters ? data!.adapters : data!.templates).filter(item => source === 'all' || item.source === source)
   return <div className="page"><PageHeader title={adapters ? '协议适配器' : '提供商模板'}
     actions={<>
-      <select className="input" aria-label={t('更新分支')} value={branch} disabled={action.busy} onChange={e => { setBranch(e.target.value); setPlan(null) }}>
-        <option value="main">main</option><option value="kemo-preview">kemo-preview</option>
-      </select>
+      <Select aria-label={t('更新分支')} value={branch} disabled={action.busy}
+        onChange={value => { setBranch(value); setPlan(null) }}
+        options={[{ value: 'main', label: 'main' }, { value: 'kemo-preview', label: 'kemo-preview' }]} />
       <button className="btn" disabled={action.busy || !data!.permissions.can_manage_extensions} onClick={() => { void action.run(async () => {
         setPlan(await mutate('/resources/check', 'POST', { branch }))
       }) }}>{t('检查更新')}</button>
@@ -29,9 +30,8 @@ export default function Extensions({ kind }: { kind: 'protocol_adapters' | 'prov
     </>} />
     <ErrorBar error={action.error} />
     <div className="row-actions">
-      <select className="input" aria-label={t('来源')} value={source} onChange={e => setSource(e.target.value)}>
-        <option value="all">{t('全部')}</option><option value="builtin">{t('内置')}</option><option value="user">{t('用户')}</option>
-      </select>
+      <Select aria-label={t('来源')} value={source} onChange={setSource}
+        options={[{ value: 'all', label: t('全部') }, { value: 'builtin', label: t('内置') }, { value: 'user', label: t('用户') }]} />
       <label className="check-label"><input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} />{t('替换同名用户资源（需先停用）')}</label>
     </div>
     <p className="hint">{t('内置资源随更新覆盖；用户资源独立保存，更新时保留。')}</p>
