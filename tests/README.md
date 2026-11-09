@@ -59,7 +59,7 @@ tests/
 ├─ storage/          执行存储、统计
 ├─ maintenance/      安装、版本、更新及临时 Git 仓库
 ├─ architecture/     入口、收集覆盖、依赖方向门禁
-└─ integration/      可选真实进程替换
+└─ integration/      可选完整安装与真实进程替换
 ```
 
 `tests/gateway/` 使用模拟 HTTP 上游验证实际协议适配器与声明式运行时。
@@ -101,15 +101,23 @@ python -m pytest tests/contracts/kemo_v2 -q
 协议模型、SSE、Asset、工具、多模态、Usage、Embedding、Rerank 或能力声明发生变化时，
 必须先通过此门禁，再运行对应领域回归。
 
-## 可选真实进程替换
+## 可选完整安装与真实进程替换
 
 ```sh
 python -m tests --suite restart-e2e -q
 ```
 
-必须先构建前端。这一组显式启用 `KEMO_RUN_RESTART_E2E=1`，在 pytest 临时目录启动和替换进程，
-不操作用户当前网关。其他套件不会因环境中残留该变量就执行进程替换。
-GitHub 的网页重启工作流使用同一入口，并先构建前端。
+需要 Git、Python 和可用的依赖下载网络；Node.js 缺失时由部署器安装项目本地工具链。
+这一组按 Git 跟踪清单导出源码到 pytest 临时目录，执行完整 `setup.py`，
+使用新建 `.venv` 启动，检查默认配置、空目录、管理页及实际返回的 JS/CSS，
+然后验证受保护管理登录、无效配置拒绝重启、端口变更和会话继承。
+不复制本地配置、密钥或已有构建产物，不操作用户当前网关。
+测试显式启用 `KEMO_RUN_RESTART_E2E=1`；其他套件不会因环境中残留该变量就执行进程替换。
+
+GitHub 安装与重启工作流在 Windows、Ubuntu 使用同一入口，前端由临时项目的部署器构建一次。
+主工作流执行完整默认源码测试集，覆盖 Windows/Python 3.12、Ubuntu/Python 3.12
+和最低支持的 Ubuntu/Python 3.11。分发测试同时检查忽略规则和当前 Git 跟踪清单，
+拒绝把本地配置、运行数据、扩展及构建目录纳入提交。
 
 ## 直接运行单个用例仍然可用
 

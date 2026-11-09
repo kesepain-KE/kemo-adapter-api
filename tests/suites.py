@@ -43,7 +43,7 @@ SUITES = {
     "update-unit": Suite("更新单元安全测试", ("tests/maintenance/test_update.py",)),
     "update": Suite("更新与临时 Git 仓库集成", ("tests/maintenance/test_update.py", "tests/maintenance/test_update_git_integration.py")),
     "update-git": Suite("更新临时 Git 仓库集成", ("tests/maintenance/test_update_git_integration.py",)),
-    "restart-e2e": Suite("真实进程替换：仅在临时目录，需已构建前端", ("tests/integration",)),
+    "restart-e2e": Suite("干净安装、前端资源与真实进程替换：仅在临时目录", ("tests/integration",)),
 }
 
 

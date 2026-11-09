@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -11,53 +12,65 @@ import time
 from http.cookiejar import CookieJar
 from urllib.error import URLError
 from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_opener
+from urllib.parse import urlsplit
 
 import pytest
 
 from core.restart_control import process_exists, read_json, terminate_process
-
+from core.yaml_config import startup_values
 
 from tests.support.paths import PROJECT_ROOT
 RUN_RESTART_E2E = os.getenv("KEMO_RUN_RESTART_E2E", "").strip() == "1"
 HTTP = build_opener(ProxyHandler({}))
 
 
-def _copy_runtime_project(destination: Path) -> None:
-    def ignore_runtime(_directory: str, names: list[str]) -> set[str]:
-        return {
-            name
-            for name in names
-            if name == "__pycache__"
-            or name.endswith((".pyc", ".pyo"))
-            or (name.endswith((".json", ".yaml", ".yml"))
-                and Path(_directory) != PROJECT_ROOT / "gateway" / "tokenizers")
-            or name == "runtime"
-        }
+def _install_runtime_project(destination: Path, environment: dict[str, str]) -> Path:
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=PROJECT_ROOT, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    ).stdout
+    for relative in tracked.split("\0"):
+        if relative:
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(PROJECT_ROOT / relative, target)
 
-    for filename in (
-        "start_web.py",
-        "restart.py",
-        "version.json",
-        "kemo-adapter-api.png",
-    ):
-        shutil.copy2(PROJECT_ROOT / filename, destination / filename)
-    shutil.copytree(PROJECT_ROOT / "api", destination / "api", ignore=ignore_runtime)
-    shutil.copytree(PROJECT_ROOT / "vendor", destination / "vendor")
-    shutil.copytree(PROJECT_ROOT / "core", destination / "core", ignore=ignore_runtime)
-    shutil.copytree(PROJECT_ROOT / "gateway", destination / "gateway", ignore=ignore_runtime)
-    shutil.copytree(PROJECT_ROOT / "templates" / "provider_presets", destination / "templates" / "provider_presets")
-    (destination / "web").mkdir()
-    shutil.copy2(PROJECT_ROOT / "web" / "__init__.py", destination / "web" / "__init__.py")
-    shutil.copytree(PROJECT_ROOT / "web" / "backend", destination / "web" / "backend", ignore=ignore_runtime)
-    frontend_dist = PROJECT_ROOT / "web" / "frontend" / "dist"
-    if not (frontend_dist / "index.html").is_file():
-        raise AssertionError("Web 前端尚未构建，无法执行网页重启端到端测试")
-    shutil.copytree(frontend_dist, destination / "web" / "frontend" / "dist")
-    (destination / "storage").mkdir()
-    # Copy source modules only, including new helpers such as read_cache.py.
-    # Never copy daily databases, uploaded assets or execution history.
-    for source in (PROJECT_ROOT / "storage").glob("*.py"):
-        shutil.copy2(source, destination / "storage" / source.name)
+    assert not (destination / "gateway.yaml").exists()
+    assert not (destination / "data").exists()
+    assert not (destination / ".venv").exists()
+    assert not (destination / "web" / "frontend" / "dist").exists()
+    subprocess.run(
+        [sys.executable, "setup.py"], cwd=destination, env=environment,
+        check=True, timeout=900,
+    )
+    assert (destination / "gateway.yaml").read_bytes() == (
+        destination / "gateway.yaml.example"
+    ).read_bytes()
+    assert (destination / "web" / "frontend" / "dist" / "index.html").is_file()
+    executable = destination / ".venv" / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    assert executable.is_file()
+    return executable
+
+
+def _check_console_assets(project: Path, base_url: str) -> None:
+    frontend_dist = project / "web" / "frontend" / "dist"
+    with HTTP.open(f"{base_url}/admin", timeout=2.0) as response:
+        assert response.status == 200
+        index = response.read()
+        assert index == (frontend_dist / "index.html").read_bytes()
+    assets = {
+        urlsplit(path).path
+        for path in re.findall(r'(?:src|href)="([^"]+)"', index.decode("utf-8"))
+        if path.startswith("/admin/assets/")
+    }
+    assert any(path.endswith(".js") for path in assets)
+    assert any(path.endswith(".css") for path in assets)
+    for path in assets:
+        with HTTP.open(f"{base_url}{path}", timeout=2.0) as response:
+            assert response.status == 200
+            assert response.read() == (frontend_dist / path.removeprefix("/admin/")).read_bytes()
 
 
 def _free_port() -> int:
@@ -209,29 +222,51 @@ def test_web_restart_rejects_invalid_env_then_restarts_on_new_port(
 ) -> None:
     project = tmp_path / "gateway"
     project.mkdir()
-    _copy_runtime_project(project)
     first_port = _free_port()
     second_port = _free_port()
     while second_port == first_port:
         second_port = _free_port()
-    _write_env(project, first_port)
 
     environment = os.environ.copy()
+    startup_names = set(startup_values(PROJECT_ROOT / "gateway.yaml.example"))
     for name in list(environment):
-        if name in {"HOST", "PORT", "STATUS_TOKEN"} or name.startswith(
+        if name in startup_names | {"KEMO_MASTER_KEY"} or name.startswith(
             ("WEB_", "GATEWAY_", "PROVIDER_", "RESTART_")
         ):
             environment.pop(name, None)
     environment["NO_PROXY"] = "127.0.0.1,localhost,::1"
     environment["no_proxy"] = environment["NO_PROXY"]
     environment["PYTHONUNBUFFERED"] = "1"
+    executable = _install_runtime_project(project, environment)
 
     log_path = project / "initial-gateway.log"
     initial: subprocess.Popen[bytes] | None = None
     try:
         with log_path.open("ab", buffering=0) as output:
             initial = subprocess.Popen(
-                [sys.executable, str(project / "start_web.py")],
+                [str(executable), str(project / "start_web.py")],
+                cwd=project,
+                env={**environment, "PORT": str(first_port)},
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+            )
+        first_url = f"http://127.0.0.1:{first_port}"
+        _wait_for_health(first_url, timeout=20.0)
+        _check_console_assets(project, first_url)
+        console = _request_json(first_url, "/admin/api/console")
+        assert console["version"]["version"] == json.loads(
+            (project / "version.json").read_text(encoding="utf-8")
+        )["version"]
+        for collection in ("upstreams", "models", "deployments", "keys"):
+            assert console[collection] == []
+        _stop_gateway(project)
+        initial.wait(timeout=10.0)
+
+        _write_env(project, first_port)
+        with log_path.open("ab", buffering=0) as output:
+            initial = subprocess.Popen(
+                [str(executable), str(project / "start_web.py")],
                 cwd=project,
                 env=environment,
                 stdin=subprocess.DEVNULL,

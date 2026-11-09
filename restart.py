@@ -238,11 +238,34 @@ def _same_instance(metadata: dict, *, pid: int, instance_id: str) -> bool:
         return False
 
 
-def _stop_child(child: subprocess.Popen[bytes], *, timeout: float = 5.0) -> None:
+def _child_owns_metadata(
+    paths: RestartPaths, child: subprocess.Popen[bytes], metadata: dict
+) -> bool:
+    metadata_root = metadata.get("project_root")
+    return (
+        isinstance(metadata.get("pid"), int)
+        and metadata["pid"] > 0
+        and isinstance(metadata_root, str)
+        and bool(metadata_root)
+        and Path(metadata_root).resolve() == paths.root.resolve()
+        and (
+            metadata.get("pid") == child.pid
+            # Windows venv python.exe launches the actual interpreter as its child.
+            or (os.name == "nt" and metadata.get("parent_pid") == child.pid)
+        )
+    )
+
+
+def _stop_child(
+    paths: RestartPaths, child: subprocess.Popen[bytes], *, timeout: float = 5.0
+) -> None:
     """Stop only the exact child created by this replacement controller."""
 
     if child.poll() is not None:
         return
+    metadata = read_json(paths.pid) or {}
+    if _child_owns_metadata(paths, child, metadata) and metadata["pid"] != child.pid:
+        terminate_process(metadata["pid"])
     try:
         child.terminate()
         child.wait(timeout=timeout)
@@ -280,16 +303,13 @@ def _wait_for_healthy_child(
                 body = json.loads(response.read(64 * 1024).decode("utf-8"))
             candidate = body.get("instance_id")
             pid_metadata = read_json(paths.pid) or {}
-            metadata_root = pid_metadata.get("project_root")
             if (
                 response.status == 200
                 and body.get("phase") == "running"
                 and isinstance(candidate, str)
                 and candidate != old_instance_id
-                and _same_instance(pid_metadata, pid=child.pid, instance_id=candidate)
-                and isinstance(metadata_root, str)
-                and metadata_root
-                and Path(metadata_root).resolve() == paths.root.resolve()
+                and pid_metadata.get("instance_id") == candidate
+                and _child_owns_metadata(paths, child, pid_metadata)
             ):
                 return candidate
         except (OSError, URLError, UnicodeError, json.JSONDecodeError):
@@ -339,7 +359,7 @@ def _restore_old_environment(
         timeout=timeout,
     )
     if instance_id is None:
-        _stop_child(child)
+        _stop_child(paths, child)
     return instance_id
 
 
@@ -507,7 +527,7 @@ def _replacement_process(args: argparse.Namespace) -> int:
     )
 
     if new_instance_id is None:
-        _stop_child(child)
+        _stop_child(paths, child)
         old_health_host_header = metadata.get("health_host_header")
         restored_instance_id = _restore_old_environment(
             paths,

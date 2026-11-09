@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
+import json
 import os
 from pathlib import Path
 import threading
@@ -9,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+import restart
 from api.server import create_app
 from core.config import Settings
 from core.restart_control import (
@@ -29,6 +32,63 @@ from web.backend.auth_service import WebAuthService
 
 
 OWNER_HEADERS = {"Authorization": "Bearer owner-token"}
+
+
+@pytest.mark.parametrize(
+    ("pid", "parent_pid", "same_root", "instance_id", "accepted"),
+    [
+        (43210, 100, True, "instance_new", True),
+        (43211, 43210, True, "instance_new", os.name == "nt"),
+        (43211, 100, True, "instance_new", False),
+        (43210, 100, False, "instance_new", False),
+        (43210, 100, True, "instance_other", False),
+    ],
+)
+def test_replacement_health_requires_own_process_and_instance(
+    tmp_path, monkeypatch, pid, parent_pid, same_root, instance_id, accepted
+):
+    paths = RestartPaths(tmp_path)
+    atomic_json(paths.pid, {
+        "pid": pid, "parent_pid": parent_pid, "instance_id": instance_id,
+        "project_root": str(tmp_path if same_root else tmp_path / "other"),
+    })
+
+    def health(*_args, **_kwargs):
+        response = BytesIO(json.dumps({
+            "phase": "running", "instance_id": "instance_new",
+        }).encode("utf-8"))
+        response.status = 200
+        return response
+
+    monkeypatch.setattr(restart, "urlopen", health)
+    child = SimpleNamespace(pid=43210, poll=lambda: None)
+    result = restart._wait_for_healthy_child(
+        paths, child, host="127.0.0.1", port=7531, host_header=None,
+        old_instance_id="instance_old", timeout=.01,
+    )
+    assert result == ("instance_new" if accepted else None)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows venv interpreter launcher")
+@pytest.mark.parametrize("same_root", [True, False])
+def test_failed_replacement_stops_only_owned_venv_interpreter(
+    tmp_path, monkeypatch, same_root
+):
+    paths = RestartPaths(tmp_path)
+    atomic_json(paths.pid, {
+        "pid": 43211, "parent_pid": 43210,
+        "project_root": str(tmp_path if same_root else tmp_path / "other"),
+    })
+    stopped = []
+    monkeypatch.setattr(restart, "terminate_process", lambda pid: stopped.append(pid))
+    child = SimpleNamespace(
+        pid=43210, poll=lambda: None,
+        terminate=lambda: stopped.append(43210), wait=lambda **_kwargs: None,
+    )
+
+    restart._stop_child(paths, child)
+
+    assert stopped == ([43211, 43210] if same_root else [43210])
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows denies replacement while a regular file reader is open")

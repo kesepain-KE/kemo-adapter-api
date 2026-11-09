@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   version-and-update:
-    name: Version and update (${{ matrix.os }})
+    name: Source tests (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -23,6 +23,11 @@ jobs:
         os:
           - ubuntu-latest
           - windows-latest
+        python:
+          - "3.12"
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
 
     steps:
       - name: Check out source
@@ -31,7 +36,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
 
       - name: Install Python dependencies
@@ -39,28 +44,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Validate release metadata
-        run: python -m tests --suite version -q
-
-      - name: Validate the Kemo 2.0 artifact contract
-        run: python -m tests --suite kemo-contract -q
-
-      - name: Run public and admin API safety tests
-        run: python -m tests --suite api --suite web -q
-
-      - name: Run update unit safety tests
-        run: python -m tests --suite update-unit -q
-
-      - name: Run temporary Git repository integration tests
-        run: python -m tests --suite update-git -q
-
-      - name: Run execution and persistence safety tests
-        run: >-
-          python -m tests --suite protocol --suite storage --suite architecture -q
-
-      - name: Check gateway adapters, routing and extensions
-        run: >-
-          python -m tests --suite gateway -q
+      - name: Run all source tests, including installation and runtime safety
+        run: python -m tests -q
 
       - name: Check the real remote without modifying source
         run: python update.py --check

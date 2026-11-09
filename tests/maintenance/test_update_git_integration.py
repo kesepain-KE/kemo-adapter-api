@@ -12,6 +12,8 @@ from update import transaction as update_transaction
 from update.git import GitDiff
 from update.version import VersionInfo
 
+from tests.support.paths import PROJECT_ROOT
+
 
 GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(GIT is None, reason="git executable is required")
@@ -83,6 +85,21 @@ def test_release_ignores_runtime_data_without_hiding_frontend_source(tmp_path: P
     _git(tmp_path, "add", ".")
 
     assert set(_git(tmp_path, "ls-files").splitlines()) == {".gitignore", *source}
+
+
+def test_release_tracks_no_private_runtime_files() -> None:
+    private_files = {"gateway.yaml", ".env", ".update.lock", ".update.maintenance"}
+    private_directories = (
+        "data/", "extensions/", "core/runtime/", ".backup/", "开发目录/",
+        ".venv/", "web/frontend/node_modules/", "web/frontend/dist/",
+        "web/frontend/.runtime/",
+    )
+    tracked = _git(PROJECT_ROOT, "ls-files", "-z").split("\0")
+    leaked = [
+        path for path in tracked
+        if path in private_files or path.startswith(private_directories)
+    ]
+    assert not leaked, f"Git 跟踪了本地配置或运行数据：{leaked}"
 
 
 def test_fetch_fast_forwards_to_exact_utf8_commit(tmp_path: Path) -> None:

@@ -289,6 +289,7 @@ def write_pid_metadata(
         paths.pid,
         {
             "pid": pid,
+            "parent_pid": os.getppid(),
             "instance_id": instance_id,
             "project_root": str(paths.root.resolve()),
             "host": host,

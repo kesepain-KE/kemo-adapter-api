@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +72,25 @@ def test_init_env_only(monkeypatch) -> None:
 
     assert deployment_setup.main() == 0
     assert steps == ["env"]
+
+
+def test_init_env_copies_template_without_overwriting_user_config(
+    monkeypatch, tmp_path: Path
+) -> None:
+    template = tmp_path / "gateway.yaml.example"
+    template.write_bytes(
+        (deployment_setup.PROJECT_ROOT / "gateway.yaml.example").read_bytes()
+    )
+    monkeypatch.setattr(deployment_setup, "PROJECT_ROOT", tmp_path)
+
+    deployment_setup.init_env()
+    config = tmp_path / "gateway.yaml"
+    assert config.read_bytes() == template.read_bytes()
+
+    user_config = b"HOST: 127.0.0.1\nPORT: 9876\nWEB_TOKEN: user-local-token\n"
+    config.write_bytes(user_config)
+    deployment_setup.init_env()
+    assert config.read_bytes() == user_config
 
 
 def test_check_cannot_be_combined_with_deployment_steps(monkeypatch) -> None:
