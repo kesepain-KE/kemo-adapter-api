@@ -10,14 +10,14 @@ from gateway.extensions import read_manifest
 from gateway.runtime import RuntimeRegistry
 
 
-def test_extension_media_requires_cross_process_asset_contract(tmp_path: Path):
+def test_extension_media_uses_the_shared_asset_contract(tmp_path: Path):
     manifest = AdapterManifest(
         id="native-example", name="Native example", operations=("llm",),
         media={"input": ["text", "image"]}, usage_semantics="unknown",
     )
     (tmp_path / "manifest.yaml").write_text(yaml.safe_dump(manifest.model_dump(mode="json")), encoding="utf-8")
-    with pytest.raises(ValueError, match="跨进程媒体"):
-        read_manifest(tmp_path, "protocol_adapters")
+    loaded = read_manifest(tmp_path, "protocol_adapters")
+    assert loaded.media.input == ("text", "image") and not loaded.builtin
 
 
 def test_custom_adapter_declarations_cannot_exceed_implemented_features():

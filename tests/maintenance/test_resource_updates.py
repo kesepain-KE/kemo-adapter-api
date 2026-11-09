@@ -96,7 +96,8 @@ def _private_files(root):
 def _release(seed, *, broken=False, conflict=False):
     path = seed / BUILTIN_PATHS["protocol_adapters"] / "manifest.yaml"
     manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
-    manifest["version"] = "1.2.0"
+    major, minor, _ = manifest["version"].split(".")
+    manifest["version"] = f"{major}.{int(minor) + 1}.0"
     manifest["adapters"].append({
         "id": "new-native", "version": "1.0.0", "module": "new_native", "class_name": "NewNative",
     })
@@ -109,7 +110,8 @@ def _release(seed, *, broken=False, conflict=False):
     (path.parent / "new_native.py").write_text(source, encoding="utf-8")
     path = seed / BUILTIN_PATHS["provider_templates"] / "manifest.yaml"
     manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
-    manifest["version"] = "1.2.0"
+    major, minor, _ = manifest["version"].split(".")
+    manifest["version"] = f"{major}.{int(minor) + 1}.0"
     path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     identity = "user-example" if conflict else "new-provider"
     directory = path.parent / identity
@@ -169,7 +171,10 @@ def test_full_update_replaces_official_resources_and_keeps_private_data(tmp_path
     local_file = local / BUILTIN_PATHS["protocol_adapters"] / "local_only.py"
     local_file.write_text("local builtin customization", encoding="utf-8")
     manifest = local / BUILTIN_PATHS["protocol_adapters"] / "manifest.yaml"
-    manifest.write_text(manifest.read_text(encoding="utf-8").replace("1.1.0", "1.1.1"), encoding="utf-8")
+    document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    major, minor, patch = document["version"].split(".")
+    document["version"] = f"{major}.{minor}.{int(patch) + 1}"
+    manifest.write_text(yaml.safe_dump(document), encoding="utf-8")
     original, private = resource_revision(local), _private_files(local)
     head = _git(local, "rev-parse", "HEAD")
     target = _release(seed)
@@ -186,7 +191,7 @@ def test_full_update_replaces_official_resources_and_keeps_private_data(tmp_path
     if valid:
         assert _git(local, "rev-parse", "HEAD") == target
         assert not local_file.exists()
-        assert inventory(local)["protocol_adapters"]["version"] == "1.2.0"
+        assert inventory(local)["protocol_adapters"] == inventory(seed)["protocol_adapters"]
         assert _git(local, "status", "--porcelain") == ""
     else:
         assert _git(local, "rev-parse", "HEAD") == head

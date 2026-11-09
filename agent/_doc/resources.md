@@ -88,7 +88,7 @@ response.raise_for_status()
 5. 用 `PATCH /admin/api/extensions/protocol_adapters/<id>` 启用，再创建对应上游，手动填准确模型 ID，按已授权范围测试和探测。
 6. 排障读取 `GET /admin/api/extensions/protocol_adapters/<id>/logs` 与具体调用详情。不要把包含业务内容的日志整段复制到公开报告。
 
-当前用户协议运行在独立 worker 中，可以使用统一网络 Transport，但**尚未开放跨进程 Asset 访问**；清单声明图片、音频、视频或文件输入输出会被拒绝。图片服务使用内置 `openai-images`，见 [图片模型](images.md)。worker 是进程隔离，不是恶意 Python 代码沙箱，安装内容需在用户授权的信任范围内。
+用户协议运行在独立 worker 中，通过统一网络 Transport 和按本次身份绑定的 `context.assets` 读写媒体。可以按真实实现声明图片、音频、视频或文件输入输出；主进程校验并发布 worker 输出，避免将大文件放进 RPC。接口、探测声明和限制见 [音频、视频和文件](media.md)，图片服务见 [图片模型](images.md)。worker 是进程隔离，不是恶意 Python 代码沙箱，安装内容需在用户授权的信任范围内。
 
 ## 更换用户资源版本
 

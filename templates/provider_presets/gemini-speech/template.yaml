@@ -1,0 +1,9 @@
+adapter_id: gemini-speech
+name: Gemini Speech
+base_url: https://generativelanguage.googleapis.com/v1beta
+auth_scheme: gemini-key
+timeout: 180
+headers: {}
+profile: {}
+catalog: []
+note: 使用原生 generateContent AUDIO 输出；模型 ID 和音色按实际服务选择。

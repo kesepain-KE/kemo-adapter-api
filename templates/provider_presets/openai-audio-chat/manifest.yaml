@@ -1,0 +1,6 @@
+id: openai-audio-chat
+name: OpenAI-compatible Audio Chat
+version: "1.0.0"
+contract_version: "1.0"
+description: Chat 音频输入及音频输出配置，适用于支持该协议的语音对话模型。
+verification: declared

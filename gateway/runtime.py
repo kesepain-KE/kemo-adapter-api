@@ -252,19 +252,25 @@ class Router:
                     return result
                 except ProviderException as exc:
                     error, last = exc.error, exc
+                    if (method == "execute" and set(request.output.modalities) - {"text"}
+                            and error.provider_status is None):
+                        error.retryable = False
                     self.failed(generation, deployment, error, credential)
                     self.record_credential(generation, upstream, credential, error)
                     if not error.retryable and error.provider_status not in {401, 403}:
                         raise
                 except TimeoutError:
-                    error = upstream_error(code="UPSTREAM_TIMEOUT").error
+                    media_output = method == "execute" and bool(set(request.output.modalities) - {"text"})
+                    error = upstream_error(code="UPSTREAM_TIMEOUT", retryable=not media_output).error
                     last = ProviderException(error)
                     self.record_credential(generation, upstream, credential, error)
+                    if media_output:
+                        raise last from None
                 except asyncio.CancelledError:
                     cancelled = True
                     raise
                 except Exception:
-                    error = upstream_error(code="ADAPTER_BAD_RESULT").error
+                    error = upstream_error(code="ADAPTER_BAD_RESULT", retryable=False).error
                     raise ProviderException(error) from None
                 finally:
                     self.metering.finish(context, no, started, deployment, usage, error=error, cancelled=cancelled,
@@ -459,7 +465,7 @@ class RuntimeRegistry:
         operations = caps.extensions.get("operations", {})
         supported = {"conversation"}
         for modality, operation in (("image", "vision"), ("audio", "audio_transcription"), ("video", "video_understanding")):
-            if modality in modalities["input"]:
+            if modality in modalities["input"] and "text" in modalities["output"]:
                 supported.add(operation)
         for modality, operation in (("image", "image_generation"), ("audio", "speech_generation"), ("video", "video_generation")):
             if modality in modalities["output"]:

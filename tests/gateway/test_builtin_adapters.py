@@ -691,5 +691,6 @@ def test_runtime_registers_new_builtins():
     assert {adapter.manifest.id for adapter in BUILTINS} == {
         "openai-chat", "openai-responses", "anthropic-messages", "gemini",
         "openai-embedding", "cohere-rerank", "cohere-chat", "perplexity-agent", "cloudflare-workers-ai",
-        "openai-images",
+        "openai-images", "openai-transcription", "openai-speech", "openai-audio-chat",
+        "openai-video", "openai-files", "gemini-speech", "gemini-video",
     }

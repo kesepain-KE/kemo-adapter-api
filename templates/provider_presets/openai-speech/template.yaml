@@ -1,0 +1,9 @@
+adapter_id: openai-speech
+name: OpenAI-compatible Speech
+base_url: https://api.openai.com/v1
+auth_scheme: bearer
+timeout: 180
+headers: {}
+profile: {}
+catalog: []
+note: 使用 /audio/speech，支持 WAV、MP3、FLAC、Opus；模型与音色按服务方资料选择。

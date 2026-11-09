@@ -12,7 +12,7 @@ class OpenAIResponses(DiscoverableAdapter):
         id="openai-responses", name="OpenAI Responses", operations=("llm",), streaming=True,
         usage_semantics="input includes cache; output includes reasoning",
         endpoints={"llm": "/responses", "discovery": "/models"},
-        media={"input": ("text", "image")}, structured_output=True,
+        version="1.1.0", media={"input": ("text", "image", "file")}, structured_output=True,
         reasoning_returns=("none", "summary", "auto"),
         reasoning_levels=("minimal", "low", "medium", "high", "xhigh", "max"),
         body_fields=("model", "input", "stream", "store", "max_output_tokens", "temperature", "top_p",
@@ -20,7 +20,7 @@ class OpenAIResponses(DiscoverableAdapter):
     )
 
     def encode(self, request, context, model, stream=False):
-        body = {"model": model, "input": openai_messages(request, context, responses=True),
+        body = {"model": model, "input": openai_messages(request, context, responses=True, media_inputs=True),
                 "stream": stream, "store": False}
         for name in ("max_output_tokens", "temperature", "top_p"):
             value = getattr(request.generation, name)

@@ -663,7 +663,7 @@ class GatewayExecutor:
                         type="gateway_timeout",
                         code="GATEWAY_TIMEOUT",
                         message="模型执行超过网关允许的最大时间。",
-                        retryable=True,
+                        retryable=set(request.output.modalities) <= {"text"},
                     ),
                 )
                 if request.generation.n > 1:
@@ -683,7 +683,7 @@ class GatewayExecutor:
                         type="adapter_contract_error",
                         code="PROVIDER_BAD_RESPONSE",
                         message="Provider adapter failed before producing a valid response.",
-                        retryable=True,
+                        retryable=False,
                         details={"exception_type": type(exc).__name__},
                     ),
                 )

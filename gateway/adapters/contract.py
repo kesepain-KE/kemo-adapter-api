@@ -36,6 +36,10 @@ class AdapterManifest(Document):
         "response_format", "reasoning", "reasoning_effort", "thinking", "stream_options",
     )
     media: MediaSupport = Field(default_factory=MediaSupport)
+    probe_operation: Literal[
+        "image_generation", "audio_transcription", "speech_generation",
+        "speech_to_speech", "video_generation", "file_generation",
+    ] | None = None
     # These are encoder/decoder limits, never evidence about a particular model.
     tools: bool = True
     multiple_choices: bool = False

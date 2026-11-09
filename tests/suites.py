@@ -35,6 +35,8 @@ SUITES = {
         "tests/gateway/test_model_actions.py",
         "tests/gateway/test_resource_management.py",
         "tests/gateway/test_image_models.py",
+        "tests/gateway/test_media_models.py",
+        "tests/gateway/test_worker_media.py",
         "tests/gateway/test_model_deletion.py",
         "tests/gateway/test_diagnostics.py",
         "tests/web/test_admin_api.py",

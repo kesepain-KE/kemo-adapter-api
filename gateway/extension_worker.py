@@ -17,6 +17,9 @@ async def main():
     from core.models import KemoRequest, EmbeddingRequest, RerankRequest
     from core.provider_contract import RequestContext, ProviderException
     from core.models import ErrorObject
+    from core.assets import AssetStore
+    from core.models import AssetDescriptor
+    from core.provider_contract import ResolvedAsset
     from gateway.auth import RequestHeaders
     from gateway.domain import Upstream
     from gateway.transport import Transport
@@ -39,6 +42,20 @@ async def main():
         output.write(json.dumps({"jsonrpc": "2.0", "id": identity, **body}, default=encode) + "\n")
         output.flush()
     tasks = {}
+
+    class WorkerAssets:
+        def __init__(self, params, context):
+            self.inputs = params["inputs"]
+            self.output = AssetStore(Path(params["output_root"])).bind(context.tenant_id, context.subject_id)
+
+        def resolve(self, identity):
+            if identity in self.inputs:
+                value = self.inputs[identity]
+                return ResolvedAsset(AssetDescriptor.model_validate(value["descriptor"]), Path(value["path"]))
+            return self.output.resolve(identity)
+
+        async def store_output(self, **values):
+            return await self.output.store_output(**values)
 
     async def handle(command):
         identity, method, params = command["id"], command["method"], command["params"]
@@ -72,6 +89,9 @@ async def main():
                            "embed": EmbeddingRequest, "rerank": RerankRequest}[method]
                     request = cls.model_validate(params["request"])
                     context = RequestContext(**params["context"])
+                    if "assets" in params:
+                        from dataclasses import replace
+                        context = replace(context, assets=WorkerAssets(params["assets"], context))
                     args = (request, context, params["model"], upstream, headers)
                     if method == "stream":
                         async for event in adapter.stream(*args):

@@ -1,0 +1,9 @@
+adapter_id: gemini-video
+name: Gemini Video
+base_url: https://generativelanguage.googleapis.com/v1beta
+auth_scheme: gemini-key
+timeout: 600
+headers: {}
+profile: {}
+catalog: []
+note: 使用 predictLongRunning；探测会生成真实视频，需确认权限和费用。

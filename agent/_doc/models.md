@@ -107,6 +107,8 @@ with httpx.Client(base_url=str(client.base_url), timeout=30, headers={
 
 读取检查结果后，需应用的能力再按普通编辑方式保存。共享公开模型不能根据单个 Deployment 的探测扩大所有来源的能力。失败和未知结果据实呈现。
 
+音频转写、语音生成、视频和文件模型按适配器 `probe_operation` 使用对应端点与真实 Asset 验证，不先尝试文本 Chat。媒体测试结果的 `output_media` 包含可查询的结果资源，网页可应用已确认的音频、视频和文件输出能力。完整操作与费用范围见 [音频、视频和文件](media.md)。
+
 ## 删除
 
 - 删除一个来源：`DELETE /admin/api/deployments/{deployment_id}`。默认保留公开模型；`?remove_orphan_model=true` 会在最后一个路由移除时同时清理该公开模型。

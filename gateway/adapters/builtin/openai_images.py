@@ -14,8 +14,9 @@ from gateway.transport import upstream_error
 
 class OpenAIImages(DiscoverableAdapter):
     manifest = AdapterManifest(
-        id="openai-images", name="OpenAI Images", operations=("llm",),
+        id="openai-images", name="OpenAI Images", version="1.1.0", operations=("llm",),
         streaming=False, tools=False, media={"input": ("text", "image"), "output": ("image",)},
+        probe_operation="image_generation",
         endpoints={"llm": "/images/generations", "image_edit": "/images/edits", "discovery": "/models"},
         body_fields=("model", "prompt", "n", "size", "output_format", "image", "image[]", "mask",
                      "quality", "background", "moderation", "output_compression", "response_format"),

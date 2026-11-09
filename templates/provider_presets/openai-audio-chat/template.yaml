@@ -1,0 +1,9 @@
+adapter_id: openai-audio-chat
+name: OpenAI-compatible Audio Chat
+base_url: https://api.openai.com/v1
+auth_scheme: bearer
+timeout: 180
+headers: {}
+profile: {}
+catalog: []
+note: 使用带 modalities/audio 的 /chat/completions；输入 WAV、MP3，输出格式由模型决定。

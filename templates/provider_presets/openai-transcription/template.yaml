@@ -1,0 +1,9 @@
+adapter_id: openai-transcription
+name: OpenAI-compatible Transcription
+base_url: https://api.openai.com/v1
+auth_scheme: bearer
+timeout: 180
+headers: {}
+profile: {}
+catalog: []
+note: 使用 /audio/transcriptions；可在 Profile.language 指定语言。

@@ -1,0 +1,6 @@
+id: gemini-speech
+name: Gemini Speech
+version: "1.0.0"
+contract_version: "1.0"
+description: Gemini 原生语音生成配置，PCM 响应包装为 WAV。
+verification: declared

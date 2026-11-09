@@ -1,0 +1,9 @@
+adapter_id: openai-files
+name: Responses File Generation
+base_url: https://api.openai.com/v1
+auth_scheme: bearer
+timeout: 300
+headers: {}
+profile: {}
+catalog: []
+note: 上游需支持 code_interpreter、container_file_citation 和容器文件下载；可能产生工具费用。

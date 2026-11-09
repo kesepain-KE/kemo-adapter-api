@@ -29,13 +29,14 @@ python -B -m pytest tests/gateway/test_worker_concurrency.py -q
 | `auth_schemes` | `id/location/name/prefix`，location 为 header/query/none |
 | `body_fields` | 编码器可能写出的全部顶层字段，保存连接时用于拒绝额外参数冲突 |
 | `media.input/output` | 编解码器真实范围，默认 text；检索输出为 embedding/score |
+| `probe_operation` | 可选媒体探测任务，见媒体手册；file_generation 仅用于内部探测编排 |
 | `tools/multiple_choices/structured_output` | 编码器实现范围，示例 tools 为 false |
 | `reasoning_returns/reasoning_levels` | 推理返回形式与可映射档位 |
 | `persisted_reasoning/multimodal_tool_results/prediction/service_tiers/logprobs/verbosity` | 对应的编码或解码实现 |
 | `embedding_input_types/embedding_normalization` | 检索适配器实现范围 |
 | `config_schema` | 适配器专属 Profile JSON Schema |
 
-范围声明不能证明具体模型支持某个能力。每个模型的推理档位、并行调用、上下文长度仍由探测证据或操作者声明确定。worker 尚无跨进程 Asset 合同，声明 image/audio/video/file 输入或输出会被拒绝，不能借清单宣称已支持。
+范围声明不能证明具体模型支持某个能力。每个模型的推理档位、并行调用、上下文长度仍由探测证据或操作者声明确定。worker 通过按调用身份绑定的 Asset 合同传递媒体，声明范围须与实际实现一致，详见 [媒体手册](../../agent/_doc/media.md)。
 
 连接保存为 `Upstream`：包含 base_url、timeout、auth_scheme、非敏感 headers、profile、proxy 等。凭据由路由选取并通过 `RequestHeaders` 传入，其中 `.query` 包含 query 鉴权、`.secrets` 用于脱敏；请求时把此对象原样交给 Transport，不能转换成普通 dict 后丢失 query。`profile.extra_body/extra_query` 由 Transport 合并，不要重复合并。其余 Profile 字段按 config_schema 校验。
 
@@ -65,7 +66,7 @@ Transport 校验并固定出站地址，不依赖环境代理、不跟随跳转�
 | gateway_system_prompt | 网关最高优先级系统提示词 |
 | live_config_revision | 此执行持有的配置代号 |
 | gateway_key_id | 下游调用密钥 ID，可为空 |
-| assets | 内置适配器的资源访问器；worker 固定为 None |
+| assets | 按调用身份绑定的资源访问器；worker 可解析本次输入并暂存输出，由主进程校验发布 |
 
 不要将内部上下文和凭据写进公开 output、metadata 或日志。
 
@@ -110,7 +111,7 @@ normalize_usage(
 | REASONING_SUMMARY_DELTA / REASONING_CONTENT_DELTA | item_id、delta |
 | TOOL_ARGUMENTS_DELTA | item_id、call_id、name、delta |
 | TOOL_COMPLETED | item_id、call_id、name、完整 item |
-| MEDIA_COMPLETED | item_id、完整媒体 item（worker 当前不可用） |
+| MEDIA_COMPLETED | item_id、content_index、完整媒体 item，必须包含已登记输出 Asset |
 | USAGE | usage |
 | COMPLETED / INCOMPLETE / FAILED / CANCELLED | result 完整终态 |
 | ERROR | error，不再发第二个终态 |

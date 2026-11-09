@@ -56,6 +56,9 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
     text: '文本生成', streaming: '流式输出', tools: '工具调用', 'tools.parallel_calls': '并行工具',
     structured_output: '结构化输出',
     vision: '图片输入', audio: '音频输入', video: '视频输入', file: '文件输入',
+    image_generation: '图片生成', image_edit: '图片编辑', audio_transcription: '音频转写',
+    speech_generation: '语音生成', speech_to_speech: '语音转语音', video_generation: '视频生成',
+    file_generation: '文件生成',
     'output.image': '图片输出', 'output.audio': '音频输出', 'output.video': '视频输出', 'output.file': '文件输出',
     limits: '上下文与上限', embedding: 'Embedding', rerank: 'Rerank',
   }
@@ -119,12 +122,16 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
       patch.tools = { ...caps.tools, function_calling: false, parallel_calls: false }
     }
     const input = new Set<string>(caps.input_modalities || ['text'])
-    const output = checks['output.image']?.status === 'supported' ? detected.output_modalities : caps.output_modalities || ['text']
+    const hasMediaOutput = ['image', 'audio', 'video', 'file'].some(modality => checks[`output.${modality}`]?.status === 'supported')
+    const output = hasMediaOutput ? detected.output_modalities : caps.output_modalities || ['text']
     patch.output_modalities = output
     if (checks.text?.status === 'supported') input.add('text')
     const next = { ...caps.extensions?.operations }
-    for (const operation of ['image_generation', 'image_edit']) {
-      if (checks[operation]?.status === 'supported') next[operation] = true
+    for (const [operation, required] of Object.entries(operations)) {
+      if (checks[operation]?.status === 'supported') {
+        next[operation] = true
+        required.input.forEach(modality => input.add(modality))
+      }
       if (checks[operation]?.status === 'unsupported') next[operation] = false
     }
     if (checks.image_edit?.status === 'supported') input.add('image')
@@ -181,10 +188,11 @@ export function ModelEditor({ model, deploymentId, onClose, onSaved }: {
       </div>
       <p className="hint">{t('使用已保存的连接配置。测试发送一次请求，能力探测发送多次请求，产生的用量计入日志。')}</p>
       {model.task === 'llm' && <p className="hint">{t('能力探测内置音频、视频和 PDF 样本，按适配器支持范围发送并核对回答。')}</p>}
+      {model.task === 'llm' && <p className="hint">{t('媒体模型会实际生成音频、视频或文件，探测可能产生费用。')}</p>}
       {test && <div className="model-test-result" role="status">
         <div className="probe-result"><strong>{t(test.status === 'supported' ? '测试成功' : '测试未通过')}</strong><span className="muted">{test.latency_ms} ms{test.provider_status ? ` · HTTP ${test.provider_status}` : ''}</span></div>
         {test.preview && <pre>{test.preview}</pre>}
-        {test.output_images?.map((image: Entity) => <p className="hint mono" key={image.asset_id}>{image.mime_type} · {image.asset_id}</p>)}
+        {(test.output_media || test.output_images)?.map((media: Entity) => <p className="hint mono" key={media.asset_id}>{media.mime_type} · {media.asset_id}</p>)}
         {test.dimensions && <span>{t('向量维度')} · {test.dimensions}</span>}
         {test.result_count != null && <span>{t('排序结果数')} · {test.result_count}</span>}
         {test.usage && <span className="hint">{t('总 token')} · {test.usage.total_tokens ?? t('未知')}</span>}

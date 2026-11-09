@@ -1,0 +1,6 @@
+id: openai-speech
+name: OpenAI-compatible Speech
+version: "1.0.0"
+contract_version: "1.0"
+description: 语音生成端点配置；请核对实际服务地址、模型 ID 和音色。
+verification: declared

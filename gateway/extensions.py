@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import fields
 import hashlib
 import io
@@ -15,6 +16,7 @@ import zipfile
 import jsonschema
 
 from core.yaml_config import read_yaml
+from core.assets import AssetStore, AssetStoreFailure
 from core.models import ErrorObject, Usage
 from core.provider_contract import (
     ProviderEmbedding, ProviderEmbeddingResult, ProviderEvent, ProviderEventKind,
@@ -75,8 +77,6 @@ def read_manifest(path: Path, kind: str):
             raise ValueError("此版本扩展 worker 仅开放 llm、embedding 和 rerank 操作")
         if not manifest.auth_schemes or len({scheme.id for scheme in manifest.auth_schemes}) != len(manifest.auth_schemes):
             raise ValueError("适配器鉴权类型无效")
-        if set(manifest.media.input + manifest.media.output) & {"image", "audio", "video", "file"}:
-            raise ValueError("扩展 worker 尚未开放跨进程媒体资源访问，不能声明媒体输入或输出")
         try:
             jsonschema.Draft202012Validator.check_schema(manifest.config_schema)
         except jsonschema.SchemaError:
@@ -260,14 +260,79 @@ class WorkerAdapter:
                     return
                 yield value["result"]
         finally:
-            self._pending.pop(identity, None)
-            if not completed and self.process.returncode is None:
-                await self._send({"method": "$/cancelRequest", "params": {"id": identity}})
+            try:
+                if not completed and self.process.returncode is None:
+                    await self._send({"method": "$/cancelRequest", "params": {"id": identity}})
+                    # A media worker may still have an open temporary file.
+                    # Wait for cancellation to release it before directory cleanup.
+                    try:
+                        async with asyncio.timeout(3):
+                            while True:
+                                pending = await queue.get()
+                                if isinstance(pending, Exception) or pending.get("done") or "error" in pending:
+                                    break
+                    except TimeoutError:
+                        await self.close()
+            finally:
+                self._pending.pop(identity, None)
 
     def _params(self, request, context, model, upstream, headers):
         return {"request": request.model_dump(mode="json", by_alias=True),
                 "context": {f.name: getattr(context, f.name) for f in fields(context) if f.name != "assets"},
                 "model": model, "upstream": upstream, **self._auth_params(headers)}
+
+    @asynccontextmanager
+    async def _request(self, request, context, model, upstream, headers):
+        params = self._params(request, context, model, upstream, headers)
+        if context.assets is None or not set(self.manifest.media.input + self.manifest.media.output) & {
+            "image", "audio", "video", "file",
+        }:
+            yield params, None
+            return
+        resolved = {}
+        for item in request.model_dump(mode="json").get("input", []):
+            for block in item.get("content", []):
+                source = block.get("source") or {}
+                identity = block.get("asset_id") or (
+                    source.get("uri") if source.get("kind") == "object_store" else None
+                )
+                if identity:
+                    asset = context.assets.resolve(identity)
+                    resolved[identity] = {"descriptor": asset.descriptor.model_dump(mode="json"), "path": str(asset.path)}
+        with tempfile.TemporaryDirectory(prefix="kemo-worker-media-") as temporary:
+            output = AssetStore(Path(temporary))
+            output_access = output.bind(context.tenant_id, context.subject_id)
+            params["assets"] = {"inputs": resolved, "output_root": temporary}
+            imported = {}
+
+            async def publish(value):
+                if isinstance(value, list):
+                    return [await publish(item) for item in value]
+                if not isinstance(value, dict):
+                    return value
+                identity = value.get("asset_id")
+                if value.get("type") in {"image", "audio", "video", "file"} and identity and identity not in resolved:
+                    if identity not in imported:
+                        try:
+                            asset = output_access.resolve(identity)
+                            if asset.descriptor.purpose != "output":
+                                raise ValueError("worker asset is not an output")
+                            async def chunks():
+                                with asset.path.open("rb") as source:
+                                    while chunk := source.read(1024 * 1024):
+                                        yield chunk
+                            imported[identity] = await context.assets.store_output(
+                                filename=asset.descriptor.filename, mime_type=asset.descriptor.mime_type,
+                                content=chunks(), checksum_sha256=asset.descriptor.checksum_sha256,
+                                metadata={**asset.descriptor.metadata, "request_id": context.request_id},
+                            )
+                        except (AssetStoreFailure, ValueError, OSError):
+                            raise self._worker_error("ADAPTER_INVALID_OUTPUT_ASSET") from None
+                    descriptor = imported[identity]
+                    value = {**value, "asset_id": descriptor.id, "mime_type": descriptor.mime_type,
+                             "checksum_sha256": descriptor.checksum_sha256}
+                return {name: await publish(item) for name, item in value.items()}
+            yield params, publish
 
     @staticmethod
     def _auth_params(headers):
@@ -288,20 +353,24 @@ class WorkerAdapter:
         return ProviderResult(**value)
 
     async def execute(self, request, context, model, upstream, headers):
-        params = self._params(request, context, model, upstream, headers)
-        return self._result(await self._call("execute", params))
+        async with self._request(request, context, model, upstream, headers) as (params, publish):
+            value = await self._call("execute", params)
+            return self._result(await publish(value) if publish else value)
 
     async def stream(self, request, context, model, upstream, headers):
-        params = self._params(request, context, model, upstream, headers)
-        async for value in self._rpc("stream", params):
-            value["kind"] = ProviderEventKind(value["kind"])
-            if value.get("result"):
-                value["result"] = self._result(value["result"])
-            if value.get("usage") is not None:
-                value["usage"] = Usage.model_validate(value["usage"])
-            if value.get("error") is not None:
-                value["error"] = ErrorObject.model_validate(value["error"])
-            yield ProviderEvent(**value)
+        async with self._request(request, context, model, upstream, headers) as (params, publish):
+            async with aclosing(self._rpc("stream", params)) as responses:
+                async for value in responses:
+                    if publish:
+                        value = await publish(value)
+                    value["kind"] = ProviderEventKind(value["kind"])
+                    if value.get("result"):
+                        value["result"] = self._result(value["result"])
+                    if value.get("usage") is not None:
+                        value["usage"] = Usage.model_validate(value["usage"])
+                    if value.get("error") is not None:
+                        value["error"] = ErrorObject.model_validate(value["error"])
+                    yield ProviderEvent(**value)
 
     async def embed(self, request, context, model, upstream, headers):
         value = await self._call("embed", self._params(request, context, model, upstream, headers))

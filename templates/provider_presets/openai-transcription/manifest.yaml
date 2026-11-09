@@ -1,0 +1,6 @@
+id: openai-transcription
+name: OpenAI-compatible Transcription
+version: "1.0.0"
+contract_version: "1.0"
+description: 音频转写端点配置；使用上传的音频 Asset。
+verification: declared

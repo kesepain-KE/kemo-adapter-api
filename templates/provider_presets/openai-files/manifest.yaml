@@ -1,0 +1,6 @@
+id: openai-files
+name: Responses File Generation
+version: "1.0.0"
+contract_version: "1.0"
+description: Responses 托管代码工具生成文件，并将容器文件下载为网关 Asset。
+verification: declared

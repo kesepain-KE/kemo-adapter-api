@@ -96,7 +96,9 @@ def openai_messages(request, context, *, responses=False, media_inputs=False):
                     url = source_url(block, context)
                     if not url.startswith("data:"):
                         raise unsupported("文件输入需要先上传 Asset 或使用内联数据")
-                    content.append({"type": "file", "file": {"filename": block.filename or "document", "file_data": url}})
+                    content.append({"type": "input_file", "filename": block.filename or "document", "file_data": url}
+                                   if responses else {"type": "file", "file": {
+                                       "filename": block.filename or "document", "file_data": url}})
                 else:
                     raise unsupported("当前文本适配器未声明此媒体操作")
             if responses and item.role == "assistant":

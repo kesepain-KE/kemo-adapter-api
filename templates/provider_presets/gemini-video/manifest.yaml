@@ -1,0 +1,6 @@
+id: gemini-video
+name: Gemini Video
+version: "1.0.0"
+contract_version: "1.0"
+description: Gemini 原生视频长任务提交、轮询及同源文件下载配置。
+verification: declared

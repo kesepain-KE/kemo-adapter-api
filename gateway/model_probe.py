@@ -39,6 +39,13 @@ def response_images(result):
             for block in item.get("content", []) if block["type"] == "image" and block.get("asset_id")]
 
 
+def response_media(result, modality=None):
+    return [block for item in result.output if item["type"] == "message"
+            for block in item.get("content", [])
+            if block["type"] in {"image", "audio", "video", "file"} and block.get("asset_id")
+            and (modality is None or block["type"] == modality)]
+
+
 def probe_image():
     color, rgb = secrets.choice((("red", (255, 0, 0)), ("green", (0, 255, 0)), ("blue", (0, 0, 255))))
     def chunk(kind, data):
@@ -61,7 +68,10 @@ class ModelProbe:
         self.subject = subject
         self.checks = {}
         self.image_output = task == "llm" and self.adapter.manifest.media.output == ("image",)
-        self.primary_check = task if task != "llm" else "image_generation" if self.image_output else "text"
+        self.primary_check = task if task != "llm" else self.adapter.manifest.probe_operation or (
+            "image_generation" if self.image_output else "text"
+        )
+        self.media_operation = self.primary_check if self.primary_check not in {"llm", "text", "embedding", "rerank"} else None
 
     def request(self, text="Reply with OK.", **fields):
         return KemoRequest.create(
@@ -86,7 +96,7 @@ class ModelProbe:
         call_started = time.perf_counter()
         usage, error, cancelled = Usage(), None, False
         try:
-            async with asyncio.timeout(self.upstream.timeout if self.image_output else min(self.upstream.timeout, 20)):
+            async with asyncio.timeout(self.upstream.timeout if self.media_operation else min(self.upstream.timeout, 20)):
                 if method == "stream":
                     terminal, text = False, False
                     async with aclosing(started.events(self.adapter.stream(
@@ -106,7 +116,9 @@ class ModelProbe:
                                 if stream_report["first_token_ms"] is None:
                                     stream_report["first_token_ms"] = round((time.perf_counter() - call_started) * 1000)
                                 stream_report["preview"] = (stream_report["preview"] + event.delta)[:1000]
-                            text |= event.kind == Kind.TEXT_DELTA and bool(event.delta)
+                            text |= (event.kind == Kind.TEXT_DELTA and bool(event.delta)
+                                     or event.kind in {Kind.AUDIO_DELTA, Kind.MEDIA_COMPLETED}
+                                     and self.media_operation is not None)
                             terminal |= event.kind == Kind.COMPLETED
                     result = terminal and text
                     if stream_report is not None:
@@ -192,8 +204,69 @@ class ModelProbe:
                 "image_generation", self.image_request(),
                 accept=lambda value: value.status == "completed" and bool(response_images(value)),
             )
+        if self.media_operation:
+            request = await self.media_request()
+            def confirmed(value):
+                if value.status != "completed":
+                    return False
+                if self.primary_check == "audio_transcription":
+                    sample = read_yaml(Path(__file__).with_name("probe_samples") / "manifest.yaml")["samples"]["audio"]
+                    return bool(re.search(sample["answer_pattern"], response_text(value), re.IGNORECASE))
+                modality = {"speech_generation": "audio", "speech_to_speech": "audio",
+                            "video_generation": "video", "file_generation": "file"}[self.primary_check]
+                blocks = response_media(value, modality)
+                if not blocks:
+                    return False
+                access = self.assets.bind("gateway", self.subject)
+                for block in blocks:
+                    asset = access.resolve(block["asset_id"])
+                    if self.primary_check == "file_generation" and b"KEMO-FILE-5821" not in asset.path.read_bytes():
+                        return False
+                return True
+            return await self.call(self.primary_check, request, accept=confirmed)
         return await self.call("text", self.request(),
                                accept=lambda value: value.status == "completed" and bool(response_text(value)))
+
+    async def sample_block(self, modality):
+        root = Path(__file__).with_name("probe_samples")
+        sample = read_yaml(root / "manifest.yaml")["samples"][modality]
+        data = (root / sample["filename"]).read_bytes()
+        checksum = hashlib.sha256(data).hexdigest()
+        async def chunks():
+            yield data
+        asset = await self.assets.store_input(
+            tenant_id="gateway", subject_id=self.subject,
+            filename=sample["filename"], mime_type=sample["mime_type"], chunks=chunks(),
+            metadata={"probe_sample": sample["id"]},
+            idempotency_key=f'probe:{sample["id"]}:{checksum}', checksum_sha256=checksum,
+        )
+        block = {"type": modality, "mime_type": sample["mime_type"], "asset_id": asset.id}
+        if modality == "file":
+            block["filename"] = sample["filename"]
+        return sample, block
+
+    async def media_request(self):
+        operation = self.primary_check
+        output = {"modalities": ["text"]}
+        text = "Say hello."
+        if operation in {"speech_generation", "speech_to_speech"}:
+            output = {"modalities": ["audio"], "audio": {"format": "wav", "voice": "default"}}
+        elif operation == "video_generation":
+            text = "A small blue square on a white background, static camera."
+            output = {"modalities": ["video"], "video": {"format": "mp4", "duration_seconds": 4}}
+        elif operation == "file_generation":
+            text = "Create a downloadable UTF-8 text file containing exactly KEMO-FILE-5821."
+            output = {"modalities": ["text", "file"], "file": {"filename": "probe.txt", "mime_type": "text/plain"}}
+        request = self.request(text, output=output, metadata={
+            "capability": "conversation" if operation == "file_generation" else operation,
+        })
+        if operation in {"audio_transcription", "speech_to_speech"}:
+            sample, block = await self.sample_block("audio")
+            value = request.model_dump(mode="json")
+            value["input"][0]["content"] = [{"type": "text", "text":
+                "Repeat the attached recording." if operation == "speech_to_speech" else sample["prompt"]}, block]
+            request = KemoRequest.model_validate(value)
+        return request
 
     def image_request(self, image=None):
         operation = "image_edit" if image is not None else "image_generation"
@@ -211,7 +284,7 @@ class ModelProbe:
 
     async def test(self, *, first_token=False):
         started = time.perf_counter()
-        streaming = first_token and self.task == "llm" and self.adapter.manifest.streaming
+        streaming = first_token and self.task == "llm" and self.adapter.manifest.streaming and not self.media_operation
         stream_report = {"first_token_ms": None, "preview": ""}
         if streaming:
             result = await self.call(
@@ -234,6 +307,8 @@ class ModelProbe:
                     report["preview"] = response_text(result)[:1000]
                     if self.image_output:
                         report["output_images"] = response_images(result)
+                    if self.media_operation:
+                        report["output_media"] = response_media(result)
             elif self.task == "embedding":
                 report["dimensions"] = len(result.embeddings[0].vector)
             else:
@@ -271,6 +346,27 @@ class ModelProbe:
                 operations["image_edit"] = edited is not None
                 if edited is not None:
                     caps["input_modalities"].append("image")
+        elif self.media_operation:
+            if self.primary_check == "audio_transcription":
+                caps["input_modalities"] = ["text", "audio"]
+            else:
+                modality = {"speech_generation": "audio", "speech_to_speech": "audio",
+                            "video_generation": "video", "file_generation": "file"}[self.primary_check]
+                caps["output_modalities"] = ["text", "file"] if modality == "file" else [modality]
+                self.checks["output." + modality] = dict(self.checks[self.primary_check])
+                if self.primary_check == "speech_to_speech":
+                    caps["input_modalities"].append("audio")
+            if self.primary_check != "file_generation":
+                caps.setdefault("extensions", {}).setdefault("operations", {})[self.primary_check] = result is not None
+            if result is not None and self.adapter.manifest.streaming:
+                caps["streaming"] = bool(await self.call(
+                    "streaming", (await self.media_request()).model_copy(update={"stream": True}),
+                    method="stream", accept=bool,
+                ))
+            # A successful generation says nothing about optional media inputs.
+            # Verify file/PDF and image understanding only for text-capable adapters.
+            if result is not None and "text" in self.adapter.manifest.media.output and self.primary_check == "file_generation":
+                await self.media("file", caps)
         else:
             if result is not None:
                 await self.llm(caps)
@@ -280,8 +376,6 @@ class ModelProbe:
                     self.checks[modality] = {"status": "unsupported", "reason": "adapter-not-implemented"}
                 elif result is None:
                     self.checks[modality] = {"status": "unknown", "reason": "basic-test-failed"}
-                elif isinstance(self.adapter, WorkerAdapter):
-                    self.checks[modality] = {"status": "unknown", "reason": "asset-access-unavailable"}
                 else:
                     await self.media(modality, caps)
             for modality in ("image", "audio", "video", "file"):
@@ -301,21 +395,7 @@ class ModelProbe:
         return model, {"model": model.id, "verification": model.verification, "checks": self.checks}
 
     async def media(self, modality, caps):
-        root = Path(__file__).with_name("probe_samples")
-        sample = read_yaml(root / "manifest.yaml")["samples"][modality]
-        data = (root / sample["filename"]).read_bytes()
-        checksum = hashlib.sha256(data).hexdigest()
-        async def chunks():
-            yield data
-        asset = await self.assets.store_input(
-            tenant_id="gateway", subject_id=self.subject,
-            filename=sample["filename"], mime_type=sample["mime_type"], chunks=chunks(),
-            metadata={"probe_sample": sample["id"]},
-            idempotency_key=f'probe:{sample["id"]}:{checksum}', checksum_sha256=checksum,
-        )
-        block = {"type": modality, "mime_type": sample["mime_type"], "asset_id": asset.id}
-        if modality == "file":
-            block["filename"] = sample["filename"]
+        sample, block = await self.sample_block(modality)
         operation = sample.get("operation")
         document = self.request(
             sample["prompt"], metadata={"capability": operation} if operation else {},

@@ -444,7 +444,7 @@ def test_template_defaults_registration_and_reference_integrity(tmp_path, monkey
 def test_builtin_templates_are_visible_and_can_create_upstreams_without_install(tmp_path, monkeypatch):
     with instance(tmp_path, monkeypatch) as (client, app):
         templates = {item["id"]: item for item in state(client)["templates"]}
-        assert len(templates) == 47
+        assert len(templates) == 53
         assert {"openai", "anthropic", "gemini", "openai-responses"} <= templates.keys()
         assert all(item["builtin"] and item["enabled"] and item["valid"] for item in templates.values())
         assert not (tmp_path / "extensions").exists()
@@ -453,6 +453,12 @@ def test_builtin_templates_are_visible_and_can_create_upstreams_without_install(
             ("anthropic", "anthropic-messages", "anthropic-key"),
             ("gemini", "gemini", "gemini-query"),
             ("cohere", "cohere-chat", "bearer"),
+            ("openai-transcription", "openai-transcription", "bearer"),
+            ("openai-speech", "openai-speech", "bearer"),
+            ("openai-audio-chat", "openai-audio-chat", "bearer"),
+            ("openai-files", "openai-files", "bearer"),
+            ("gemini-speech", "gemini-speech", "gemini-key"),
+            ("gemini-video", "gemini-video", "gemini-key"),
         ):
             response = mutate(client, "/upstreams", {
                 "id": identity, "template_id": identity,
@@ -464,8 +470,8 @@ def test_builtin_templates_are_visible_and_can_create_upstreams_without_install(
             assert upstream["auth_scheme"] == auth
             assert upstream["name"] == templates[identity]["template"]["name"]
         assert app.state.registry.current.upstreams["openai"].profile["max_tokens_field"] == "max_completion_tokens"
-        assert len(app.state.registry.current.templates) == 47
-        assert len(state(client)["templates"]) == 47
+        assert len(app.state.registry.current.templates) == 53
+        assert len(state(client)["templates"]) == 53
 
 
 @pytest.mark.parametrize("enabled", [False, True])
