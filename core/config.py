@@ -62,6 +62,7 @@ class Settings:
     upstream_json_max_bytes: int = 32 * 1024 * 1024
     log_detail_max_bytes: int = 4 * 1024 * 1024
     log_detail_mode: str = "full"
+    log_detail_retention_hours: int = 24
     asset_retention_hours: int = 24
     asset_image_max_bytes: int = 20 * 1024 * 1024
     asset_audio_max_bytes: int = 100 * 1024 * 1024
@@ -75,8 +76,8 @@ class Settings:
 
     @property
     def execution_retention_hours(self) -> int:
-        """Compatibility view for the execution store's hour-based boundary."""
-        return self.log_retention_days * 24
+        """Execution responses and SSE replay share the detail lifetime."""
+        return self.log_detail_retention_hours
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -125,6 +126,7 @@ class Settings:
                 "LOG_DETAIL_MAX_BYTES", 4 * 1024 * 1024, minimum=256
             ),
             log_detail_mode=log_detail_mode,
+            log_detail_retention_hours=_positive_int_env("LOG_DETAIL_RETENTION_HOURS", 24),
             asset_retention_hours=_positive_int_env("DEFAULT_ASSET_TTL_HOURS", 24),
             asset_image_max_bytes=_positive_int_env(
                 "ASSET_IMAGE_MAX_BYTES", 20 * 1024 * 1024
