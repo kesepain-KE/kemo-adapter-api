@@ -15,6 +15,76 @@ from gateway.transport import Transport
 from tests.support.gateway import SECRET, add_upstream, chat_response, instance, mutate, register, state
 
 
+@pytest.mark.parametrize("exception,code", [
+    (httpx.ConnectError, "PROVIDER_UNAVAILABLE"),
+    (httpx.ReadTimeout, "PROVIDER_TIMEOUT"),
+    (httpx.WriteError, "PROVIDER_BAD_RESPONSE"),
+    (httpx.RemoteProtocolError, "PROVIDER_BAD_RESPONSE"),
+])
+def test_transport_errors_keep_safe_type_and_phase(exception, code):
+    from core.provider_contract import ProviderException
+
+    def fail(request):
+        raise exception(f"{SECRET} https://private.invalid/?api_key={SECRET}", request=request)
+
+    async def scenario():
+        transport = Transport(http_transport=httpx.MockTransport(fail))
+        upstream = Upstream(id="offline", name="Offline", adapter_id="openai-chat",
+                            base_url="https://provider.invalid", auth_scheme="none")
+        try:
+            with pytest.raises(ProviderException) as caught:
+                await transport.json(upstream, "/chat/completions", {}, body={})
+            error = caught.value.error
+            assert error.code == code
+            assert error.details["transport_exception"] == exception.__name__
+            assert error.details["transport_phase"] == "response_headers"
+            assert SECRET not in error.model_dump_json()
+            assert "private.invalid" not in error.model_dump_json()
+        finally:
+            await transport.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_response_body_disconnect_keeps_phase_and_closes_stream(stream):
+    from core.provider_contract import ProviderException
+
+    closed = []
+
+    class BrokenBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"text":"partial"}\n\n' if stream else b'{"text":"partial'
+            raise httpx.ReadError(f"connection interrupted: {SECRET}")
+
+        async def aclose(self):
+            closed.append(True)
+
+    async def scenario():
+        transport = Transport(http_transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=BrokenBody()),
+        ))
+        upstream = Upstream(id="offline", name="Offline", adapter_id="openai-chat",
+                            base_url="https://provider.invalid", auth_scheme="none")
+        try:
+            with pytest.raises(ProviderException) as caught:
+                if stream:
+                    events = transport.events(upstream, "/chat/completions", {}, {})
+                    assert await anext(events) == {"text": "partial"}
+                    await anext(events)
+                else:
+                    await transport.json(upstream, "/chat/completions", {}, body={})
+            error = caught.value.error
+            assert error.details["transport_exception"] == "ReadError"
+            assert error.details["transport_phase"] == "response_body"
+            assert SECRET not in error.model_dump_json()
+            assert closed == [True]
+        finally:
+            await transport.close()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("scheme,adapter,header", [
     ("azure-key", "openai-chat", "api-key"),
