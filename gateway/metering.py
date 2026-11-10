@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import zlib
 import yaml
 
 from core.models import Usage, UsageMeasurement
@@ -113,7 +114,9 @@ class Metering:
             )
             body = None
             if self.log_detail_mode == "full" or (self.log_detail_mode == "errors" and (error or cancelled)):
-                body = json.dumps(trace.payload(self.log_detail_max_bytes), ensure_ascii=False)
+                body = zlib.compress(
+                    json.dumps(trace.payload(self.log_detail_max_bytes), ensure_ascii=False).encode("utf-8"),
+                )
             with self.store.transaction() as db:
                 db.execute("""UPDATE attempts SET status=?,latency_ms=?,error_code=?,first_token_ms=?,tokenizer=?
                     WHERE request_id=? AND attempt_no=?""", (
