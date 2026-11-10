@@ -4,6 +4,7 @@ import asyncio
 from contextlib import aclosing
 from dataclasses import dataclass, field
 import json
+import math
 from pathlib import Path
 import random
 import time
@@ -135,7 +136,8 @@ class Router:
         if credential is None:
             return
         status = error.provider_status if error else None
-        if error and status not in {None, 401, 403, 429, 500, 502, 503, 504}:
+        # A transport failure says nothing about whether this credential works.
+        if error and status not in {401, 403, 429, 500, 502, 503, 504}:
             return
         self._credential_health[(upstream.id, credential.id)] = {
             "encrypted": credential.encrypted,
@@ -162,23 +164,45 @@ class Router:
                 }
         return result
 
+    def _unavailable_error(self, generation, candidates, reason):
+        now = time.monotonic()
+        ready_at = []
+        for deployment in candidates:
+            upstream = generation.upstreams[deployment.upstream_id]
+            deployment_until = self._cooldown.get(deployment.id, 0)
+            if upstream.auth_scheme == "none":
+                ready_at.append(deployment_until)
+                continue
+            for credential in upstream.credentials:
+                if not credential.enabled:
+                    continue
+                health = self._credential_health.get((upstream.id, credential.id), {})
+                credential_until = health.get("until", 0) if health.get("encrypted") == credential.encrypted else 0
+                ready_at.append(max(deployment_until, credential_until))
+        error = upstream_error(code=reason, retryable=bool(ready_at))
+        if ready_at:
+            error.error.retry_after_ms = math.ceil(max(0, min(ready_at) - now) * 1000)
+            error.error.message = ("上游凭据冷却中，请稍后重试" if reason == "NO_UPSTREAM_CREDENTIAL"
+                                   else "模型路由冷却中，请稍后重试")
+        return error
+
     def plan(self, route, context):
         generation = route.generation
         candidates = [d for d in generation.deployments if d.public_model == route.model and d.enabled
                       and generation.upstreams[d.upstream_id].enabled]
         now = time.monotonic()
-        candidates = [d for d in candidates if self._cooldown.get(d.id, 0) <= now]
-        if not candidates:
-            raise upstream_error(code="NO_HEALTHY_DEPLOYMENT")
+        available = [d for d in candidates if self._cooldown.get(d.id, 0) <= now]
+        if not available:
+            raise self._unavailable_error(generation, candidates, "NO_HEALTHY_DEPLOYMENT")
         try:
-            self.keys.admit(context, generation.models[route.model], candidates, generation.options.max_attempts)
+            self.keys.admit(context, generation.models[route.model], available, generation.options.max_attempts)
         except KeyPolicyError as exc:
             from core.models import ErrorObject
             raise ProviderException(ErrorObject(type="rate_limit_error", code="RATE_LIMITED",
                                                 message=str(exc), retryable=False)) from None
         plan = []
-        for priority in sorted({d.priority for d in candidates}, reverse=True):
-            remaining = [d for d in candidates if d.priority == priority]
+        for priority in sorted({d.priority for d in available}, reverse=True):
+            remaining = [d for d in available if d.priority == priority]
             while remaining:
                 selected = random.choices(remaining, weights=[d.weight for d in remaining], k=1)[0]
                 remaining.remove(selected)
@@ -188,7 +212,7 @@ class Router:
                     credentials = [None]
                 plan.extend((selected, upstream, c) for c in credentials)
         if not plan:
-            raise upstream_error(code="NO_UPSTREAM_CREDENTIAL")
+            raise self._unavailable_error(generation, candidates, "NO_UPSTREAM_CREDENTIAL")
         return plan[:generation.options.max_attempts]
 
     def headers(self, generation, upstream, credential):
