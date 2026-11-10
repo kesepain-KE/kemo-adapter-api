@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from functools import partial
 import hashlib
 import json
@@ -118,7 +119,9 @@ def create_app(
     _validate_web_exposure(resolved_settings)
     project_root = live_config_root or PROJECT_ROOT
     data_root = project_root / "data"
-    catalog_store = Store(data_root, retention_days=resolved_settings.log_retention_days)
+    catalog_store = Store(
+        data_root, detail_retention_hours=resolved_settings.log_detail_retention_hours,
+    )
     vault = SecretVault(data_root)
     registry = RuntimeRegistry(
         project_root, catalog_store, vault,
@@ -157,6 +160,12 @@ def create_app(
         max_events_per_response=resolved_settings.max_sse_events_per_response,
     )
 
+    async def cleanup_log_details():
+        await asyncio.sleep(30)
+        while True:
+            await asyncio.to_thread(catalog_store.cleanup_expired_details)
+            await asyncio.sleep(300)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await statistics.initialize()
@@ -166,7 +175,11 @@ def create_app(
         await advanced_plugins.initialize()
         await runtime_state.mark_running()
         await restart_service.start_watcher()
+        details_cleanup = asyncio.create_task(cleanup_log_details(), name="gateway-detail-cleanup")
         yield
+        details_cleanup.cancel()
+        with suppress(asyncio.CancelledError):
+            await details_cleanup
         await restart_service.stop_watcher()
         await runtime_state.mark_stopping()
         await assets.close()
