@@ -8,11 +8,16 @@ from datetime import datetime
 import hmac
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 from collections.abc import Mapping
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
+
+from gateway.currency import EXCHANGE_RATE_DATE
+from gateway.diagnostics import usage_overview
+from gateway.extensions import extension_catalog
+from gateway.resources import SOURCE_ROOT, inventory, resource_stamp
 
 
 router = APIRouter(tags=["agent-status"])
@@ -176,12 +181,62 @@ def _statistics_day(request: Request, value: str | None) -> str:
     return datetime.now(timezone).date().isoformat()
 
 
+def _resource_status(registry) -> dict[str, Any]:
+    user_resources = extension_catalog(registry)
+    result = {
+        "running": registry.resource_inventory,
+        "user": {
+            kind: [
+                {key: item.get(key) for key in ("id", "name", "version", "source", "enabled", "valid")}
+                for item in items
+            ]
+            for kind, items in user_resources.items()
+        },
+        "error_code": None,
+    }
+    try:
+        result["installed"] = inventory(SOURCE_ROOT)
+        result["restart_required"] = resource_stamp(SOURCE_ROOT) != registry.resource_stamp
+    except (OSError, ValueError):
+        result.update(installed=None, restart_required=None, error_code="RESOURCE_INVENTORY_UNAVAILABLE")
+    plan = registry.resource_update_plan
+    result["update"] = None if plan is None else {
+        "available": plan["available"],
+        "branch": plan["branch"],
+        "target_commit": plan["target_commit"],
+        "groups": {
+            kind: {key: group[key] for key in ("current", "target", "available", "changes")}
+            for kind, group in plan["groups"].items()
+        },
+    }
+    return result
+
+
+def _plugin_status(manager) -> dict[str, Any]:
+    snapshot = manager.snapshot()
+    return {
+        "revision": snapshot["revision"],
+        "items": [
+            {
+                **{key: item[key] for key in
+                   ("id", "name", "version", "category", "enabled", "status", "model_count", "models")},
+                "provider_id": item["provider"]["provider_id"],
+                "error_code": item["error"]["code"] if item["error"] else None,
+                "update_available": item["update"] is not None,
+                "update_version": item["update"]["version"] if item["update"] else None,
+            }
+            for item in snapshot["plugins"]
+        ],
+    }
+
+
 @router.get("/status")
 async def gateway_status(
     request: Request,
     response: Response,
     authorization: str | None = Header(default=None),
     day: str | None = Query(default=None, alias="date"),
+    period: Literal["today", "24h", "7d", "30d", "all"] = "today",
     ranking_limit: int = Query(default=100, ge=1, le=100),
     log_limit: int = Query(default=50, ge=1, le=100),
 ) -> dict[str, Any]:
@@ -192,6 +247,7 @@ async def gateway_status(
 
     target_day = _statistics_day(request, day)
     store = request.app.state.statistics
+    registry = request.app.state.registry
     try:
         (
             daily,
@@ -202,6 +258,8 @@ async def gateway_status(
             success_logs,
             failure_logs,
             version,
+            overview,
+            resources,
         ) = await asyncio.gather(
             store.daily(target_day),
             store.rankings(target_day, "provider", limit=ranking_limit),
@@ -211,6 +269,11 @@ async def gateway_status(
             store.recent_invocations("success", limit=log_limit),
             store.recent_invocations("failure", limit=log_limit),
             asyncio.to_thread(request.app.state.system_inspector.cached_version_check),
+            asyncio.to_thread(
+                usage_overview, registry.store, period, store.timezone_name,
+                display_currency=registry.current.options.cost_display_currency,
+            ),
+            asyncio.to_thread(_resource_status, registry),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="状态查询参数无效") from exc
@@ -219,7 +282,6 @@ async def gateway_status(
     provider_items: list[dict[str, Any]] = []
     enabled_models: list[dict[str, str]] = []
     groups = {}
-    registry = request.app.state.registry
     for package in registry.providers.values():
         groups.setdefault(package.provider_id, set()).update(package.models)
     for provider_id, registered_models in sorted(groups.items()):
@@ -239,6 +301,47 @@ async def gateway_status(
                     continue
                 enabled_models.append({"model": model, "provider_id": provider_id})
 
+    generation = registry.current
+    credential_health = registry.router.credential_health()
+    cooldowns = registry.router.health()
+    upstreams = [
+        {
+            "id": upstream.id,
+            "name": upstream.name,
+            "adapter_id": upstream.adapter_id,
+            "enabled": upstream.enabled,
+            "credentials": [
+                {"id": identity, **{key: health[key] for key in
+                    ("status", "checked_at", "error_code", "provider_status", "cooldown_seconds")}}
+                for identity, health in credential_health[upstream.id].items()
+            ],
+        }
+        for upstream in generation.upstreams.values()
+    ]
+    routing = {
+        "max_attempts": generation.options.max_attempts,
+        "cooldown_seconds": generation.options.cooldown_seconds,
+        "models": [
+            {"model": model.id, "task": model.task, "enabled": model.enabled, "verification": model.verification}
+            for model in generation.models.values()
+        ],
+        "deployments": [
+            {
+                **{key: getattr(deployment, key) for key in
+                   ("id", "public_model", "upstream_id", "upstream_model", "enabled", "priority", "weight", "rpm")},
+                "cooldown_seconds": cooldowns.get(deployment.id, 0),
+            }
+            for deployment in generation.deployments
+        ],
+    }
+    overview["exchange_rate_date"] = EXCHANGE_RATE_DATE
+    overview["rankings"] = {
+        dimension: [
+            {**item, "name": _safe_log_message(item.get("name"))}
+            for item in items[:ranking_limit]
+        ]
+        for dimension, items in overview["rankings"].items()
+    }
     recent_items = [_safe_log_item(item) for item in recent_logs["items"]]
     successful_items = [_safe_log_item(item) for item in success_logs["items"]]
     failed_items = [_safe_log_item(item) for item in failure_logs["items"]]
@@ -257,7 +360,13 @@ async def gateway_status(
             "highest_priority_system_prompt": snapshot.gateway_system_prompt,
             "enabled": snapshot.gateway_api.get("enabled", True),
             "revision": snapshot.revision,
+            "disabled_upstreams": [upstream.id for upstream in generation.upstreams.values() if not upstream.enabled],
+            "disabled_models": [model.id for model in generation.models.values() if not model.enabled],
         },
+        "upstreams": upstreams,
+        "routing": routing,
+        "plugins": _plugin_status(request.app.state.advanced_plugins),
+        "resources": resources,
         "statistics": {
             "date": target_day,
             "timezone": store.timezone_name,
@@ -268,6 +377,7 @@ async def gateway_status(
                 "models": model_ranking["items"],
                 "gateway_keys": key_ranking["items"],
             },
+            "overview": overview,
         },
         "logs": {
             "recent": recent_items,
