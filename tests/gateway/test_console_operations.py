@@ -139,6 +139,91 @@ def test_credential_priority_rotation_and_actual_health(tmp_path, monkeypatch):
         assert state(client)["upstreams"][0]["credentials"][0]["preview"] == "***"  # Short secrets stay masked.
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_transport_failure_does_not_cool_the_only_credential(tmp_path, monkeypatch, stream):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.ReadError(f"connection interrupted: {SECRET}", request=request)
+        return httpx.Response(200, json=chat_response())
+
+    with instance(tmp_path, monkeypatch, handler) as (client, app):
+        add_upstream(client)
+        register(client)
+        token = create_key(client)["token"]
+        failed = invoke(client, token, "req_network_failure", stream=stream)
+        assert failed.status_code == 200
+        assert "PROVIDER_BAD_RESPONSE" in failed.text
+        assert state(client)["credential_health"]["local"]["primary"]["cooldown_seconds"] == 0
+        recovered = invoke(client, token, "req_after_network_failure")
+        assert recovered.json()["status"] == "completed", recovered.text
+        assert len(calls) == 2
+        failed_attempt = next(item for item in app.state.registry.store.attempts(10) if item["status"] == "failed")
+        detail = app.state.registry.store.attempt_detail(failed_attempt["request_id"], 1)
+        assert detail["response"]["error"]["details"]["transport_exception"] == "ReadError"
+        assert detail["response"]["error"]["details"]["transport_phase"] == "response_headers"
+        assert SECRET not in json.dumps(detail)
+
+
+@pytest.mark.parametrize("status,reason", [
+    (401, "NO_UPSTREAM_CREDENTIAL"),
+    (429, "NO_UPSTREAM_CREDENTIAL"),
+    (503, "NO_HEALTHY_DEPLOYMENT"),
+])
+def test_cooldown_reports_wait_and_recovers_after_expiry(tmp_path, monkeypatch, status, reason):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status if len(calls) == 1 else 200, json=chat_response())
+
+    with instance(tmp_path, monkeypatch, handler) as (client, app):
+        add_upstream(client)
+        register(client)
+        token = create_key(client)["token"]
+        assert invoke(client, token, "req_cooldown_start").json()["status"] == "failed"
+        blocked = invoke(client, token, "req_during_cooldown").json()
+        assert blocked["status"] == "failed"
+        error = blocked["error"]
+        assert error["details"]["reason"] == reason
+        assert error["code"] == "PROVIDER_UNAVAILABLE"
+        assert error["retryable"] is True
+        assert 29_000 <= error["retry_after_ms"] <= 30_000
+        assert "冷却" in error["message"]
+        assert len(calls) == 1
+        router = app.state.registry.router
+        for health in router._credential_health.values():
+            health["until"] -= 31
+        for identity in router._cooldown:
+            router._cooldown[identity] -= 31
+        recovered = invoke(client, token, "req_after_cooldown").json()
+        assert recovered["status"] == "completed"
+        assert len(calls) == 2
+
+
+def test_disabled_credentials_are_not_reported_as_a_connection_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=chat_response())
+
+    with instance(tmp_path, monkeypatch, handler) as (client, _):
+        add_upstream(client)
+        register(client)
+        assert mutate(client, "/upstreams/local", {"keys": [
+            {"id": "primary", "enabled": False},
+        ]}, method="PATCH").status_code == 200
+        error = invoke(client, create_key(client)["token"], "req_disabled_key").json()["error"]
+        assert error["details"]["reason"] == "NO_UPSTREAM_CREDENTIAL"
+        assert error["retryable"] is False
+        assert error.get("retry_after_ms") is None
+        assert "凭据" in error["message"] and "连接失败" not in error["message"]
+        assert not calls
+
+
 def test_logs_full_payload_vendor_cache_filters_and_price(tmp_path, monkeypatch):
     answer = "complete answer 世界 " * 400
     def handler(request):
