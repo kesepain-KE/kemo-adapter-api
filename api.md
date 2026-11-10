@@ -41,7 +41,7 @@ Token 解析得到可信的 tenant、subject 和 scopes；正文中的 `metadata
 `STATUS_TOKEN`，不得使用模型调用密钥或 Web 管理凭据：
 
 ```http
-GET /status?date=2026-07-27&ranking_limit=100&log_limit=50
+GET /status?date=2026-11-10&period=7d&ranking_limit=100&log_limit=50
 Authorization: Bearer <STATUS_TOKEN>
 ```
 
@@ -52,24 +52,56 @@ Authorization: Bearer <STATUS_TOKEN>
 
 | 参数 | 默认值 | 范围 | 说明 |
 | --- | --- | --- | --- |
-| `date` | 统计时区的当天 | ISO `YYYY-MM-DD` | Token、调用次数和排行所属日期 |
-| `ranking_limit` | `100` | `1..100` | Provider、模型、网关密钥 ID 排行数量 |
+| `date` | 统计时区的当天 | ISO `YYYY-MM-DD` | 原有 `statistics.summary`、`token_cache_rate` 和 `rankings` 所属日期 |
+| `period` | `today` | `today`、`24h`、`7d`、`30d`、`all` | 新增 `statistics.overview` 的统计范围，与 `date` 独立 |
+| `ranking_limit` | `100` | `1..100` | 原有单日排行及新增概览中每个维度的最大排行数量 |
 | `log_limit` | `50` | `1..100` | 最近、成功和失败日志各自的最大数量 |
 
 响应 `object` 固定为 `kemo.gateway_status`，包含：
 
 - `runtime`：实例阶段、启动时间和活动执行数；
-- `version`：本地/远程版本、协议版本和是否需要更新，远程结果最多缓存 5 分钟；
-- `registry.providers`、`registered_provider_ids`、`enabled_models`：已注册厂商和实际启用模型；
-- `control.highest_priority_system_prompt`、禁用厂商和禁用模型；
+- `version`：本地/远程版本、协议版本和是否需要更新，包含 `branch`、`source` 与
+  `scope=framework`。远程检查跟随当前 Git 分支；无 Git 分支信息或处于 detached HEAD 时使用
+  `main`，结果最多缓存 5 分钟；
+- `registry.providers`、`registered_provider_ids`、`enabled_models`：协议层 Provider 和实际启用
+  模型，包含已就绪的高级插件模型；这里的 Provider 不等同于用户配置的上游服务；
+- `control`：`highest_priority_system_prompt`、网关总开关 `enabled`、配置 `revision`，
+  以及 `disabled_upstreams`、`disabled_models`；
+- `upstreams`：上游 ID、名称、适配器 ID、启停及凭据健康状态。凭据只返回 ID、状态、检查时间、
+  错误码、上游 HTTP 状态码和剩余冷却秒数；
+- `routing`：最大尝试次数、默认冷却秒数、公开模型的启停与验证状态，以及 Deployment 的
+  上下游映射、启停、优先级、权重、RPM 和剩余冷却秒数；
+- `plugins.revision`、`plugins.items`：高级插件 ID、名称、版本、分类、启停、生命周期状态、
+  Provider ID、模型列表和数量、错误码，以及已缓存的更新版本信息；
+- `resources`：内置适配器与模板的运行版本 `running`、磁盘版本 `installed`、是否需要重启
+  `restart_required`、用户扩展元数据 `user` 和已缓存的独立资源更新计划 `update`；
 - `statistics.summary`、`token_cache_rate`，以及按 Provider、模型、网关密钥 ID 聚合的调用次数、
   成功/失败次数、Token 用量、覆盖率、缓存命中率和平均延迟；
+- `statistics.overview`：指定 `period` 的起止时间、时区、汇总与排行，复用管理端概览统计，
+  包含按原币种汇总的 `costs`、按网关显示币种换算的 `display_cost` 和参考汇率日期
+  `exchange_rate_date`。排行维度为 `provider`、`model`、`key`；
 - `logs.recent`、`successful`、`failed`、`last_invocation`：跨日最近调用的脱敏运行日志。
+
+`statistics.overview` 排除模型测试和能力探测，按持久化的上游 Attempt 统计；重试会分别计数，
+成功率分母为已结束 Attempt。`today` 从统计时区当天零点开始，`24h`、`7d`、`30d` 为滚动窗口，
+`all` 为已保留的业务历史。它与原有单日辅助统计可能采用不同口径，调用方应保留二者的字段含义。
+`date` 不改变概览时间窗口，`period` 也不改变原有单日字段或跨日日志。
+
+费用未知时保留未知，不将未知费用视为免费；`display_cost.approximate` 表示存在估算、未知费用
+或币种换算，`unconverted_currencies` 列出无法换算的币种。汇率为固定参考值，不是实时汇率。
+
+`plugins.items[].status` 可区分 `ready`、`disabled`、`needs_config`、`needs_auth`、`degraded`
+和 `failed` 等状态，因此模型从目录消失后仍可查询插件自身状态。插件更新信息来自已有缓存；
+本接口不主动刷新插件索引或资源更新计划。`resources.update=null` 表示当前没有缓存的资源更新
+计划，不能据此认定资源已经最新。磁盘内置资源清单不可读或校验失败时，`installed` 和
+`restart_required` 为 `null`，`error_code=RESOURCE_INVENTORY_UNAVAILABLE`，其他状态继续返回。
+用户扩展仅返回 ID、名称、版本、来源、启停与清单有效性，读取过程不执行扩展代码。
 
 日志仅包含时间、任务、Provider ID、模型、网关密钥 ID、状态、统一错误代码、延迟和规范化
 Token。接口禁止返回网关密钥原文、Provider 密钥、请求头密钥、租户、请求正文、请求 ID、
-响应 ID、Provider 原始响应或堆栈。响应固定携带 `Cache-Control: no-store`。该路由只支持 GET，
-不存在任何写操作。
+响应 ID、Provider 原始响应或堆栈。新增上游、插件和资源字段也采用白名单，不返回上游地址、
+自定义请求头、profile、备注、凭据密文、插件配置、权限清单或错误详情。
+响应固定携带 `Cache-Control: no-store`。该路由只支持 GET，不存在任何写操作。
 
 ### kemo-agent 内置拓展
 
