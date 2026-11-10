@@ -341,6 +341,14 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
   不会再次调用 Provider。若业务层决定重新执行，必须创建新的逻辑请求和新 ID；这可能产生新计费，
   不应由底层传输代码自动决定。
 - HTTP 错误正文中的显式 `retryable=true/false` 优先于状态码默认分类；显式为 `false` 时不得重试。
+- DNS、建连、读写或协议传输异常不将上游凭据判为失效，也不触发凭据冷却；
+  HTTP 401/403、429 和 500/502/503/504 仍保留原有凭据健康与冷却规则。
+- 暂无可用路由或凭据时返回 `PROVIDER_UNAVAILABLE`，并用 `details.reason` 区分
+  `NO_HEALTHY_DEPLOYMENT` 与 `NO_UPSTREAM_CREDENTIAL`。如果候选路径仅在冷却中，
+  返回 `retryable=true` 和最早可恢复路径的 `retry_after_ms`，同时考虑路由和凭据冷却；
+  没有启用的可恢复路径时返回 `retryable=false`，不提供等待提示。
+- 传输异常在 `details.transport_exception` 中保留异常类名，在 `details.transport_phase`
+  中标识 `resolve`、`response_headers` 或 `response_body`；不透传可能含密钥或认证 URL 的原始异常消息。
 
 ### 工具调用终态安全
 
