@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from urllib.error import URLError
 
+import pytest
+
 from web.backend.system_inspector import REMOTE_VERSION_URL, SystemInspector
 
 
@@ -49,7 +51,7 @@ def test_version_check_compares_local_and_remote_versions(tmp_path: Path, monkey
     monkeypatch.setattr(
         inspector,
         "_remote_version",
-        lambda: {
+        lambda source: {
             "version": "0.5.0",
             "protocol_version": "1.1",
             "build": None,
@@ -71,7 +73,7 @@ def test_version_check_reports_network_failure_without_claiming_latest(
     write(tmp_path / "version.json", '{"version": "0.4.0"}\n')
     inspector = SystemInspector(tmp_path)
 
-    def unavailable():
+    def unavailable(source):
         raise URLError("offline")
 
     monkeypatch.setattr(inspector, "_remote_version", unavailable)
@@ -80,3 +82,24 @@ def test_version_check_reports_network_failure_without_claiming_latest(
     assert result["update_available"] is None
     assert result["remote"] is None
     assert "最新" not in result["message"]
+
+
+@pytest.mark.parametrize(("branch", "expected"), [
+    ("kemo-preview", "kemo-preview"), ("feature/status", "feature%2Fstatus"), ("unknown", "main"),
+])
+def test_version_check_uses_current_branch_and_reports_framework_scope(tmp_path, monkeypatch, branch, expected):
+    write(tmp_path / "version.json", '{"version":"2.0.0","protocol_version":"2.0"}\n')
+    inspector = SystemInspector(tmp_path)
+    monkeypatch.setattr("web.backend.system_inspector.get_current_branch", lambda root: branch)
+    sources = []
+
+    def remote(source):
+        sources.append(source)
+        return {"version": "2.0.0", "protocol_version": "2.0"}
+
+    monkeypatch.setattr(inspector, "_remote_version", remote)
+    result = inspector.version_check()
+    assert result["source"] == sources[0]
+    assert result["source"].endswith(f"/{expected}/version.json")
+    assert result["branch"] == ("main" if branch == "unknown" else branch)
+    assert result["scope"] == "framework" and result["status"] == "up_to_date"
