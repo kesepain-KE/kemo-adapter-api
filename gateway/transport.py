@@ -19,11 +19,17 @@ from gateway.domain import ConfigurationError
 def upstream_error(status: int | None = None, code="UPSTREAM_ERROR", *, retryable: bool | None = None) -> ProviderException:
     wire_code = ("RATE_LIMITED" if status == 429 else
                  "PROVIDER_TIMEOUT" if code == "UPSTREAM_TIMEOUT" else
-                 "PROVIDER_UNAVAILABLE" if status in {500, 502, 503, 504} or code in {"NO_HEALTHY_DEPLOYMENT", "UPSTREAM_UNAVAILABLE"} else
+                 "PROVIDER_UNAVAILABLE" if status in {500, 502, 503, 504} or code in {
+                     "NO_HEALTHY_DEPLOYMENT", "NO_UPSTREAM_CREDENTIAL", "UPSTREAM_UNAVAILABLE",
+                 } else
                  "PROVIDER_BAD_RESPONSE")
+    message = {"NO_UPSTREAM_CREDENTIAL": "没有可用的上游凭据",
+               "NO_HEALTHY_DEPLOYMENT": "没有可用的模型路由"}.get(
+                   code, "上游请求失败" if status else "上游连接失败",
+               )
     return ProviderException(ErrorObject(
         type="rate_limit_error" if status == 429 else "upstream_error",
-        code=wire_code, message="上游请求失败" if status else "上游连接失败",
+        code=wire_code, message=message,
         retryable=(status in {408, 429, 500, 502, 503, 504} or status is None) if retryable is None else retryable,
         provider_status=status,
         details={"reason": code},
@@ -125,6 +131,7 @@ class Transport:
                 exchange["files"] = [{"field": name, "filename": value[0], "mime_type": value[2]}
                                      for name, value in files]
             trace.exchanges.append(exchange)
+        phase = "resolve"
         try:
             client = self.client
             if self._test_transport is None:
@@ -155,12 +162,14 @@ class Transport:
                 request_headers = {key: value for key, value in request_headers.items() if key.lower() != "content-type"}
                 payload = {"data": {key: value if isinstance(value, str) else json.dumps(value)
                                     for key, value in (body or {}).items()}, "files": files}
+            phase = "response_headers"
             async with client.stream(
                 method, url, headers=request_headers, **payload,
                 extensions=extensions, timeout=httpx.Timeout(upstream.timeout, connect=15.0),
             ) as response:
                 if exchange is not None:
                     exchange["status"] = response.status_code
+                phase = "response_body"
                 if response.status_code >= 300:
                     error = upstream_error(response.status_code)
                     content = bytearray()
@@ -183,12 +192,14 @@ class Transport:
                         exchange["complete"] = complete
                     raise error
                 yield response
-        except (httpx.TimeoutException, TimeoutError):
-            raise upstream_error(code="UPSTREAM_TIMEOUT") from None
-        except (ResolutionError, httpx.ConnectError):
-            raise upstream_error(code="UPSTREAM_UNAVAILABLE") from None
-        except httpx.HTTPError:
-            raise upstream_error() from None
+        except (httpx.HTTPError, TimeoutError, ResolutionError) as exc:
+            reason = ("UPSTREAM_TIMEOUT" if isinstance(exc, (httpx.TimeoutException, TimeoutError))
+                      else "UPSTREAM_UNAVAILABLE" if isinstance(exc, (ResolutionError, httpx.ConnectError))
+                      else "UPSTREAM_ERROR")
+            error = upstream_error(code=reason)
+            # Exception messages can contain authenticated URLs. Keep only safe metadata.
+            error.error.details.update(transport_exception=type(exc).__name__, transport_phase=phase)
+            raise error from None
 
     async def json(self, upstream, path, headers, *, body=None, method="POST", files=None):
         async with self.response(upstream, path, headers, body=body, method=method, files=files) as response:
