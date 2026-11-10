@@ -5,6 +5,7 @@ import asyncio
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
+import zlib
 import socket
 import sqlite3
 import time
@@ -184,7 +185,10 @@ def test_details_stay_in_memory_until_finish_and_preserve_response_and_usage(tmp
         assert SECRET not in json.dumps(detail)
         with app.state.registry.store._lock:
             stored = app.state.registry.store._db.execute("SELECT body FROM attempt_details").fetchone()[0]
-        assert len(stored.encode("utf-8")) <= 1024
+        assert isinstance(stored, bytes)
+        uncompressed = zlib.decompress(stored)
+        assert len(stored) < len(uncompressed) <= 1024
+        assert json.loads(uncompressed) == detail["detail"]
         assert row["source"] == "exact" and row["usage"]["total_tokens"] == 5
         assert not app.state.registry.router.metering._active
 
@@ -203,13 +207,14 @@ def test_new_limits_are_injected_by_application(tmp_path, monkeypatch):
 
 def test_new_defaults_and_startup_overrides(monkeypatch, tmp_path):
     names = ("REQUEST_JSON_MAX_BYTES", "UPSTREAM_JSON_MAX_BYTES", "LOG_DETAIL_MAX_BYTES",
-             "LOG_RETENTION_DAYS", "MODEL_EXECUTION_TIMEOUT_SECONDS")
+             "LOG_RETENTION_DAYS", "LOG_DETAIL_RETENTION_HOURS", "MODEL_EXECUTION_TIMEOUT_SECONDS")
     for name in names:
         monkeypatch.delenv(name, raising=False)
     defaults = Settings.from_env()
     assert defaults.request_json_max_bytes == defaults.upstream_json_max_bytes == 32 * MIB
     assert defaults.log_detail_max_bytes == 4 * MIB
-    assert defaults.log_retention_days == 30 and defaults.execution_retention_hours == 720
+    assert defaults.log_retention_days == 30
+    assert defaults.log_detail_retention_hours == defaults.execution_retention_hours == 24
     assert defaults.model_execution_timeout_seconds == 1200
     from web.backend.startup_config import config_view, save_config
     save_config(tmp_path, config_view(tmp_path)["expected_revision"], """
@@ -218,8 +223,10 @@ LOG_DETAIL_MAX_BYTES: 2097152
 RESTART_DRAIN_TIMEOUT: 1300
 MODEL_EXECUTION_TIMEOUT_SECONDS: 1200
 LOG_RETENTION_DAYS: 30
+LOG_DETAIL_RETENTION_HOURS: 48
 """, {})
     assert "67108864" in config_view(tmp_path)["yaml"]
+    assert "LOG_DETAIL_RETENTION_HOURS: 48" in config_view(tmp_path)["yaml"]
     monkeypatch.setenv("UPSTREAM_JSON_MAX_BYTES", str(64 * MIB))
     monkeypatch.setenv("LOG_DETAIL_MAX_BYTES", str(2 * MIB))
     assert Settings.from_env().upstream_json_max_bytes == 64 * MIB
@@ -229,14 +236,14 @@ LOG_RETENTION_DAYS: 30
         Settings.from_env()
 
 
-def test_thirty_day_retention_covers_details_statistics_executions_and_sse(tmp_path, monkeypatch):
+def test_detail_expiry_keeps_summaries_usage_costs_and_thirty_day_statistics(tmp_path, monkeypatch):
     frames = 'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
     frames += 'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'
     with instance(tmp_path, monkeypatch, lambda _: httpx.Response(200, text=frames)) as (client, app):
         add_upstream(client)
         register(client)
         token = mutate(client, "/keys", {"name": "retention"}, key=True).json()["token"]
-        for label in ("kept", "expired"):
+        for label in ("kept", "summary_only", "expired"):
             identity = "req_" + label
             response = client.post("/model/responses", headers={
                 "Authorization": f"Bearer {token}", "X-Kemo-Protocol-Version": "2.0",
@@ -250,27 +257,38 @@ def test_thirty_day_retention_covers_details_statistics_executions_and_sse(tmp_p
         now = datetime.now(timezone.utc)
         stats = app.state.statistics
         paths = {}
-        for label, age in (("kept", 28), ("expired", 31)):
-            at = now - timedelta(days=age)
+        response_ids = {}
+        for label, age in (("kept", 23), ("summary_only", 25), ("expired", 31 * 24)):
+            at = now - timedelta(hours=age)
             with closing(sqlite3.connect(app.state.executions.path)) as db, db:
                 db.execute("UPDATE executions SET updated_at=? WHERE request_id=?",
-                           (time.time() - age * 86400, "req_" + label))
+                           (time.time() - age * 3600, "req_" + label))
                 response_id = db.execute("SELECT response_id FROM executions WHERE request_id=?",
                                          ("req_" + label,)).fetchone()[0]
+                response_ids[label] = response_id
             with app.state.registry.store.transaction() as db:
                 db.execute("UPDATE attempts SET started_at=? WHERE request_id=?", (at.isoformat(), response_id))
             day = at.astimezone(stats.timezone).date().isoformat()
             paths[label] = stats._path_for_day(day)
             stats._initialize_database(paths[label])
         with app.state.registry.store.transaction() as db:
+            summaries = {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table}")]
+                         for table in ("attempts", "usage_evidence", "cost_records")}
             app.state.registry.store._next_details_cleanup = 0
             app.state.registry.store.prune_details(db)
             assert db.execute("SELECT COUNT(*) FROM attempt_details").fetchone()[0] == 1
-            assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 2
+            for table, rows in summaries.items():
+                assert [tuple(row) for row in db.execute(f"SELECT * FROM {table}")] == rows
         client.portal.call(stats.cleanup_expired)
         client.portal.call(app.state.executions.cleanup_expired)
-        assert paths["kept"].exists() and not paths["expired"].exists()
+        assert paths["kept"].exists() and paths["summary_only"].exists() and not paths["expired"].exists()
         with closing(sqlite3.connect(app.state.executions.path)) as db:
             assert db.execute("SELECT request_id FROM executions").fetchall() == [("req_kept",)]
             kept = db.execute("SELECT response_id FROM executions").fetchone()[0]
             assert db.execute("SELECT DISTINCT response_id FROM execution_events").fetchall() == [(kept,)]
+        items = client.get("/admin/api/logs").json()["items"]
+        assert len(items) == 3 and all(item["usage"]["total_tokens"] == 5 for item in items)
+        for label in ("summary_only", "expired"):
+            detail = client.get(f"/admin/api/logs/{response_ids[label]}/1").json()
+            assert detail == {"detail": None, "gateway_response": None}
+        assert client.get(f"/admin/api/logs/{response_ids['kept']}/1").json()["detail"] is not None

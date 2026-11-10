@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import asyncio
+import zlib
 
 import httpx
 import pytest
@@ -282,6 +283,28 @@ def test_body_retention_keeps_historical_summary(tmp_path, monkeypatch):
         assert invoke(client, create_key(client)["token"], "req_prune").json()["status"] == "completed"
         assert len(client.get("/admin/api/logs").json()["items"]) == 2
         assert client.get("/admin/api/logs/old/1").json()["detail"] is None
+
+
+@pytest.mark.parametrize("encoding", ["yaml", "json", "compressed"])
+def test_detail_storage_reads_legacy_and_compressed_bodies_after_reopen(tmp_path, encoding):
+    detail = {"request": {"text": "中文日志\n" * 200}, "response": {"text": "完整响应"}}
+    body = dump(detail) if encoding == "yaml" else json.dumps(detail, ensure_ascii=False)
+    if encoding == "compressed":
+        body = zlib.compress(body.encode("utf-8"))
+    store = Store(tmp_path)
+    try:
+        with store.transaction() as db:
+            db.execute("""INSERT INTO attempts(request_id,attempt_no,response_id,deployment_id,upstream_id,
+                model,started_at,status,price) VALUES('saved',1,'saved','upstream','upstream','model',
+                '2026-11-10T00:00:00+00:00','completed',?)""", (dump({}),))
+            db.execute("INSERT INTO attempt_details VALUES('saved',1,?)", (body,))
+    finally:
+        store.close()
+    reopened = Store(tmp_path)
+    try:
+        assert reopened.attempt_detail("saved", 1) == detail
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize("mode,status,recorded", [
