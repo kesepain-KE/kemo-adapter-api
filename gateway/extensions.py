@@ -90,6 +90,27 @@ def read_manifest(path: Path, kind: str):
     return {**manifest.model_dump(mode="json"), "template": template.model_dump(mode="json")}
 
 
+def extension_catalog(registry):
+    result = {"protocol_adapters": [], "provider_templates": []}
+    state = {(s.kind, s.id): s.enabled for s in registry.store.catalog().extensions}
+    for kind in result:
+        root = registry.project_root / "extensions" / kind
+        if not root.exists():
+            continue
+        for path in sorted(root.iterdir()):
+            if not path.is_dir() or path.name.startswith(".") or path.name.startswith("tmp"):
+                continue
+            try:
+                manifest = read_manifest(path, kind)
+                document = manifest.model_dump(mode="json") if hasattr(manifest, "model_dump") else manifest
+                result[kind].append({**document, "source": "user", "builtin": False,
+                                     "enabled": state.get((kind, path.name), False), "valid": True})
+            except (ValueError, OSError):
+                result[kind].append({"id": path.name, "source": "user", "builtin": False,
+                                     "enabled": False, "valid": False})
+    return result
+
+
 def install(root: Path, kind: str, content: bytes, *, reserved_ids=(), active_ids=(), replace=False) -> str:
     if kind not in KINDS or len(content) > 16 * 1024 * 1024:
         raise ValueError("扩展类型或包大小无效")

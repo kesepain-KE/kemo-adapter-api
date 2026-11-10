@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gateway.domain import Catalog, ConfigurationError, Credential, Deployment, ExtensionState, PublicModel, RuntimeOptions, Upstream
 from gateway.currency import EXCHANGE_RATE_DATE, EXCHANGE_RATES, display_cost
-from gateway.extensions import install, read_manifest, extension_digest
+from gateway.extensions import install, read_manifest, extension_digest, extension_catalog
 from gateway.runtime import BUILTINS, adapter_modalities
 from gateway.model_probe import ModelProbe
 from gateway.model_names import TEMPLATE_VENDORS, public_model_name
@@ -138,27 +138,6 @@ def patch_collection(current, name, identity, value, *, create=False, delete=Fal
             raise HTTPException(422, "修改对象时不能更换 ID")
         updated.append({**(old or {}), **value, "id": identity})
     return Catalog.model_validate({**current.model_dump(mode="json"), name: updated})
-
-
-def extension_catalog(registry):
-    result = {"protocol_adapters": [], "provider_templates": []}
-    state = {(s.kind, s.id): s.enabled for s in registry.store.catalog().extensions}
-    for kind in result:
-        root = registry.project_root / "extensions" / kind
-        if not root.exists():
-            continue
-        for path in sorted(root.iterdir()):
-            if not path.is_dir() or path.name.startswith(".") or path.name.startswith("tmp"):
-                continue
-            try:
-                manifest = read_manifest(path, kind)
-                document = manifest.model_dump(mode="json") if hasattr(manifest, "model_dump") else manifest
-                result[kind].append({**document, "source": "user", "builtin": False,
-                                     "enabled": state.get((kind, path.name), False), "valid": True})
-            except (ValueError, OSError):
-                result[kind].append({"id": path.name, "source": "user", "builtin": False,
-                                     "enabled": False, "valid": False})
-    return result
 
 
 @router.get("/console")
