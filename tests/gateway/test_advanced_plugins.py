@@ -173,6 +173,39 @@ def test_config_hot_generation_failure_update_rollback_and_secrets(tmp_path, mon
         assert client.get("/admin/api/advanced-plugins/local_text/config").json()["values"]["mode"] == "lowercase"
 
 
+def test_status_reports_plugin_lifecycle_without_private_config_or_errors(tmp_path, monkeypatch):
+    settings = Settings(status_token="status-only-token", api_keys={
+        OWNER: PrincipalConfig("tenant", "owner", frozenset({"owner"})),
+    })
+    headers = {"Authorization": "Bearer status-only-token"}
+    with instance(tmp_path, monkeypatch, settings=settings) as (client, app):
+        assert install(client, package(secret=True)).is_success
+        assert mutate(client, "local_text", "config", {"credential": "private-plugin-credential"}).is_success
+        assert enable(client).is_success
+        assert install(client, package(name="codex_cli")).is_success
+        assert enable(client, "codex_cli").status_code == 422
+        response = client.get("/status", headers=headers)
+        assert response.status_code == 200, response.text
+        items = {item["id"]: item for item in response.json()["plugins"]["items"]}
+        assert items["local_text"]["status"] == "ready" and items["local_text"]["version"] == "1.0.0"
+        assert items["local_text"]["models"] == [MODEL] and items["local_text"]["model_count"] == 1
+        assert items["codex_cli"]["status"] == "needs_config"
+        assert items["codex_cli"]["error_code"] == "PLUGIN_NEEDS_CONFIG"
+        assert {"model": MODEL, "provider_id": "local-text"} in response.json()["registry"]["enabled_models"]
+        assert "private-plugin-credential" not in response.text
+        assert "config_schema" not in response.json()["plugins"]["items"][0]
+        assert install(client, package(version="1.1.0", secret=True, broken=True), update=True).status_code in {502, 503}
+        response = client.get("/status", headers=headers)
+        item = next(row for row in response.json()["plugins"]["items"] if row["id"] == "local_text")
+        assert item["status"] == "degraded" and item["model_count"] == 1 and item["error_code"]
+        assert "bad candidate" not in response.text and "Traceback" not in response.text
+        assert mutate(client, "local_text", "disable").is_success
+        payload = client.get("/status", headers=headers).json()
+        item = next(row for row in payload["plugins"]["items"] if row["id"] == "local_text")
+        assert item["status"] == "disabled" and not item["enabled"] and not item["models"]
+        assert "local-text" not in payload["registry"]["registered_provider_ids"]
+
+
 def test_old_generation_can_finish_after_disable_and_cancel(tmp_path, monkeypatch):
     with instance(tmp_path, monkeypatch) as (client, app):
         assert install(client, package(slow=True)).status_code == 200
