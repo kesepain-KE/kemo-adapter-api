@@ -63,7 +63,7 @@ def test_startup_config_preserves_secrets_unknown_fields_and_live_settings(tmp_p
     "STATISTICS_TIMEZONE: Mars/Nowhere", "LOG_LEVEL: verbose", "WEB_ACCESS_LOG: invalid",
     "GATEWAY_BASE_URL: https://public.example", "GATEWAY_BASE_URL: ftp://127.0.0.1",
     "GATEWAY_BASE_URL: http://operator:secret@127.0.0.1", "GATEWAY_BASE_URL: http://127.0.0.1:99999",
-    "RESTART_DRAIN_TIMEOUT: 0", "SSE_HEARTBEAT_SECONDS: .nan",
+    "RESTART_DRAIN_TIMEOUT: 0", "SSE_HEARTBEAT_SECONDS: .nan", "LOG_DETAIL_RETENTION_HOURS: 0",
 ])
 def test_invalid_startup_config_leaves_original_file_untouched(tmp_path, text):
     path = tmp_path / "gateway.yaml"

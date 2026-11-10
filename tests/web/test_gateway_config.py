@@ -34,6 +34,7 @@ def test_gateway_config_is_read_only_and_never_returns_secrets(tmp_path: Path, h
         assert fields["PORT"]["value"] == "8531"
         assert fields["MAX_CONCURRENT_EXECUTIONS"]["value"] == "77"
         assert fields["LOG_RETENTION_DAYS"]["value"] == "30"
+        assert fields["LOG_DETAIL_RETENTION_HOURS"]["value"] == "24"
         for name in ("WEB_USERNAME", "WEB_PASSWORD", "WEB_TOKEN", "STATUS_TOKEN"):
             assert fields[name]["value"] == "uniqu…urn"
         assert fields["GATEWAY_API_KEY"]["sensitive"] is True
@@ -48,17 +49,23 @@ def test_gateway_config_is_read_only_and_never_returns_secrets(tmp_path: Path, h
     assert (root / "gateway.yaml").read_bytes() == before
 
 
-def test_log_retention_uses_days_and_ignores_legacy_hours(monkeypatch) -> None:
+def test_detail_retention_is_independent_of_statistics_and_legacy_hours(monkeypatch) -> None:
     monkeypatch.delenv("LOG_RETENTION_DAYS", raising=False)
-    monkeypatch.setenv("EXECUTION_RETENTION_HOURS", "24")
+    monkeypatch.delenv("LOG_DETAIL_RETENTION_HOURS", raising=False)
+    monkeypatch.setenv("EXECUTION_RETENTION_HOURS", "720")
     settings = Settings.from_env()
     assert settings.log_retention_days == 30
-    assert settings.execution_retention_hours == 30 * 24
+    assert settings.log_detail_retention_hours == settings.execution_retention_hours == 24
 
     monkeypatch.setenv("LOG_RETENTION_DAYS", "14")
     settings = Settings.from_env()
     assert settings.log_retention_days == 14
-    assert settings.execution_retention_hours == 14 * 24
+    assert settings.execution_retention_hours == 24
+
+    monkeypatch.setenv("LOG_DETAIL_RETENTION_HOURS", "48")
+    settings = Settings.from_env()
+    assert settings.log_retention_days == 14
+    assert settings.log_detail_retention_hours == settings.execution_retention_hours == 48
 
 
 @pytest.mark.parametrize("url", [
