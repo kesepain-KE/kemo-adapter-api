@@ -303,7 +303,7 @@ Anthropic 仅在其原生拒绝停止信息给出明确 explanation 时产生拒
 `X-Kemo-Heartbeat-Seconds`；反向代理仍应关闭流式响应缓冲，并把空闲超时设置为大于心跳间隔。
 
 幂等记录、统一终态和已发出的 SSE 事件持久化在网关本地 SQLite WAL 数据库
-`data/executions/executions.sqlite3`，默认保留 30 天。客户端断开不会取消同一网关进程中的
+`data/executions/executions.sqlite3`，默认保留 24 小时。客户端断开不会取消同一网关进程中的
 Provider 执行，相同请求可以在保留期内重连或查询终态。网关进程重启时，上次尚未结束的执行会被
 确定性终结为 `status=incomplete`、`incomplete_details.reason=gateway_restarted`，并追加
 `response.incomplete` 终态事件。
@@ -348,14 +348,17 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
 - 同一 Provider 响应中的并行工具调用按批次原子处理。任一调用非法时，网关不会先发布同批其他调用，而是返回 `response.incomplete` 及有限的校验原因。
 - Schema 校验受递归深度、节点总数和数组项数限制。超过限制会返回明确的参数/契约错误，不会递归崩溃或无限扫描。
 
-这些默认值分别由 `SSE_HEARTBEAT_SECONDS`、`LOG_RETENTION_DAYS`、
+这些默认值分别由 `SSE_HEARTBEAT_SECONDS`、`LOG_DETAIL_RETENTION_HOURS`、
 `MODEL_EXECUTION_TIMEOUT_SECONDS`、`MAX_CONCURRENT_EXECUTIONS` 和
 `MAX_SSE_EVENTS_PER_RESPONSE` 配置；它们属于启动环境变量，修改后必须重启网关。
 
-`LOG_RETENTION_DAYS` 同时控制调用日志、每日统计数据库、Execution 与 SSE 重放记录，默认值为
-`30`。过期清理不会阻塞应用启动：启动后延迟执行，Execution 按小批次删除并在批次之间释放写锁，
-每日统计按日期文件删除。旧的 `EXECUTION_RETENTION_HOURS` 不再决定日志周期；未设置新变量时仍按
-30 天执行。Asset 内容不是调用日志，继续由 `DEFAULT_ASSET_TTL_HOURS` 单独控制。
+`LOG_DETAIL_RETENTION_HOURS` 独立控制完整调用正文、Execution 与 SSE 重放记录，默认 `24` 小时。
+启动后延迟 30 秒执行清理，此后每 5 分钟检查到期详情，无新请求时也会清理。Execution 按小批次
+删除并在批次之间释放写锁，跳过仍在执行的请求。超过保留期后，完整响应查询、幂等重放和 SSE 续传
+不再可用；调用摘要、Token 用量和费用记录继续保留。
+
+`LOG_RETENTION_DAYS` 仅控制每日辅助统计数据库，默认 `30` 天，仍按日期文件删除。
+旧的 `EXECUTION_RETENTION_HOURS` 不决定保留期。Asset 内容继续由 `DEFAULT_ASSET_TTL_HOURS` 单独控制。
 
 模型接口与管理 API 的 JSON 请求正文默认最多 32 MiB，由 `REQUEST_JSON_MAX_BYTES` 配置。
 超限返回 HTTP 413、`REQUEST_TOO_LARGE` 和 `details.limit_bytes`；流式传输的正文也累计计数。
@@ -369,7 +372,7 @@ SQLite 连接在网关生命周期内复用，sequence 热路径由内存中的�
 上游超时为 `PROVIDER_TIMEOUT`。网关不新增输入 Token 数与模型 `context_window` 的拒绝校验。
 `RESTART_DRAIN_TIMEOUT` 示例值为 1300 秒，应高于执行时限，非强制排空超时会取消重启并恢复服务。
 
-`LOG_DETAIL_MAX_BYTES` 默认 4 MiB，最小 256 字节，限制单条管理端调用正文的实际存储字节，
+`LOG_DETAIL_MAX_BYTES` 默认 4 MiB，最小 256 字节，限制单条管理端调用正文压缩前的 UTF-8 字节，
 包括截断元数据。超限正文保留脱敏前缀，并带 `truncated=true`、`original_bytes` 和 `body`；
 不改变转发、模型返回、计量与幂等重放内容。配置项均在启动时加载，修改后必须重启。
 
