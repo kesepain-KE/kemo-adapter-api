@@ -12,13 +12,14 @@ import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from update.constants import DEFAULT_BRANCH, VERSION_URL_TEMPLATE
+from update.git import get_current_branch
 
-REMOTE_VERSION_URL = (
-    "https://raw.githubusercontent.com/kesepain-KE/"
-    "kemo-adapter-api/main/version.json"
-)
+
+REMOTE_VERSION_URL = VERSION_URL_TEMPLATE.format(branch=DEFAULT_BRANCH)
 
 
 def _utc_now() -> str:
@@ -185,9 +186,9 @@ class SystemInspector:
             (self.project_root / "version.json").read_bytes()
         )
 
-    def _remote_version(self) -> dict[str, Any]:
+    def _remote_version(self, source: str) -> dict[str, Any]:
         request = Request(
-            REMOTE_VERSION_URL,
+            source,
             headers={"Accept": "application/json", "User-Agent": "kemo-gateway-version-check"},
         )
         with urlopen(request, timeout=4.0) as response:
@@ -195,6 +196,11 @@ class SystemInspector:
 
     def version_check(self) -> dict[str, Any]:
         checked_at = _utc_now()
+        branch = get_current_branch(self.project_root)
+        if branch in {"unknown", "HEAD"}:
+            branch = DEFAULT_BRANCH
+        source = VERSION_URL_TEMPLATE.format(branch=quote(branch, safe=""))
+        metadata = {"source": source, "branch": branch, "scope": "framework", "checked_at": checked_at}
         try:
             local = self._local_version()
         except (OSError, UnicodeError, ValueError):
@@ -203,13 +209,12 @@ class SystemInspector:
                 "update_available": None,
                 "local": None,
                 "remote": None,
-                "source": REMOTE_VERSION_URL,
-                "checked_at": checked_at,
+                **metadata,
                 "message": "无法读取本地 version.json",
             }
 
         try:
-            remote = self._remote_version()
+            remote = self._remote_version(source)
             local_key = self._version_key(local["version"])
             remote_key = self._version_key(remote["version"])
         except (OSError, HTTPError, URLError, TimeoutError, UnicodeError, ValueError):
@@ -218,8 +223,7 @@ class SystemInspector:
                 "update_available": None,
                 "local": local,
                 "remote": None,
-                "source": REMOTE_VERSION_URL,
-                "checked_at": checked_at,
+                **metadata,
                 "message": "无法连接远程版本源，请稍后重试",
             }
 
@@ -238,8 +242,7 @@ class SystemInspector:
             "update_available": update_available,
             "local": local,
             "remote": remote,
-            "source": REMOTE_VERSION_URL,
-            "checked_at": checked_at,
+            **metadata,
             "message": message,
         }
 
