@@ -220,7 +220,7 @@ class SQLiteExecutionStore:
         root: Path,
         *,
         retention_hours: int = 24,
-        cleanup_interval_seconds: float = 3600.0,
+        cleanup_interval_seconds: float = 300.0,
         cleanup_startup_delay_seconds: float = 30.0,
         cleanup_batch_size: int = 8,
         incremental_vacuum_pages: int = 2048,

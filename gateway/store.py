@@ -8,6 +8,7 @@ import re
 import sqlite3
 import threading
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -48,13 +49,13 @@ def read_catalog(db) -> Catalog:
 
 
 class Store:
-    def __init__(self, root: Path, *, retention_days=7):
+    def __init__(self, root: Path, *, detail_retention_hours=24):
         root.mkdir(parents=True, exist_ok=True)
         self.path = root / "gateway.sqlite3"
         self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
-        self.retention_days = retention_days
+        self.detail_retention_hours = detail_retention_hours
         self._next_details_cleanup = 0
         self._db.executescript("""
             PRAGMA journal_mode=WAL;
@@ -213,10 +214,14 @@ class Store:
     def prune_details(self, db):
         if time.monotonic() < self._next_details_cleanup:
             return
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.retention_days)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.detail_retention_hours)).isoformat()
         db.execute("""DELETE FROM attempt_details WHERE (request_id,attempt_no) IN (
             SELECT request_id,attempt_no FROM attempts WHERE started_at<?)""", (cutoff,))
-        self._next_details_cleanup = time.monotonic() + 3600
+        self._next_details_cleanup = time.monotonic() + 300
+
+    def cleanup_expired_details(self):
+        with self.transaction() as db:
+            self.prune_details(db)
 
     def attempts(self, limit=100, offset=0, model: str | None = None, *,
                  start=None, end=None, status=None, task=None, log_type=None):
@@ -248,7 +253,10 @@ class Store:
             ).fetchone()
         if exists is None:
             raise LookupError("调用记录不存在")
-        return yaml.safe_load(row[0]) if row else None
+        if row is None:
+            return None
+        body = zlib.decompress(row[0]) if isinstance(row[0], bytes) else row[0]
+        return yaml.safe_load(body)
 
     def close(self):
         with self._lock:
