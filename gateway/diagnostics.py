@@ -3,11 +3,21 @@ from __future__ import annotations
 
 from calendar import monthrange
 from datetime import datetime, time, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import yaml
 
 from gateway.currency import display_cost
+
+
+_USAGE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+@lru_cache(maxsize=8192)
+def _usage(body):
+    # Cache immutable serialized evidence, not totals: updated evidence gets a new key.
+    return yaml.load(body, Loader=_USAGE_LOADER)
 
 
 def new_metrics():
@@ -88,22 +98,23 @@ def usage_overview(store, period, timezone_name, *, now=None, display_currency="
     groups = {"provider": {}, "model": {}, "key": {}}
     deployments = set()
     with store._lock:
-        provider_names = {row["id"]: yaml.safe_load(row["body"])["name"]
-                          for row in store._db.execute("SELECT id,body FROM upstreams")}
-        key_names = {row["id"]: yaml.safe_load(row["body"]).get("name")
-                     for row in store._db.execute("SELECT id,body FROM downstream_keys")}
-        for row in store._db.execute(query, params):
-            usage = yaml.safe_load(row["usage"]) if row["usage"] else {}
-            accumulate(total, row, usage)
-            deployments.add(row["deployment_id"])
-            for dimension, identity, name in (
-                ("provider", row["upstream_id"], row["upstream_name"] or provider_names.get(row["upstream_id"]) or row["upstream_id"]),
-                ("model", row["model"], row["model"]),
-                ("key", row["key_id"] or "/unattributed", row["key_name"] or key_names.get(row["key_id"])),
-            ):
-                group = groups[dimension].setdefault(identity, {"id": identity, "name": name, **new_metrics()})
-                group["name"] = name
-                accumulate(group, row, usage)
+        providers = store._db.execute("SELECT id,body FROM upstreams").fetchall()
+        keys = store._db.execute("SELECT id,body FROM downstream_keys").fetchall()
+        rows = store._db.execute(query, params).fetchall()
+    provider_names = {row["id"]: yaml.safe_load(row["body"])["name"] for row in providers}
+    key_names = {row["id"]: yaml.safe_load(row["body"]).get("name") for row in keys}
+    for row in rows:
+        usage = _usage(row["usage"]) if row["usage"] else {}
+        accumulate(total, row, usage)
+        deployments.add(row["deployment_id"])
+        for dimension, identity, name in (
+            ("provider", row["upstream_id"], row["upstream_name"] or provider_names.get(row["upstream_id"]) or row["upstream_id"]),
+            ("model", row["model"], row["model"]),
+            ("key", row["key_id"] or "/unattributed", row["key_name"] or key_names.get(row["key_id"])),
+        ):
+            group = groups[dimension].setdefault(identity, {"id": identity, "name": name, **new_metrics()})
+            group["name"] = name
+            accumulate(group, row, usage)
     return {
         "period": period, "timezone": timezone_name,
         "start": start.isoformat() if start is not None else None, "end": now.isoformat(),
@@ -145,11 +156,12 @@ def request_activity(store, period, timezone_name, *, granularity="day", day=Non
         now.astimezone(timezone.utc).isoformat(),
     )
     with store._lock:
-        for row in store._db.execute(query, params):
-            at = datetime.fromisoformat(row["started_at"]).astimezone(zone)
-            bucket = (at.date().isoformat(), at.hour if granularity == "hour" else None)
-            usage = yaml.safe_load(row["usage"]) if row["usage"] else {}
-            accumulate(buckets[bucket], row, usage)
+        rows = store._db.execute(query, params).fetchall()
+    for row in rows:
+        at = datetime.fromisoformat(row["started_at"]).astimezone(zone)
+        bucket = (at.date().isoformat(), at.hour if granularity == "hour" else None)
+        usage = _usage(row["usage"]) if row["usage"] else {}
+        accumulate(buckets[bucket], row, usage)
     return {
         "period": period, "granularity": granularity, "timezone": timezone_name, "today": today.isoformat(),
         "start": start.isoformat(), "end": (end - timedelta(days=1)).isoformat(),

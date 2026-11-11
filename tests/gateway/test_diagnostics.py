@@ -1,9 +1,12 @@
 from datetime import date, datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.server import create_app
+from gateway import diagnostics
 from gateway.diagnostics import request_activity, usage_overview
 from gateway.store import Store, dump
 from tests.support.admin import ADMIN_HEADERS, CALLER_HEADERS, admin_settings
@@ -23,6 +26,60 @@ def record(store, identity, at, *, log_type="request", status="completed", usage
             db.execute("INSERT INTO usage_evidence VALUES(?,1,?,?)", (identity, source, dump(usage)))
         if cost is not None:
             db.execute("INSERT INTO cost_records VALUES(?,1,?,?,1)", (identity, cost, currency))
+
+
+@pytest.mark.parametrize("kind", ["usage", "activity"])
+def test_aggregation_does_not_block_new_attempt_writes(tmp_path, monkeypatch, kind):
+    store = Store(tmp_path)
+    now = datetime.now(timezone.utc)
+    record(store, "existing", now, usage={"input_tokens": 10})
+    aggregating, release, written = Event(), Event(), Event()
+    accumulate = diagnostics.accumulate
+
+    def pause_aggregation(*args):
+        aggregating.set()
+        assert release.wait(5)
+        return accumulate(*args)
+
+    def write():
+        record(store, "new", now, usage={"input_tokens": 20})
+        written.set()
+
+    monkeypatch.setattr(diagnostics, "accumulate", pause_aggregation)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            calculate = usage_overview if kind == "usage" else request_activity
+            result = pool.submit(calculate, store, "today" if kind == "usage" else "week", "UTC", now=now)
+            try:
+                assert aggregating.wait(3)
+                writer = pool.submit(write)
+                assert written.wait(2), "aggregation held the database lock while processing rows"
+            finally:
+                release.set()
+            writer.result(timeout=3)
+            snapshot = result.result(timeout=3)
+            assert (snapshot["summary"]["calls"] if kind == "usage" else
+                    sum(day["calls"] for day in snapshot["days"])) == 1
+    finally:
+        store.close()
+
+
+def test_overview_reads_updated_usage_and_status_without_stale_totals(tmp_path):
+    store = Store(tmp_path)
+    now = datetime.now(timezone.utc)
+    try:
+        record(store, "changing", now, status="running", usage={"input_tokens": 10})
+        first = usage_overview(store, "all", "UTC", now=now)["summary"]
+        assert first["input_tokens"] == 10 and first["finished"] == 0
+        with store.transaction() as db:
+            db.execute("UPDATE attempts SET status='completed' WHERE request_id='changing'")
+            db.execute("UPDATE usage_evidence SET body=? WHERE request_id='changing'",
+                       (dump({"input_tokens": 20, "output_tokens": 5, "total_tokens": 25}),))
+        second = usage_overview(store, "all", "UTC", now=now)["summary"]
+        assert second["input_tokens"] == 20 and second["total_tokens"] == 25
+        assert second["finished"] == second["successful"] == 1
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize(("currency", "expected"), [
