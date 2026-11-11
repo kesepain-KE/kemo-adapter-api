@@ -233,9 +233,9 @@ class OpenAIChat(DiscoverableAdapter):
                             "id": "", "function": {"name": "", "arguments": ""},
                             "_item_id": identifier("call"), "_emitted": 0,
                         })
-                        target["id"] += call.get("id", "")
-                        target["function"]["name"] += call.get("function", {}).get("name", "")
-                        target["function"]["arguments"] += call.get("function", {}).get("arguments", "")
+                        target["id"] += call.get("id") or ""
+                        target["function"]["name"] += call.get("function", {}).get("name") or ""
+                        target["function"]["arguments"] += call.get("function", {}).get("arguments") or ""
                         arguments = target["function"]["arguments"]
                         if target["id"] and target["function"]["name"] and len(arguments) > target["_emitted"]:
                             yield Event(Kind.TOOL_ARGUMENTS_DELTA, item_id=target["_item_id"],

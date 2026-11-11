@@ -13,6 +13,7 @@ from core.provider_contract import ProviderEventKind as Kind, ProviderException,
 from gateway.adapters.builtin.anthropic import Anthropic
 from gateway.adapters.builtin.cloudflare_workers_ai import CloudflareWorkersAI
 from gateway.adapters.builtin.cohere_chat import CohereChat
+from gateway.adapters.builtin.common import tool_call_id
 from gateway.adapters.builtin.gemini import Gemini
 from gateway.adapters.builtin.openai_chat import OpenAIChat
 from gateway.adapters.builtin.openai_responses import OpenAIResponses
@@ -130,6 +131,49 @@ def test_json_tool_receipt_reaches_upstream(adapter_type, mixed_content):
         return httpx.Response(200, json=raw)
 
     assert invoke(adapter_type, handler, request).status == "completed"
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+def test_openai_chat_keeps_tool_results_adjacent_when_user_messages_interleave(parallel, stream):
+    names = ["first", "second"] if parallel else ["first"]
+    calls = [{
+        "type": "tool_call", "id": f"call_{name}", "call_id": f"callid_{name}",
+        "name": "lookup", "arguments": {"city": name},
+    } for name in names]
+    receipts = [{
+        "type": "tool_result", "id": f"result_{name}", "call_id": f"callid_{name}",
+        "name": "lookup", "content": [{"type": "text", "text": f"receipt {name}"}],
+    } for name in reversed(names)]
+    request = chat_request(tools=[TOOL], input=[
+        *calls,
+        {"type": "message", "id": "msg_update", "role": "user",
+         "content": [{"type": "text", "text": "user update"}]},
+        receipts[0],
+        {"type": "message", "id": "msg_followup", "role": "user",
+         "content": [{"type": "text", "text": "user followup"}]},
+        *receipts[1:],
+    ])
+
+    def handler(http_request):
+        messages = json.loads(http_request.content)["messages"]
+        assert [message["role"] for message in messages] == [
+            "system", "assistant", *(["tool"] * len(names)), "user", "user",
+        ]
+        assert [call["id"] for call in messages[1]["tool_calls"]] == [f"callid_{name}" for name in names]
+        assert [message["tool_call_id"] for message in messages[2:2 + len(names)]] == [
+            f"callid_{name}" for name in reversed(names)
+        ]
+        assert [message["content"] for message in messages[2:2 + len(names)]] == [
+            f"receipt {name}" for name in reversed(names)
+        ]
+        assert [message["content"][0]["text"] for message in messages[-2:]] == ["user update", "user followup"]
+        if stream:
+            return sse({"choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": "stop"}]})
+        return httpx.Response(200, json=chat_response())
+
+    result = invoke(OpenAIChat, handler, request, stream=stream)
+    assert (result[-1].result if stream else result).status == "completed"
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -415,6 +459,28 @@ def test_openai_chat_stream_events_follow_protocol_contract():
     assert result.output[2]["name"] == assembled[-1].item.name == "lookup"
     assert result.output[2]["arguments"] == assembled[-1].item.arguments == {"city": "Beijing"}
     assert result.usage.total_tokens == 29
+
+
+def test_openai_chat_stream_accepts_null_tool_call_fragments():
+    events = invoke(OpenAIChat, lambda _: sse(
+        {"id": "openai-stream", "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "remote-call",
+            "function": {"name": "lookup", "arguments": '{"city":'},
+        }]}}]},
+        {"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": None, "function": {"name": None, "arguments": '"Beijing"}'},
+        }]}}]},
+        {"choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "function": {"name": None, "arguments": None},
+        }]}, "finish_reason": "tool_calls"}]},
+    ), chat_request(tools=[TOOL]), stream=True)
+    result = events[-1].result
+    assert result.status == "requires_action"
+    call = result.output[0]
+    assert call["call_id"] == tool_call_id("remote-call")
+    assert call["name"] == "lookup" and call["arguments"] == {"city": "Beijing"}
+    assert "".join(event.delta for event in events if event.kind == Kind.TOOL_ARGUMENTS_DELTA) == '{"city":"Beijing"}'
+    assert [event.item for event in events if event.kind == Kind.TOOL_COMPLETED] == [call]
 
 
 @pytest.mark.parametrize("frames", [

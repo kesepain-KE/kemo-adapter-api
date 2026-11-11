@@ -120,7 +120,31 @@ def openai_messages(request, context, *, responses=False, media_inputs=False):
             # Persisted opaque state needs a protocol-specific implementation.
             if item.provider_state:
                 raise unsupported("当前适配器未声明持久化推理状态")
-    return result
+    if responses:
+        return result
+
+    # Chat requires all tool results immediately after their assistant turn.
+    ordered, deferred, pending = [], [], set()
+    for msg in result:
+        if msg.get("tool_calls"):
+            if pending:
+                tool_turn["tool_calls"].extend(msg["tool_calls"])
+            else:
+                tool_turn = msg
+                ordered.append(msg)
+            pending.update(call["id"] for call in msg["tool_calls"])
+        elif msg["role"] == "tool":
+            ordered.append(msg)
+            pending.discard(msg["tool_call_id"])
+            if not pending:
+                ordered.extend(deferred)
+                deferred.clear()
+        elif pending:
+            deferred.append(msg)
+        else:
+            ordered.append(msg)
+    ordered.extend(deferred)
+    return ordered
 
 
 def selected_tools(request):
