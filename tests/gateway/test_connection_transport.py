@@ -36,6 +36,8 @@ def test_transport_errors_keep_safe_type_and_phase(exception, code):
                 await transport.json(upstream, "/chat/completions", {}, body={})
             error = caught.value.error
             assert error.code == code
+            if code == "PROVIDER_TIMEOUT":
+                assert error.message == "上游请求超时"
             assert error.details["transport_exception"] == exception.__name__
             assert error.details["transport_phase"] == "response_headers"
             assert SECRET not in error.model_dump_json()
