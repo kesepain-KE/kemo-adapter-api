@@ -119,7 +119,14 @@ class Router:
 
     def credentials(self, upstream):
         now = time.monotonic()
-        enabled = [c for c in upstream.credentials if c.enabled and (
+        configured = [c for c in upstream.credentials if c.enabled]
+        if len(configured) == 1:
+            credential = configured[0]
+            health = self._credential_health.get((upstream.id, credential.id), {})
+            if health.get("encrypted") == credential.encrypted:
+                health["until"] = 0
+            return configured
+        enabled = [c for c in configured if (
             (health := self._credential_health.get((upstream.id, c.id), {})).get("encrypted") != c.encrypted
             or health.get("until", 0) <= now
         )]
@@ -139,13 +146,14 @@ class Router:
         # A transport failure says nothing about whether this credential works.
         if error and status not in {401, 403, 429, 500, 502, 503, 504}:
             return
+        cooldown = generation.options.cooldown_seconds if error and sum(c.enabled for c in upstream.credentials) > 1 else 0
         self._credential_health[(upstream.id, credential.id)] = {
             "encrypted": credential.encrypted,
             "status": "healthy" if error is None else "invalid" if status in {401, 403}
-                      else "cooldown" if status == 429 else "unavailable",
+                      else "cooldown" if status == 429 and cooldown else "unavailable",
             "checked_at": utc_now(), "error_code": error.code if error else None,
             "provider_status": status,
-            "until": time.monotonic() + generation.options.cooldown_seconds if error else 0,
+            "until": time.monotonic() + cooldown if cooldown else 0,
         }
 
     def credential_health(self):
@@ -186,20 +194,37 @@ class Router:
                                    else "模型路由冷却中，请稍后重试")
         return error
 
+    def _revive_earliest_credential(self, generation, candidates):
+        now, cooling = time.monotonic(), []
+        for deployment in candidates:
+            upstream = generation.upstreams[deployment.upstream_id]
+            if upstream.auth_scheme == "none":
+                continue
+            for credential in upstream.credentials:
+                if not credential.enabled:
+                    continue
+                health = self._credential_health.get((upstream.id, credential.id), {})
+                if health.get("encrypted") != credential.encrypted or health.get("until", 0) <= now:
+                    return None
+                cooling.append((health["until"], deployment, upstream, credential))
+        if not cooling:
+            return None
+        _, deployment, upstream, credential = min(cooling, key=lambda item: item[0])
+        # Release one path for a real attempt; do not mark an untested key healthy.
+        self._credential_health[(upstream.id, credential.id)]["until"] = 0
+        self._cooldown.pop(deployment.id, None)
+        return deployment, upstream, credential
+
     def plan(self, route, context):
         generation = route.generation
         candidates = [d for d in generation.deployments if d.public_model == route.model and d.enabled
                       and generation.upstreams[d.upstream_id].enabled]
+        for deployment in candidates:
+            upstream = generation.upstreams[deployment.upstream_id]
+            if upstream.auth_scheme != "none" and sum(c.enabled for c in upstream.credentials) == 1:
+                self._cooldown.pop(deployment.id, None)
         now = time.monotonic()
         available = [d for d in candidates if self._cooldown.get(d.id, 0) <= now]
-        if not available:
-            raise self._unavailable_error(generation, candidates, "NO_HEALTHY_DEPLOYMENT")
-        try:
-            self.keys.admit(context, generation.models[route.model], available, generation.options.max_attempts)
-        except KeyPolicyError as exc:
-            from core.models import ErrorObject
-            raise ProviderException(ErrorObject(type="rate_limit_error", code="RATE_LIMITED",
-                                                message=str(exc), retryable=False)) from None
         plan = []
         for priority in sorted({d.priority for d in available}, reverse=True):
             remaining = [d for d in available if d.priority == priority]
@@ -212,7 +237,18 @@ class Router:
                     credentials = [None]
                 plan.extend((selected, upstream, c) for c in credentials)
         if not plan:
-            raise self._unavailable_error(generation, candidates, "NO_UPSTREAM_CREDENTIAL")
+            revived = self._revive_earliest_credential(generation, candidates)
+            if revived is None:
+                reason = "NO_UPSTREAM_CREDENTIAL" if available else "NO_HEALTHY_DEPLOYMENT"
+                raise self._unavailable_error(generation, candidates, reason)
+            plan = [revived]
+            available = [revived[0]]
+        try:
+            self.keys.admit(context, generation.models[route.model], available, generation.options.max_attempts)
+        except KeyPolicyError as exc:
+            from core.models import ErrorObject
+            raise ProviderException(ErrorObject(type="rate_limit_error", code="RATE_LIMITED",
+                                                message=str(exc), retryable=False)) from None
         return plan[:generation.options.max_attempts]
 
     def headers(self, generation, upstream, credential):
@@ -244,7 +280,9 @@ class Router:
 
     def failed(self, generation, deployment, error, credential=None):
         if error.provider_status in {500, 502, 503, 504} or error.provider_status == 429 and credential is None:
-            self._cooldown[deployment.id] = time.monotonic() + generation.options.cooldown_seconds
+            upstream = generation.upstreams[deployment.upstream_id]
+            if credential is None or sum(c.enabled for c in upstream.credentials) > 1:
+                self._cooldown[deployment.id] = time.monotonic() + generation.options.cooldown_seconds
 
     async def call(self, route, method, request, context):
         generation = route.generation
@@ -287,6 +325,7 @@ class Router:
                 except TimeoutError:
                     media_output = method == "execute" and bool(set(request.output.modalities) - {"text"})
                     error = upstream_error(code="UPSTREAM_TIMEOUT", retryable=not media_output).error
+                    error.details.update(timeout_scope="total", timeout_seconds=upstream.timeout)
                     last = ProviderException(error)
                     self.record_credential(generation, upstream, credential, error)
                     if media_output:
@@ -350,6 +389,7 @@ class Router:
                 raise
             except TimeoutError:
                 error = upstream_error(code="UPSTREAM_TIMEOUT").error
+                error.details.update(timeout_scope="total", timeout_seconds=upstream.timeout)
                 self.record_credential(generation, upstream, credential, error)
                 raise ProviderException(error) from None
             except asyncio.CancelledError:
