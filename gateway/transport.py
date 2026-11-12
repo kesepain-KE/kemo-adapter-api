@@ -24,6 +24,7 @@ def upstream_error(status: int | None = None, code="UPSTREAM_ERROR", *, retryabl
                  } else
                  "PROVIDER_BAD_RESPONSE")
     message = {"NO_UPSTREAM_CREDENTIAL": "没有可用的上游凭据",
+               "UPSTREAM_TIMEOUT": "上游请求超时",
                "NO_HEALTHY_DEPLOYMENT": "没有可用的模型路由"}.get(
                    code, "上游请求失败" if status else "上游连接失败",
                )
