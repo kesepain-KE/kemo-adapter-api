@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -256,7 +257,11 @@ class Store:
         if row is None:
             return None
         body = zlib.decompress(row[0]) if isinstance(row[0], bytes) else row[0]
-        return yaml.safe_load(body)
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            # Older installations stored uncompressed YAML details.
+            return yaml.safe_load(body)
 
     def close(self):
         with self._lock:
