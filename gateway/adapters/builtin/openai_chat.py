@@ -201,7 +201,7 @@ class OpenAIChat(DiscoverableAdapter):
     async def stream(self, request, context, model, upstream, headers):
         msg_id, reasoning_id = identifier("msg"), identifier("rs")
         text, reasoning, refusal, calls = "", "", "", {}
-        usage, finished, provider_id, refusal_closed = Usage(), None, None, False
+        usage, finished, provider_id = None, None, None
         async with aclosing(self._events(request, context, model, upstream, headers)) as events:
             async for raw in events:
                 provider_id = raw.get("id", provider_id)
@@ -209,10 +209,6 @@ class OpenAIChat(DiscoverableAdapter):
                     raise upstream_error(code="UPSTREAM_STREAM_ERROR")
                 if raw.get("usage"):
                     usage = self.usage(raw["usage"])
-                    if refusal and not refusal_closed:
-                        yield Event(Kind.REFUSAL_DONE, item_id=msg_id, text=refusal)
-                        refusal_closed = True
-                    yield Event(Kind.USAGE, usage=usage)
                 for choice in raw.get("choices", []):
                     if choice.get("index", 0) != 0:
                         raise upstream_error(code="UPSTREAM_UNEXPECTED_CHOICE")
@@ -245,12 +241,17 @@ class OpenAIChat(DiscoverableAdapter):
                     finished = choice.get("finish_reason") or finished
         if finished is None:
             raise upstream_error(code="UPSTREAM_TRUNCATED_STREAM")
-        if refusal and not refusal_closed:
+        if refusal:
             yield Event(Kind.REFUSAL_DONE, item_id=msg_id, text=refusal)
+        # Some compatible upstreams attach cumulative usage to every chunk.
+        # Publish the latest snapshot after content ends: usage closes text
+        # blocks in the unified protocol, so an early update cuts off deltas.
+        if usage is not None:
+            yield Event(Kind.USAGE, usage=usage)
         result = self.result({"message": {
             "content": text, "reasoning_content": reasoning, "refusal": refusal,
             "tool_calls": list(calls.values()),
-        }, "finish_reason": finished}, usage, provider_id, msg_id=msg_id)
+        }, "finish_reason": finished}, usage or Usage(), provider_id, msg_id=msg_id)
         for item in result.output:
             if item["type"] == "reasoning":
                 item["id"] = reasoning_id
