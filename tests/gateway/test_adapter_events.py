@@ -179,6 +179,52 @@ def test_refusal_events_match_terminal_message(tmp_path, monkeypatch, adapter):
     assert all(done["sequence"] < event["sequence"] for event in events if event["type"] == "usage.updated")
 
 
+@pytest.mark.parametrize("field,parts", [
+    ("content", ["π", "0 的中文版", "转换完成。"]),
+    ("refusal", ["Cannot ", "comply ", "with this request."]),
+])
+def test_openai_chat_per_chunk_usage_does_not_close_content_early(tmp_path, monkeypatch, field, parts):
+    frames = [{
+        "id": "remote",
+        "choices": [],
+        "usage": {"prompt_tokens": 17, "completion_tokens": 0},
+    }]
+    frames.extend({
+        "id": "remote",
+        "choices": [{"index": 0, "delta": {field: part}, "finish_reason": None}],
+        "usage": {"prompt_tokens": 17, "completion_tokens": index},
+    } for index, part in enumerate(parts, start=1))
+    frames.append({
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 17, "completion_tokens": 5},
+    })
+    body = "".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
+    with instance(tmp_path, monkeypatch, lambda _: httpx.Response(
+        200, text=body, headers={"content-type": "text/event-stream"},
+    )) as (client, _):
+        from tests.support.gateway import invoke
+        add_upstream(client, auth_scheme="none")
+        register(client)
+        events = decode_events(invoke(client, key(client)["token"], stream=True))
+    terminal = events[-1]["response"]
+    assert terminal["status"] == "completed", terminal
+    prefix = "output_text" if field == "content" else "output_refusal"
+    deltas = [event for event in events if event["type"] == prefix + ".delta"]
+    done = [event for event in events if event["type"] == prefix + ".done"]
+    assert [event["delta"] for event in deltas] == parts
+    assert len(done) == 1 and done[0]["text"] == "".join(parts)
+    usage = [event for event in events if event["type"] == "usage.updated"]
+    assert len(usage) == 1
+    assert deltas[-1]["sequence"] < done[0]["sequence"] < usage[0]["sequence"]
+    assert usage[0]["usage"]["output_tokens"] == terminal["usage"]["output_tokens"] == 5
+    assert terminal["usage"]["input_tokens"] == 17
+    message = next(item for item in terminal["output"] if item["type"] == "message")
+    if field == "content":
+        assert message["content"][0]["text"] == "".join(parts)
+    else:
+        assert message["refusal"] == "".join(parts)
+
+
 def test_long_tool_arguments_are_visible_before_upstream_finishes():
     class Chunks(httpx.AsyncByteStream):
         finished = False
