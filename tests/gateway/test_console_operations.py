@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import asyncio
+import time
 import zlib
 
 import httpx
@@ -167,12 +168,9 @@ def test_transport_failure_does_not_cool_the_only_credential(tmp_path, monkeypat
         assert SECRET not in json.dumps(detail)
 
 
-@pytest.mark.parametrize("status,reason", [
-    (401, "NO_UPSTREAM_CREDENTIAL"),
-    (429, "NO_UPSTREAM_CREDENTIAL"),
-    (503, "NO_HEALTHY_DEPLOYMENT"),
-])
-def test_cooldown_reports_wait_and_recovers_after_expiry(tmp_path, monkeypatch, status, reason):
+@pytest.mark.parametrize("status", [401, 403, 429, 503])
+@pytest.mark.parametrize("stream", [False, True])
+def test_single_enabled_credential_is_not_cooled(tmp_path, monkeypatch, status, stream):
     calls = []
 
     def handler(request):
@@ -182,20 +180,109 @@ def test_cooldown_reports_wait_and_recovers_after_expiry(tmp_path, monkeypatch, 
     with instance(tmp_path, monkeypatch, handler) as (client, app):
         add_upstream(client)
         register(client)
+        assert mutate(client, "/upstreams/local", {"keys": [
+            {"id": "primary"}, {"id": "disabled", "value": "unused-reserve", "enabled": False},
+        ]}, method="PATCH").is_success
+        token = create_key(client)["token"]
+        failed = invoke(client, token, "req_single_failure", stream=stream)
+        if stream:
+            assert "response.failed" in failed.text
+        else:
+            assert failed.json()["status"] == "failed"
+        health = state(client)["credential_health"]["local"]["primary"]
+        assert health["provider_status"] == status
+        assert health["cooldown_seconds"] == 0
+        assert health["status"] != "cooldown"
+        assert not app.state.registry.router.health()
+        recovered = invoke(client, token, "req_single_retry").json()
+        assert recovered["status"] == "completed"
+        assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", [401, 429, 503])
+@pytest.mark.parametrize("single_remaining", [False, True])
+def test_all_cooled_credentials_revive_the_earliest_one(tmp_path, monkeypatch, status, single_remaining):
+    used = []
+
+    def handler(request):
+        used.append(request.headers["Authorization"].removeprefix("Bearer "))
+        return httpx.Response(status if len(used) <= 3 else 200, json=chat_response())
+
+    with instance(tmp_path, monkeypatch, handler) as (client, app):
+        add_upstream(client)
+        register(client)
+        assert mutate(client, "/upstreams/local", {"keys": [
+            {"id": "primary", "priority": 20},
+            {"id": "backup", "value": "backup-secret", "priority": 10},
+            {"id": "reserve", "value": "reserve-secret", "priority": 0},
+        ]}, method="PATCH").is_success
+        token = create_key(client)["token"]
+        assert invoke(client, token, "req_all_cooldown_start").json()["status"] == "failed"
+        assert used == [SECRET, "backup-secret", "reserve-secret"]
+        router = app.state.registry.router
+        now = time.monotonic()
+        for identity, delay in (("primary", 30), ("backup", 10), ("reserve", 20)):
+            router._credential_health[("local", identity)]["until"] = now + delay
+        if single_remaining:
+            assert mutate(client, "/upstreams/local", {"keys": [
+                {"id": "primary", "enabled": False},
+                {"id": "backup"},
+                {"id": "reserve", "enabled": False},
+            ]}, method="PATCH").is_success
+        recovered = invoke(client, token, "req_all_cooldown_retry").json()
+        assert recovered["status"] == "completed", recovered
+        assert used == [SECRET, "backup-secret", "reserve-secret", "backup-secret"]
+        assert router._credential_health[("local", "backup")]["until"] == 0
+        assert router._credential_health[("local", "primary")]["until"] > now
+        assert router._credential_health[("local", "reserve")]["until"] > now
+        assert not router.health()
+
+
+def test_revived_credential_failure_does_not_loop_in_a_stream(tmp_path, monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json=chat_response())
+
+    with instance(tmp_path, monkeypatch, handler) as (client, _):
+        add_upstream(client)
+        register(client)
+        assert mutate(client, "/upstreams/local", {"keys": [
+            {"id": "primary"}, {"id": "reserve", "value": "reserve-secret"},
+        ]}, method="PATCH").is_success
+        token = create_key(client)["token"]
+        assert invoke(client, token, "req_cool_both").json()["status"] == "failed"
+        assert len(calls) == 2
+        retry = invoke(client, token, "req_revive_stream", stream=True)
+        assert "response.failed" in retry.text
+        assert "RATE_LIMITED" in retry.text
+        assert len(calls) == 3
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_unauthenticated_route_cooldown_reports_wait_and_recovers(tmp_path, monkeypatch, status):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status if len(calls) == 1 else 200, json=chat_response())
+
+    with instance(tmp_path, monkeypatch, handler) as (client, app):
+        add_upstream(client, auth_scheme="none")
+        register(client)
         token = create_key(client)["token"]
         assert invoke(client, token, "req_cooldown_start").json()["status"] == "failed"
         blocked = invoke(client, token, "req_during_cooldown").json()
         assert blocked["status"] == "failed"
         error = blocked["error"]
-        assert error["details"]["reason"] == reason
+        assert error["details"]["reason"] == "NO_HEALTHY_DEPLOYMENT"
         assert error["code"] == "PROVIDER_UNAVAILABLE"
         assert error["retryable"] is True
         assert 29_000 <= error["retry_after_ms"] <= 30_000
         assert "冷却" in error["message"]
         assert len(calls) == 1
         router = app.state.registry.router
-        for health in router._credential_health.values():
-            health["until"] -= 31
         for identity in router._cooldown:
             router._cooldown[identity] -= 31
         recovered = invoke(client, token, "req_after_cooldown").json()
@@ -295,6 +382,40 @@ def test_stream_trace_first_token_complete_sse_and_estimated_usage(tmp_path, mon
             assert body["response"]["output"][0]["content"][0]["text"] == "Hello world"
 
 
+def test_reasoning_stream_total_timeout_preserves_details_and_closes_upstream(tmp_path, monkeypatch):
+    closed = []
+
+    class ReasoningBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            frame = {"choices": [{"index": 0, "delta": {"reasoning_content": "still thinking"}}]}
+            while True:
+                yield ("data: " + json.dumps(frame) + "\n\n").encode()
+                await asyncio.sleep(.01)
+
+        async def aclose(self):
+            closed.append(True)
+
+    with instance(tmp_path, monkeypatch, lambda _: httpx.Response(200, stream=ReasoningBody())) as (client, _):
+        add_upstream(client)
+        register(client)
+        assert mutate(client, "/upstreams/local", {"timeout": .1}, method="PATCH").status_code == 200
+        response = invoke(client, create_key(client)["token"], "req_reasoning_timeout",
+                          text="prompt with DEL \x7f", stream=True)
+        assert response.status_code == 200 and "response.failed" in response.text
+        item = client.get("/admin/api/logs").json()["items"][0]
+        assert item["status"] == "failed" and item["error_code"] == "PROVIDER_TIMEOUT"
+        detail_response = client.get(f"/admin/api/logs/{item['request_id']}/1")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()["detail"]
+        error = detail["response"]["error"]
+        assert error["message"] == "上游请求超时"
+        assert error["details"] == {"reason": "UPSTREAM_TIMEOUT", "timeout_scope": "total", "timeout_seconds": .1}
+        exchange = detail["upstream_exchanges"][0]
+        assert exchange["status"] == 200 and exchange["complete"] is False
+        assert "still thinking" in exchange["response"]
+        assert closed == [True]
+
+
 def test_concurrent_attempt_traces_do_not_mix_requests(tmp_path, monkeypatch):
     async def handler(request):
         import asyncio
@@ -338,7 +459,7 @@ def test_stream_trace_can_be_closed_by_another_async_context():
 
 @pytest.mark.parametrize("status", [200, 401])
 def test_body_preserved_in_admin_trace_with_credentials_redacted(tmp_path, monkeypatch, status):
-    error = SECRET + " upstream diagnostic " * 500
+    error = SECRET + "\x7f" + " upstream diagnostic " * 500
     def handler(_):
         return httpx.Response(status, json=chat_response(error)) if status == 200 else httpx.Response(status, text=error)
     with instance(tmp_path, monkeypatch, handler) as (client, _):
@@ -372,7 +493,7 @@ def test_body_retention_keeps_historical_summary(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("encoding", ["yaml", "json", "compressed"])
 def test_detail_storage_reads_legacy_and_compressed_bodies_after_reopen(tmp_path, encoding):
-    detail = {"request": {"text": "中文日志\n" * 200}, "response": {"text": "完整响应"}}
+    detail = {"request": {"text": "中文日志\n" * 200 + "\x7f"}, "response": {"text": "完整响应\x85\x9f"}}
     body = dump(detail) if encoding == "yaml" else json.dumps(detail, ensure_ascii=False)
     if encoding == "compressed":
         body = zlib.compress(body.encode("utf-8"))
