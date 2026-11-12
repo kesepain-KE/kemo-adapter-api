@@ -168,10 +168,12 @@ def test_status_reports_routes_disabled_models_and_credential_cooldowns_without_
         assert mutate(client, "/models/disabled-model", {"enabled": False}, method="PATCH").is_success
         assert mutate(client, "/upstreams/local", {
             "base_url": "http://127.0.0.1:8881/private-upstream-url",
+            "keys": [{"id": "primary"}, {"id": "reserve", "value": "private-reserve-key"}],
             "headers": {"X-Private": "private-header-value"},
             "profile": {"extra_body": {"private": "private-body-value"}},
             "note": "private-upstream-note",
         }, method="PATCH").is_success
+        assert mutate(client, "/settings", {"max_attempts": 1}, method="PATCH").is_success
         invoke(client, key(client)["token"], identity="req_status_failure")
         response = client.get("/status", headers=STATUS_HEADERS)
         assert response.status_code == 200, response.text
@@ -189,7 +191,7 @@ def test_status_reports_routes_disabled_models_and_credential_cooldowns_without_
         assert any(not item["enabled"] for item in payload["routing"]["models"])
         for secret in (
             "fake-upstream-key-for-offline-tests", "private-upstream-url", "private-header-value",
-            "private-body-value", "private-upstream-note", "private-upstream-error",
+            "private-body-value", "private-upstream-note", "private-upstream-error", "private-reserve-key",
         ):
             assert secret not in response.text
 
