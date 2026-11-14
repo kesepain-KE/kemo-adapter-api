@@ -20,10 +20,10 @@ class OpenAIFiles(OpenAIResponses):
         usage_semantics=OpenAIResponses.manifest.usage_semantics,
     )
 
-    def encode(self, request, context, model, stream=False):
+    def encode(self, request, context, model, upstream, stream=False):
         if request.metadata.get("capability") not in {None, "conversation"}:
             raise unsupported("文件生成使用 conversation；生成文件需包含 file 输出模态")
-        body = super().encode(request, context, model, stream=stream)
+        body = super().encode(request, context, model, upstream, stream=stream)
         if "file" in request.output.modalities:
             body["tools"] = [{"type": "code_interpreter", "container": {"type": "auto"}}]
             body["tool_choice"] = "required"
@@ -37,7 +37,7 @@ class OpenAIFiles(OpenAIResponses):
         return body
 
     async def execute(self, request, context, model, upstream, headers):
-        raw = await self.transport.json(upstream, "/responses", headers, body=self.encode(request, context, model))
+        raw = await self.transport.json(upstream, "/responses", headers, body=self.encode(request, context, model, upstream))
         if raw.get("status") not in {"completed", "incomplete"}:
             raise upstream_error(code="UPSTREAM_INVALID_RESPONSE", retryable=False)
         complete = self.result(raw)

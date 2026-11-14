@@ -8,18 +8,31 @@ from gateway.transport import upstream_error
 
 
 class OpenAIResponses(DiscoverableAdapter):
+    default_reasoning_effort_map = {effort: effort for effort in ("minimal", "low", "medium", "high", "xhigh", "max")}
+    reasoning_styles = ("effort", "thinking_adaptive", "thinking_between_tools")
     manifest = AdapterManifest(
         id="openai-responses", name="OpenAI Responses", operations=("llm",), streaming=True,
         usage_semantics="input includes cache; output includes reasoning",
         endpoints={"llm": "/responses", "discovery": "/models"},
-        version="1.1.0", media={"input": ("text", "image", "file")}, structured_output=True,
+        version="1.2.0", media={"input": ("text", "image", "file")}, structured_output=True,
         reasoning_returns=("none", "summary", "auto"),
-        reasoning_levels=("minimal", "low", "medium", "high", "xhigh", "max"),
+        reasoning_levels=tuple(default_reasoning_effort_map),
         body_fields=("model", "input", "stream", "store", "max_output_tokens", "temperature", "top_p",
-                     "tools", "tool_choice", "parallel_tool_calls", "text", "reasoning"),
+                     "tools", "tool_choice", "parallel_tool_calls", "text", "reasoning", "thinking"),
+        config_schema={
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "reasoning_effort_map": {"type": "object", "additionalProperties": {"type": "string"}},
+                "reasoning_style": {"enum": list(reasoning_styles)},
+            },
+        },
     )
 
-    def encode(self, request, context, model, stream=False):
+    @classmethod
+    def reasoning_efforts(cls, upstream):
+        return upstream.profile.get("reasoning_effort_map", cls.default_reasoning_effort_map)
+
+    def encode(self, request, context, model, upstream, stream=False):
         body = {"model": model, "input": openai_messages(request, context, responses=True, media_inputs=True),
                 "stream": stream, "store": False}
         for name in ("max_output_tokens", "temperature", "top_p"):
@@ -37,9 +50,17 @@ class OpenAIResponses(DiscoverableAdapter):
             if config.type == "json_schema":
                 body["text"]["format"].update(name=config.schema_name, schema=config.schema_, strict=config.strict)
         if request.reasoning and request.reasoning.enabled:
-            body["reasoning"] = {"effort": request.reasoning.effort}
+            effort = self.reasoning_efforts(upstream)[request.reasoning.effort]
+            style = upstream.profile.get("reasoning_style", "effort")
+            if style == "effort":
+                body["reasoning"] = {"effort": effort}
+            else:
+                body["thinking"] = {
+                    "type": "adaptive" if style == "thinking_adaptive" else "between_tools",
+                    "effort": effort,
+                }
             if request.reasoning.return_mode in {"summary", "auto"}:
-                body["reasoning"]["summary"] = "auto"
+                body.setdefault("reasoning", {})["summary"] = "auto"
         return body
 
     @staticmethod
@@ -81,14 +102,14 @@ class OpenAIResponses(DiscoverableAdapter):
         return ProviderResult(status, output, usage, raw.get("id"), incomplete_details=incomplete)
 
     async def execute(self, request, context, model, upstream, headers):
-        raw = await self.transport.json(upstream, "/responses", headers, body=self.encode(request, context, model))
+        raw = await self.transport.json(upstream, "/responses", headers, body=self.encode(request, context, model, upstream))
         if raw.get("status") not in {"completed", "incomplete"}:
             raise upstream_error(code="UPSTREAM_INVALID_RESPONSE")
         return self.result(raw)
 
     async def stream(self, request, context, model, upstream, headers):
         ids, items, result = {}, {}, None
-        async for event in self.transport.events(upstream, "/responses", headers, self.encode(request, context, model, True)):
+        async for event in self.transport.events(upstream, "/responses", headers, self.encode(request, context, model, upstream, True)):
             kind = event.get("type")
             raw_id = event.get("item_id")
             if kind in {"response.output_item.added", "response.output_item.done"}:

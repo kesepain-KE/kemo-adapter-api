@@ -225,6 +225,36 @@ def test_responses_reasoning_request_and_summary_round_trip(stream, phase):
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("style,reasoning,expected", [
+    ("effort", {"enabled": True, "effort": "high", "return": "none"},
+     {"reasoning": {"effort": "provider-high"}}),
+    ("thinking_adaptive", {"enabled": True, "effort": "high", "return": "auto"},
+     {"thinking": {"type": "adaptive", "effort": "provider-high"}, "reasoning": {"summary": "auto"}}),
+    ("thinking_adaptive", {"enabled": True, "effort": "high", "return": "none"},
+     {"thinking": {"type": "adaptive", "effort": "provider-high"}}),
+    ("thinking_between_tools", {"enabled": True, "effort": "high", "return": "summary"},
+     {"thinking": {"type": "between_tools", "effort": "provider-high"}, "reasoning": {"summary": "auto"}}),
+    ("thinking_adaptive", {"enabled": False}, {}),
+    ("thinking_between_tools", None, {}),
+])
+def test_responses_reasoning_profile_reaches_both_transports(stream, style, reasoning, expected):
+    upstream = replace(UPSTREAM, profile=freeze({
+        "reasoning_style": style, "reasoning_effort_map": {"high": "provider-high"},
+    }))
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert {key: body[key] for key in ("reasoning", "thinking") if key in body} == expected
+        raw = {"id": "remote", "status": "completed", "output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "hello"}]},
+        ]}
+        return sse({"type": "response.completed", "response": raw}) if stream else httpx.Response(200, json=raw)
+
+    result = invoke(OpenAIResponses, handler, chat_request(reasoning=reasoning), upstream=upstream, stream=stream)
+    assert (result[-1].result if stream else result).status == "completed"
+
+
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(("kind", "status", "phase"), [
     ("answer", "completed", "final_answer"),
     ("refusal", "completed", "final_answer"),
