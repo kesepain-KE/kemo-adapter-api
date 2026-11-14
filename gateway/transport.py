@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 import ipaddress
 import json
@@ -14,6 +15,15 @@ from core.models import ErrorObject
 from core.provider_contract import ProviderException
 from gateway.tracing import current_trace
 from gateway.domain import ConfigurationError
+
+
+def thaw(value):
+    """Convert deep-frozen runtime values back to JSON-compatible containers."""
+    if isinstance(value, Mapping):
+        return {key: thaw(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thaw(item) for item in value]
+    return value
 
 
 def upstream_error(status: int | None = None, code="UPSTREAM_ERROR", *, retryable: bool | None = None) -> ProviderException:
@@ -114,11 +124,11 @@ class Transport:
         url = httpx.URL(base_url + path)
         profile = upstream.profile
         if body is not None:
-            extra_body = profile.get("extra_body", {})
+            extra_body = thaw(profile.get("extra_body", {}))
             if set(extra_body) & set(body):
                 raise ConfigurationError("EXTRA_BODY_CONFLICT", "profile.extra_body", "extra_body 与请求字段冲突")
             body = {**body, **extra_body}
-        extra_query = dict(profile.get("extra_query", {}))
+        extra_query = thaw(profile.get("extra_query", {}))
         if set(extra_query) & set(url.params):
             raise ConfigurationError("EXTRA_QUERY_CONFLICT", "profile.extra_query", "extra_query 与请求参数冲突")
         url = url.copy_merge_params(extra_query).copy_merge_params(getattr(headers, "query", {}))

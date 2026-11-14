@@ -95,6 +95,7 @@ def test_response_body_disconnect_keeps_phase_and_closes_stream(stream):
 ])
 def test_connection_auth_and_extra_parameters_reach_wire(tmp_path, monkeypatch, stream, scheme, adapter, header):
     seen = []
+    options = {"sources": ["offline", {"language": "中文"}], "filters": {"enabled": True}}
 
     def handler(request):
         seen.append(request)
@@ -105,6 +106,7 @@ def test_connection_auth_and_extra_parameters_reach_wire(tmp_path, monkeypatch, 
             assert request.url.params["key"] == SECRET
             assert "x-goog-api-key" not in request.headers
         assert json.loads(request.content)["enable_search"] is True
+        assert json.loads(request.content)["search_options"] == options
         if adapter == "gemini":
             raw = {"candidates": [{"content": {"parts": [{"text": "hello"}]}, "finishReason": "STOP"}]}
             frames = [raw]
@@ -117,7 +119,8 @@ def test_connection_auth_and_extra_parameters_reach_wire(tmp_path, monkeypatch, 
     with instance(tmp_path, monkeypatch, handler) as (client, app):
         add_upstream(client, adapter=adapter, auth_scheme=scheme)
         assert mutate(client, "/upstreams/local", {"profile": {
-            "extra_body": {"enable_search": True}, "extra_query": {"api-version": "offline"},
+            "extra_body": {"enable_search": True, "search_options": options},
+            "extra_query": {"api-version": "offline"},
         }}, method="PATCH").status_code == 200
         register(client)
         from tests.support.gateway import invoke, key
@@ -128,16 +131,18 @@ def test_connection_auth_and_extra_parameters_reach_wire(tmp_path, monkeypatch, 
             app.state.registry.store.attempts(1)[0]["request_id"], 1,
         )
         assert SECRET not in json.dumps(detail)
+        assert detail["upstream_exchanges"][0]["request"]["search_options"] == options
 
 
-@pytest.mark.parametrize("profile,field", [
-    ({"extra_body": {"model": "wrong"}}, "profile.extra_body"),
-    ({"extra_body": {"temperature": 1}}, "profile.extra_body"),
-    ({"extra_query": {"key": "secret"}}, "profile.extra_query"),
+@pytest.mark.parametrize("adapter,profile,field", [
+    ("openai-chat", {"extra_body": {"model": "wrong"}}, "profile.extra_body"),
+    ("openai-chat", {"extra_body": {"temperature": 1}}, "profile.extra_body"),
+    ("openai-chat", {"extra_query": {"key": "secret"}}, "profile.extra_query"),
+    ("openai-responses", {"extra_body": {"thinking": {"type": "adaptive"}}}, "profile.extra_body"),
 ])
-def test_conflicting_parameters_rejected_when_saved(tmp_path, monkeypatch, profile, field):
+def test_conflicting_parameters_rejected_when_saved(tmp_path, monkeypatch, adapter, profile, field):
     with instance(tmp_path, monkeypatch) as (client, _):
-        add_upstream(client)
+        add_upstream(client, adapter=adapter)
         before = state(client)["revision"]
         response = mutate(client, "/upstreams/local", {"profile": profile}, method="PATCH")
         assert response.status_code == 422
