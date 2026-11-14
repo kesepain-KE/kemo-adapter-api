@@ -73,12 +73,12 @@ class ModelProbe:
         )
         self.media_operation = self.primary_check if self.primary_check not in {"llm", "text", "embedding", "rerank"} else None
 
-    def request(self, text="Reply with OK.", **fields):
+    def request(self, text="Reply with OK.", generation=None, **fields):
         return KemoRequest.create(
             model=self.deployment.public_model, stream=False,
             input=[{"type": "message", "id": "msg_probe", "role": "user",
                     "content": [{"type": "text", "text": text}]}],
-            generation={"max_output_tokens": 128}, **fields,
+            generation={"max_output_tokens": 128, **(generation or {})}, **fields,
         )
 
     async def call(self, name, request, *, method="execute", accept, stream_report=None):
@@ -469,18 +469,32 @@ class ModelProbe:
                 "parameters": {"type": "object", "properties": {"value": {"type": "string"}},
                                "required": ["value"], "additionalProperties": False}, "strict": False,
             }
+            def single(value):
+                return any(item["type"] == "tool_call" and item.get("name") == "kemo_capability_probe"
+                           and item.get("arguments") == {"value": "ok"} for item in value.output)
+
             result = await self.call(
                 "tools", self.request(
                     "Call kemo_capability_probe with value ok.",
                     tools=[tool],
-                    tool_choice={"mode": "named", "name": "kemo_capability_probe"}, parallel_tool_calls=False,
+                    tool_choice={"mode": "auto"}, parallel_tool_calls=False,
                 ),
-                accept=lambda value: any(item["type"] == "tool_call" and item.get("name") == "kemo_capability_probe"
-                                         and item.get("arguments") == {"value": "ok"} for item in value.output),
+                accept=single,
             )
             if result is not None:
+                modes = ["auto", "none"]
+                named = await self.call(
+                    "tools.tool_choice.named", self.request(
+                        "Call kemo_capability_probe with value ok.",
+                        tools=[tool], tool_choice={"mode": "named", "name": "kemo_capability_probe"},
+                        parallel_tool_calls=False,
+                    ),
+                    accept=single,
+                )
+                if named is not None:
+                    modes.append("named")
                 caps["tools"] = {"function_calling": True, "parallel_calls": False,
-                                 "tool_choice_modes": ["auto", "none", "named"]}
+                                 "tool_choice_modes": modes}
                 parallel = await self.call(
                     "tools.parallel_calls", self.request(
                         "Call kemo_capability_probe twice in the same response: once with value first, "
@@ -525,8 +539,12 @@ class ModelProbe:
             for effort in candidates:
                 result = await self.call(
                     "reasoning." + effort,
-                    self.request("What is 17 times 19? Reply briefly.",
-                                 reasoning={"enabled": True, "effort": effort, "return": "auto"}),
+                    self.request(
+                        "A farmer has 17 sheep. All but 9 run away. Then he buys twice as many as remain, "
+                        "and sells one third of the total. Explain each step, then give the final count.",
+                        generation={"max_output_tokens": 1024},
+                        reasoning={"enabled": True, "effort": effort, "return": "auto"},
+                    ),
                     accept=lambda value: bool(value.usage.reasoning_tokens) or any(
                         item["type"] == "reasoning" for item in value.output),
                 )

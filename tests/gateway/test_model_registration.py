@@ -79,10 +79,12 @@ def test_selected_model_is_probed_registered_and_editable(tmp_path, monkeypatch)
         assert caps["structured_output"]["schema_subset"] == ["json_schema"]
         assert caps["input_modalities"] == ["text", "image"]
         assert caps["limits"] == {"context_window": 65536, "max_output_tokens": 4096}
-        assert len(state(client)["attempts"]) == 14
+        assert len(state(client)["attempts"]) == 15
         assert all(attempt["source"] == "exact" for attempt in state(client)["attempts"])
         report = response.json()["detection"][0]
         assert report["checks"]["vision"]["status"] == "supported"
+        assert report["checks"]["tools.tool_choice.named"]["status"] == "supported"
+        assert report["checks"]["tools.parallel_calls"]["status"] == "unknown"
         assert app.state.registry._references.get(id(app.state.registry.current), 0) == 0
         updated = mutate(client, "/models/detected", {"capabilities": {
             **caps, "limits": {**caps["limits"], "context_window": 32768},
@@ -118,6 +120,7 @@ def test_ignored_options_and_missing_metadata_do_not_invent_capabilities(tmp_pat
                    for effort in ("minimal", "low", "medium", "high", "xhigh", "max"))
 
 
+@pytest.mark.parametrize("named_supported", [False, True])
 @pytest.mark.parametrize("values,expected_status", [
     (["first", "second"], "supported"),
     (["first"], "unknown"),
@@ -125,11 +128,17 @@ def test_ignored_options_and_missing_metadata_do_not_invent_capabilities(tmp_pat
     (None, "unsupported"),
 ])
 def test_parallel_tools_require_two_confirmed_calls_and_reach_public_capabilities(
-    tmp_path, monkeypatch, values, expected_status,
+    tmp_path, monkeypatch, values, expected_status, named_supported,
 ):
+    choices = []
+
     def handler(request):
         if request.method == "POST":
             body = json.loads(request.content)
+            if body.get("tools"):
+                choices.append(body["tool_choice"])
+                if isinstance(body["tool_choice"], dict) and not named_supported:
+                    return httpx.Response(400, json={"error": "Forced tool choice unsupported"})
             if body.get("tools") and body.get("parallel_tool_calls"):
                 assert body["tool_choice"] == "auto"
                 if values is None:
@@ -149,11 +158,15 @@ def test_parallel_tools_require_two_confirmed_calls_and_reach_public_capabilitie
         assert response.status_code == 200, response.text
         checks = response.json()["detection"][0]["checks"]
         assert checks["tools"]["status"] == "supported"
+        assert choices[0] == "auto"
+        assert checks["tools.tool_choice.named"]["status"] == ("supported" if named_supported else "unsupported")
         assert checks["tools.parallel_calls"]["status"] == expected_status
         expected_parallel = expected_status == "supported"
         model = state(client)["models"][0]
         assert model["capabilities"]["tools"]["function_calling"] is True
         assert model["capabilities"]["tools"]["parallel_calls"] is expected_parallel
+        expected_modes = ["auto", "none", "named"] if named_supported else ["auto", "none"]
+        assert model["capabilities"]["tools"]["tool_choice_modes"] == expected_modes
         token = mutate(client, "/keys", {"name": "tool capability reader"}, key=True).json()["token"]
         published = client.get("/model/models/detected/capabilities", headers={
             "Authorization": "Bearer " + token, "X-Kemo-Protocol-Version": "2.0",
@@ -161,6 +174,7 @@ def test_parallel_tools_require_two_confirmed_calls_and_reach_public_capabilitie
         assert published.status_code == 200, published.text
         assert published.json()["tools"]["function_calling"] is True
         assert published.json()["tools"]["parallel_calls"] is expected_parallel
+        assert published.json()["tools"]["tool_choice_modes"] == expected_modes
         generated = client.post("/model/responses", headers={
             "Authorization": "Bearer " + token, "X-Kemo-Protocol-Version": "2.0",
             "Idempotency-Key": "req_tools",
@@ -346,6 +360,83 @@ def test_responses_registration_publishes_native_reasoning_capabilities(tmp_path
         reasoning = state(client)["models"][0]["declaration"]["reasoning"]
         assert reasoning["supported"] is True and reasoning["efforts"] == ["high"]
         assert reasoning["summary"] is True and reasoning["returns"] == ["none", "summary", "auto"]
+
+
+def test_responses_adaptive_profile_probes_and_publishes_reasoning_and_auto_tools(tmp_path, monkeypatch):
+    efforts = ["low", "medium", "high", "xhigh", "max"]
+    seen = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "remote"}]})
+        body = json.loads(request.content)
+        output = []
+        if "thinking" in body:
+            effort = body["thinking"]["effort"]
+            assert body["thinking"] == {"type": "adaptive", "effort": effort}
+            assert body["reasoning"] == {"summary": "auto"}
+            output.append({"type": "reasoning", "summary": [{"type": "summary_text", "text": "consider the steps"}]})
+            if not body.get("tools"):
+                assert body["max_output_tokens"] >= 1024
+                seen.append(effort)
+        if body.get("tools"):
+            if isinstance(body["tool_choice"], dict):
+                return httpx.Response(400, json={"error": "Use auto or none"})
+            assert body["tool_choice"] == "auto"
+            values = ["first", "second"] if body["parallel_tool_calls"] else ["ok"]
+            output.extend({"type": "function_call", "name": "kemo_capability_probe",
+                           "call_id": "probe_" + value, "arguments": json.dumps({"value": value})}
+                          for value in values)
+        else:
+            output.append({"type": "message", "content": [{"type": "output_text", "text": "OK"}]})
+        raw = {"id": "remote", "status": "completed", "output": output}
+        if body["stream"]:
+            frames = [{"type": "response.output_text.delta", "item_id": "msg_remote", "delta": "OK"},
+                      {"type": "response.completed", "response": raw}]
+            return httpx.Response(200, text="".join("data: " + json.dumps(frame) + "\n\n" for frame in frames),
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, json=raw)
+
+    with instance(tmp_path, monkeypatch, handler) as (client, _):
+        add_upstream(client, adapter="openai-responses")
+        saved = mutate(client, "/upstreams/local", {"profile": {
+            "reasoning_style": "thinking_adaptive",
+            "reasoning_effort_map": {effort: effort for effort in efforts},
+        }}, method="PATCH")
+        assert saved.status_code == 200, saved.text
+        response = automatic_registration(client)
+        assert response.status_code == 200, response.text
+        assert seen == efforts
+        model = state(client)["models"][0]
+        assert model["verification"] == "verified"
+        assert model["capabilities"]["reasoning"]["efforts"] == efforts
+        expected_tools = {"function_calling": True, "parallel_calls": True, "tool_choice_modes": ["auto", "none"]}
+        assert all(model["capabilities"]["tools"][key] == value for key, value in expected_tools.items())
+        checks = response.json()["detection"][0]["checks"]
+        assert checks["tools.tool_choice.named"]["status"] == "unsupported"
+        assert checks["tools.parallel_calls"]["status"] == "supported"
+        assert all(checks["reasoning." + effort]["status"] == "supported" for effort in efforts)
+        assert "reasoning.minimal" not in checks
+        token = mutate(client, "/keys", {"name": "adaptive model caller"}, key=True).json()["token"]
+        headers = {"Authorization": "Bearer " + token, "X-Kemo-Protocol-Version": "2.0"}
+        published = client.get("/model/models/detected/capabilities", headers=headers)
+        assert published.status_code == 200 and published.json()["reasoning"]["efforts"] == efforts
+        generated = client.post("/model/responses", headers={**headers, "Idempotency-Key": "req_adaptive"}, json={
+            "protocol_version": "2.0", "request_id": "req_adaptive", "model": "detected", "stream": False,
+            "input": [{"type": "message", "id": "msg_user", "role": "user",
+                       "content": [{"type": "text", "text": "Call the probe"}]}],
+            "tools": [{"type": "function", "name": "kemo_capability_probe", "description": "Return the probe value.",
+                       "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}],
+            "parallel_tool_calls": False,
+            "reasoning": {"enabled": True, "effort": "high", "return": "auto"},
+        })
+        assert generated.status_code == 200, generated.text
+        assert generated.json()["status"] == "requires_action"
+        assert [item["type"] for item in generated.json()["output"]] == ["reasoning", "tool_call"]
+        invalid = mutate(client, "/models/detected", {"capabilities": {
+            "reasoning": {"supported": True, "efforts": ["minimal"]},
+        }}, method="PATCH")
+        assert invalid.status_code == 422
 
 
 def test_failed_text_probe_registers_explicit_unknown_without_leaking_error_body(tmp_path, monkeypatch):
