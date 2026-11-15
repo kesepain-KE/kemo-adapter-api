@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from gateway.domain import Catalog, ConfigurationError, Credential, Deployment, ExtensionState, PublicModel, RuntimeOptions, Upstream
+from gateway.domain import Catalog, CatalogValidationError, ConfigurationError, Credential, Deployment, ExtensionState, PublicModel, RuntimeOptions, Upstream
 from gateway.currency import EXCHANGE_RATE_DATE, EXCHANGE_RATES, display_cost
 from gateway.extensions import install, read_manifest, extension_digest, extension_catalog
 from gateway.runtime import BUILTINS, adapter_modalities
@@ -44,6 +44,10 @@ class ManagementRoute(APIRoute):
             except ConfigurationError as exc:
                 return JSONResponse(status_code=422, content={"detail": {
                     "code": exc.code, "field": exc.field, "message": str(exc), "details": exc.details,
+                }})
+            except CatalogValidationError as exc:
+                return JSONResponse(status_code=422, content={"detail": {
+                    "code": "INVALID_CATALOG", "message": str(exc),
                 }})
             except UpdateLockError:
                 raise HTTPException(409, "已有更新正在运行，请稍后重试") from None
@@ -118,7 +122,7 @@ async def publish(request, body, candidate, *, model_renames=None):
         result = await registry.publish(candidate, body.expected_revision, "web-console", model_renames=model_renames)
     except RevisionConflict as exc:
         raise HTTPException(409, str(exc)) from None
-    except (ConfigurationError, SchemaValidationError, ValidationError):
+    except (CatalogValidationError, ConfigurationError, SchemaValidationError, ValidationError):
         raise
     except (ValueError, KeyError, OSError):
         raise HTTPException(422, "候选目录校验失败，请检查实体引用、能力、适配器 Profile 或密钥配置") from None

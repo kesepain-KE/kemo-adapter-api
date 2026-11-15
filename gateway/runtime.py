@@ -16,7 +16,7 @@ import jsonschema
 from core.models import ModelCapabilities, Usage
 from core.provider_contract import ProviderEventKind as Kind, ProviderException
 from gateway.adapters.builtin.common import unsupported
-from gateway.domain import Catalog, Upstream
+from gateway.domain import Catalog, CatalogValidationError, Upstream
 from gateway.auth import RequestHeaders
 from gateway.connection import validate_connection
 from gateway.federation import validate_self_target
@@ -451,12 +451,12 @@ class RuntimeRegistry:
                 manifest = read_manifest(path, state.kind)
                 identity = manifest.id if hasattr(manifest, "id") else manifest["id"]
                 if identity != state.id:
-                    raise ValueError("扩展清单 ID 与安装目录不一致")
+                    raise CatalogValidationError("扩展清单 ID 与安装目录不一致")
                 if state.digest and extension_digest(path, state.kind) != state.digest:
-                    raise ValueError("扩展文件已改变，请重新启用以发布新的内容版本")
+                    raise CatalogValidationError("扩展文件已改变，请重新启用以发布新的内容版本")
                 if state.kind == "protocol_adapters":
                     if manifest.id in adapters:
-                        raise ValueError("扩展不能覆盖内置适配器")
+                        raise CatalogValidationError("扩展不能覆盖内置适配器")
                     adapters[state.id] = await WorkerAdapter.start(path, manifest)
                 else:
                     templates[state.id] = json.dumps(manifest)
@@ -464,20 +464,20 @@ class RuntimeRegistry:
                 definition = json.loads(template)["template"]
                 adapter = adapters.get(definition["adapter_id"])
                 if adapter is None or definition["auth_scheme"] not in {scheme.id for scheme in adapter.manifest.auth_schemes}:
-                    raise ValueError("模板引用了不可用的适配器或鉴权方式")
+                    raise CatalogValidationError("模板引用了不可用的适配器或鉴权方式")
                 jsonschema.validate({key: value for key, value in definition["profile"].items()
                                      if key not in {"extra_body", "extra_query"}}, adapter.manifest.config_schema)
             upstreams = {}
             for upstream in catalog.upstreams:
                 if upstream.adapter_id not in adapters:
-                    raise ValueError(f"上游 {upstream.id} 引用了不可用的适配器")
+                    raise CatalogValidationError(f"上游 {upstream.id} 引用了不可用的适配器")
                 manifest = adapters[upstream.adapter_id].manifest
                 if upstream.template_id is not None and upstream.template_id not in templates:
-                    raise ValueError("上游引用的模板未启用")
+                    raise CatalogValidationError("上游引用的模板未启用")
                 if upstream.template_id is not None:
                     definition = json.loads(templates[upstream.template_id])["template"]
                     if definition["adapter_id"] != upstream.adapter_id:
-                        raise ValueError("上游协议与所选模板不一致")
+                        raise CatalogValidationError("上游协议与所选模板不一致")
                 validate_connection(manifest, upstream)
                 validate_self_target(upstream.base_url, self.gateway_urls)
                 for key in upstream.credentials:
@@ -502,9 +502,9 @@ class RuntimeRegistry:
                     adapter = adapters[upstreams[d.upstream_id].adapter_id]
                     manifest = adapter.manifest
                     if model.task not in manifest.operations:
-                        raise ValueError(f"Deployment {d.id} 的协议不支持 {model.task}")
+                        raise CatalogValidationError(f"Deployment {d.id} 的协议不支持 {model.task}")
                     if caps.streaming and not manifest.streaming:
-                        raise ValueError("模型声明的流式能力超出适配器合同")
+                        raise CatalogValidationError("模型声明的流式能力超出适配器合同")
                     self.validate_declaration(adapter, caps, upstreams[d.upstream_id])
             from gateway.store import dump
             generation = Generation(
@@ -529,7 +529,7 @@ class RuntimeRegistry:
         manifest = adapter.manifest
         modalities = adapter_modalities(adapter)
         if set(caps.input_modalities) - set(modalities["input"]) or set(caps.output_modalities) - set(modalities["output"]):
-            raise ValueError("模型声明的输入或输出模态超出适配器已实现的范围")
+            raise CatalogValidationError("模型声明的输入或输出模态超出适配器已实现的范围")
         operations = caps.extensions.get("operations", {})
         supported = {"conversation"}
         for modality, operation in (("image", "vision"), ("audio", "audio_transcription"), ("video", "video_understanding")):
@@ -544,32 +544,32 @@ class RuntimeRegistry:
             supported.add("speech_to_speech")
         if any(value is True or isinstance(value, dict) and value.get("supported") is True
                for key, value in operations.items() if key not in supported):
-            raise ValueError("当前适配器未实现声明的媒体操作")
+            raise CatalogValidationError("当前适配器未实现声明的媒体操作")
         if (caps.supports_prediction and not manifest.prediction
                 or caps.service_tiers and not manifest.service_tiers
                 or caps.decoding.logprobs and not manifest.logprobs
                 or caps.decoding.verbosity and not manifest.verbosity):
-            raise ValueError("当前适配器未实现 prediction、service tier、logprobs 或 verbosity")
+            raise CatalogValidationError("当前适配器未实现 prediction、service tier、logprobs 或 verbosity")
         if caps.supports_multiple_choices and not manifest.multiple_choices:
-            raise ValueError("当前协议适配器未开放多候选")
+            raise CatalogValidationError("当前协议适配器未开放多候选")
         if caps.streaming and not manifest.streaming:
-            raise ValueError("当前适配器未实现流式响应")
+            raise CatalogValidationError("当前适配器未实现流式响应")
         if caps.tools.function_calling and not manifest.tools:
-            raise ValueError("当前适配器未实现工具调用")
+            raise CatalogValidationError("当前适配器未实现工具调用")
         if caps.reasoning.supported:
             if not manifest.reasoning_returns:
-                raise ValueError("当前适配器未实现推理参数映射")
+                raise CatalogValidationError("当前适配器未实现推理参数映射")
             levels = upstream.profile.get("reasoning_effort_map", manifest.reasoning_levels)
             if not manifest.dynamic_reasoning and set(caps.reasoning.efforts) - set(levels):
-                raise ValueError("推理档位超出适配器 Profile 映射")
+                raise CatalogValidationError("推理档位超出适配器 Profile 映射")
             if (set(caps.reasoning.returns) - set(manifest.reasoning_returns)
                     or caps.reasoning.summary and "summary" not in manifest.reasoning_returns):
-                raise ValueError("推理返回形态超出适配器实现范围")
+                raise CatalogValidationError("推理返回形态超出适配器实现范围")
         if (caps.reasoning.persisted_state and not manifest.persisted_reasoning
                 or caps.tools.multimodal_results and not manifest.multimodal_tool_results):
-            raise ValueError("当前内置适配器未实现持久推理或多模态工具结果")
+            raise CatalogValidationError("当前内置适配器未实现持久推理或多模态工具结果")
         if caps.structured_output.supported and not manifest.structured_output:
-            raise ValueError("当前适配器未开放结构化输出")
+            raise CatalogValidationError("当前适配器未开放结构化输出")
 
     async def initialize(self):
         self.store._migrate_auth_schemes()
@@ -583,7 +583,7 @@ class RuntimeRegistry:
             try:
                 reserved = {identity for package in self._external.values() for identity in (*package.models, package.provider_id)}
                 if set(candidate.routes).intersection(reserved):
-                    raise ValueError("公开模型 ID 与高级插件模型冲突")
+                    raise CatalogValidationError("公开模型 ID 与高级插件模型冲突")
                 self.store.save(catalog, expected, actor, model_renames=model_renames)
             except BaseException:
                 await self._close_generation(candidate)

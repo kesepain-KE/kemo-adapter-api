@@ -25,6 +25,10 @@ class ConfigurationError(ValueError):
         self.code, self.field, self.details = code, field, details
 
 
+class CatalogValidationError(ValueError):
+    """Catalog consistency error whose message is safe to show to the operator."""
+
+
 class Credential(Document):
     id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
     encrypted: str
