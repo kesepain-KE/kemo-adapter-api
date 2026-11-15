@@ -12,13 +12,14 @@ from gateway.transport import upstream_error
 
 class Anthropic(DiscoverableAdapter):
     manifest = AdapterManifest(
-        id="anthropic-messages", name="Anthropic Messages", operations=("llm",), streaming=True,
+        id="anthropic-messages", name="Anthropic Messages", version="1.1.0", operations=("llm",), streaming=True,
         auth_schemes=(ANTHROPIC_KEY, NO_AUTH),
         endpoints={"llm": "/v1/messages", "discovery": "/v1/models"},
         fixed_headers={"anthropic-version": "2023-06-01"},
         media={"input": ("text", "image")},
         body_fields=("model", "messages", "max_tokens", "stream", "system", "temperature", "top_p",
-                     "top_k", "stop_sequences", "tools", "tool_choice"),
+                     "top_k", "stop_sequences", "tools", "tool_choice", "output_config"),
+        structured_output=True,
         usage_semantics="input excludes cache read/write; output includes thinking",
     )
     discovery_path = "/v1/models"
@@ -68,6 +69,12 @@ class Anthropic(DiscoverableAdapter):
                 "type": "any" if mode == "required" or (mode == "allowed" and request.tool_choice.allowed_mode == "required") else "none" if mode == "none" else "auto",
             }
             body["tool_choice"]["disable_parallel_tool_use"] = not request.parallel_tool_calls
+        if request.structured_output:
+            if request.structured_output.type != "json_schema":
+                raise unsupported("Messages 适配器的结构化输出仅支持 json_schema")
+            body["output_config"] = {
+                "format": {"type": "json_schema", "schema": request.structured_output.schema_},
+            }
         return body
 
     @staticmethod
