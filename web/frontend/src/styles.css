@@ -576,6 +576,8 @@ a { color: inherit; text-decoration: none; }
 .model-workspace .model-actions { flex-wrap: wrap; }
 .model-table .model-actions-cell { width: 1%; white-space: nowrap; }
 .model-actions { justify-content: flex-end; flex-wrap: nowrap; }
+.extensions-table .extension-state-cell { width: 1%; white-space: nowrap; padding-right: 24px; }
+.extensions-table .model-actions-cell { text-align: right; }
 .model-test-button { min-width: 76px; }
 .model-test-button.test-partial { color: var(--warning); }
 .model-table .model-test-row td { background: var(--bg-inset); padding: var(--s-4); }
