@@ -120,6 +120,52 @@ def test_ignored_options_and_missing_metadata_do_not_invent_capabilities(tmp_pat
                    for effort in ("minimal", "low", "medium", "high", "xhigh", "max"))
 
 
+@pytest.mark.parametrize("structured_text,supported", [('{"ok":true}', True), ("OK", False)])
+def test_anthropic_probe_publishes_only_confirmed_structured_output(
+    tmp_path, monkeypatch, structured_text, supported,
+):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "remote"}]})
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        assert "anthropic-beta" not in request.headers
+        body = json.loads(request.content)
+        if body.get("stream") or body.get("tools"):
+            return httpx.Response(400, json={"error": "Not supported"})
+        text = "OK"
+        if "output_config" in body:
+            assert body["output_config"]["format"]["type"] == "json_schema"
+            text = structured_text
+        for message in body["messages"]:
+            for block in message["content"]:
+                if block["type"] == "image":
+                    text = image_color("data:image/png;base64," + block["source"]["data"])
+        return httpx.Response(200, json={
+            "id": "remote", "type": "message", "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": text}],
+        })
+
+    with instance(tmp_path, monkeypatch, handler) as (client, _):
+        add_upstream(client, adapter="anthropic-messages", auth_scheme="anthropic-key")
+        response = automatic_registration(client)
+        assert response.status_code == 200, response.text
+        checks = response.json()["detection"][0]["checks"]
+        assert checks["structured_output"]["status"] == ("supported" if supported else "unknown")
+        assert checks["vision"]["status"] == "supported"
+        model = state(client)["models"][0]
+        assert model["declaration"]["structured_output"]["supported"] is supported
+        if supported:
+            assert model["capabilities"]["structured_output"]["schema_subset"] == ["json_schema"]
+        token = mutate(client, "/keys", {"name": "agent"}, key=True).json()["token"]
+        published = client.get("/model/models/detected/capabilities", headers={
+            "Authorization": "Bearer " + token, "X-Kemo-Protocol-Version": "2.0",
+        })
+        assert published.status_code == 200
+        assert published.json()["structured_output"]["supported"] is supported
+        if supported:
+            assert published.json()["structured_output"]["schema_subset"] == ["json_schema"]
+
+
 @pytest.mark.parametrize("named_supported", [False, True])
 @pytest.mark.parametrize("values,expected_status", [
     (["first", "second"], "supported"),

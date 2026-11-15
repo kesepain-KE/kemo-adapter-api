@@ -139,15 +139,33 @@ def test_connection_auth_and_extra_parameters_reach_wire(tmp_path, monkeypatch, 
     ("openai-chat", {"extra_body": {"temperature": 1}}, "profile.extra_body"),
     ("openai-chat", {"extra_query": {"key": "secret"}}, "profile.extra_query"),
     ("openai-responses", {"extra_body": {"thinking": {"type": "adaptive"}}}, "profile.extra_body"),
+    ("anthropic-messages", {"extra_body": {"output_config": {"format": {"type": "json_schema"}}}}, "profile.extra_body"),
 ])
 def test_conflicting_parameters_rejected_when_saved(tmp_path, monkeypatch, adapter, profile, field):
     with instance(tmp_path, monkeypatch) as (client, _):
-        add_upstream(client, adapter=adapter)
+        add_upstream(client, adapter=adapter, auth_scheme="anthropic-key" if adapter == "anthropic-messages" else "bearer")
         before = state(client)["revision"]
         response = mutate(client, "/upstreams/local", {"profile": profile}, method="PATCH")
         assert response.status_code == 422
         assert response.json()["detail"]["field"] == field
         assert state(client)["revision"] == before
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_upstream_edits_preserve_private_network_permission(tmp_path, monkeypatch, allowed):
+    with instance(tmp_path, monkeypatch) as (client, app):
+        assert mutate(client, "/upstreams", {
+            "id": "local", "name": "Local", "adapter_id": "openai-chat",
+            "base_url": "https://provider.invalid", "auth_scheme": "none",
+            "allow_private_network": allowed,
+        }).status_code == 200
+        for change in ({"timeout": 45}, {"adapter_id": "openai-responses"}):
+            response = mutate(client, "/upstreams/local", change, method="PATCH")
+            assert response.status_code == 200, response.text
+            assert response.json()["upstream"]["allow_private_network"] is allowed
+            assert state(client)["upstreams"][0]["allow_private_network"] is allowed
+            assert app.state.registry.current.upstreams["local"].allow_private_network is allowed
+            assert app.state.registry.store.catalog().upstreams[0].allow_private_network is allowed
 
 
 def test_query_credential_is_redacted_when_upstream_echoes_encoded_url(tmp_path, monkeypatch):

@@ -81,6 +81,52 @@ def invoke(adapter_type, handler, request=None, *, upstream=UPSTREAM, stream=Fal
     return asyncio.run(run())
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_anthropic_structured_output_uses_output_config_and_decodes_text(stream):
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}},
+              "required": ["ok"], "additionalProperties": False}
+    request = chat_request(structured_output={
+        "type": "json_schema", "schema_name": "result", "schema": schema,
+    })
+
+    def handler(http_request):
+        assert http_request.url.path == "/v1/messages"
+        body = json.loads(http_request.content)
+        assert body["stream"] is stream
+        assert body["output_config"] == {"format": {"type": "json_schema", "schema": schema}}
+        assert "output_format" not in body and "response_format" not in body
+        if stream:
+            return sse(
+                {"type": "message_start", "message": {"id": "remote", "usage": {"input_tokens": 4}}},
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+                {"type": "content_block_delta", "index": 0,
+                 "delta": {"type": "text_delta", "text": '{"ok":true}'}},
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}},
+                {"type": "message_stop"},
+            )
+        return httpx.Response(200, json={
+            "id": "remote", "type": "message", "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": '{"ok":true}'}],
+        })
+
+    result = invoke(Anthropic, handler, request, stream=stream)
+    if stream:
+        assert any(event.kind == Kind.TEXT_DELTA and event.delta == '{"ok":true}' for event in result)
+        result = result[-1].result
+    assert result.status == "completed"
+    assert json.loads(result.output[0]["content"][0]["text"]) == {"ok": True}
+
+
+def test_anthropic_rejects_unsupported_json_object_before_network_call():
+    def handler(_request):
+        pytest.fail("Unsupported structured-output type must not reach the upstream")
+
+    with pytest.raises(ProviderException) as caught:
+        invoke(Anthropic, handler, chat_request(structured_output={"type": "json_object"}))
+    assert caught.value.error.code == "CAPABILITY_ERROR"
+    assert "json_schema" in caught.value.error.message
+
+
 @pytest.mark.parametrize("adapter_type", [OpenAIChat, OpenAIResponses, Anthropic, Gemini, CohereChat, PerplexityAgent])
 @pytest.mark.parametrize("mixed_content", [False, True])
 def test_json_tool_receipt_reaches_upstream(adapter_type, mixed_content):
