@@ -31,6 +31,8 @@
 
 模型无需先出现在发现目录里；准确的手工 `upstream_model` 走同一真实探测链路。`openai-images` 使用生成和编辑探测，不使用文本提示端点；配置与调用见 [图片模型](images.md)。给已有公开模型新增来源时，探测会检查输入和输出模态等共同能力，不能把只返回文本的来源挂到已公开的图片模型上。
 
+`anthropic-messages` 支持 `json_schema` 结构化输出，映射到 Messages 请求的 `output_config.format`；不支持 `json_object`，不自动添加 beta 请求头。适配器支持编码不代表模型已验证，自动探测仅在返回内容符合测试 schema 时写入 `structured_output.supported` 和 `schema_subset: ["json_schema"]`。中转服务仍需支持这一原生字段；切换协议时同时核对 base URL 与端点，不自动更换现有连接。
+
 网页“登记选中模型”走此自动探测流程，包含推理档位检查。OpenAI Chat 先用提供商 Profile 的 `reasoning_effort_map`；未配置映射的自定义提供商逐项尝试 `minimal / low / medium / high / xhigh / max`，只发布有推理 Token 或推理输出证据的档位。原厂目录若返回 `effort.supported_levels`，会将可编码的档位记录为原厂声明，与响应验证分开；明确被拒绝的档位不会由元数据重新开放。返回普通文字但不含推理证据的结果仍为未知，不能把所有候选档位批量标成支持。
 
 DeepSeek 的 Profile 应保留 `thinking_mode: true` 与 `reasoning_effort_map: {low: low, high: high, max: max}`；显式开关对应原厂 `thinking.type`，档位对应 `reasoning_effort`。模板更新不会覆盖已经创建的上游，编辑已有连接时合并 Profile 并保留原密钥。自定义档位可通过映射声明；OpenAI Responses 使用原生 `reasoning.effort`。模板与映射只说明如何调用，实际支持范围仍由具体模型的证据决定。

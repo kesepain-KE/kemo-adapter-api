@@ -23,6 +23,8 @@
 
 目录及密钥写操作正文为 `{expected_revision, value}`，并发冲突返回 409。扩展安装使用 multipart 的 `expected_revision` 和 ZIP `file`。发现为显式只读上游目录请求。
 
+目录能力或引用不一致时返回 422，`detail.code` 为 `INVALID_CATALOG`，`detail.message` 给出可安全展示的具体原因；失败不会发布候选目录。仅此类明确标记的校验错误展示原文，底层解析、凭据或文件错误仍使用脱敏提示。
+
 成本显示币种通过 `PATCH /admin/api/settings` 的 `value.cost_display_currency` 保存，默认 `USD`；可选币种及固定汇率日期从 `/admin/api/console` 的 `cost_exchange_rates` 读取。诊断汇总、排行及调用记录返回 `display_cost`（`amount/currency/approximate/unconverted_currencies`），原始 `costs`、单次 `cost/currency` 和价格快照保持原计费币种。换算使用随代码保存的固定参考汇率，不联网刷新；没有对应汇率时 `amount` 为 null 并列出无法换算的币种，不能将其当作零成本。
 
 | 方法 | 路径 | 作用 |
