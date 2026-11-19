@@ -51,6 +51,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/frontend/pnpm-lock.yaml
 
+      - name: Build Web console
+        working-directory: web/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
       - name: Test clean installation, console assets and real Web restart
         env:
           KEMO_RUN_RESTART_E2E: "1"
